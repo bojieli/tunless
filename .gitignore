@@ -1,0 +1,12 @@
+/.DS_Store
+/tunless
+/macos/.build/
+/macos/Tunless.xcodeproj/
+/macos/DerivedData/
+/macos/build/
+*.xcuserstate
+xcuserdata/
+*.pdb
+*.sys
+*.cat
+*.exe
