@@ -7,16 +7,20 @@ public struct ProviderConfiguration: Codable, Sendable {
     public var upstreamPort: UInt16
     public var username: String?
     public var password: String?
+	public var dnsHost: String?
+	public var dnsPort: UInt16?
 	public var includeProcesses: [String]?
 	public var excludeProcesses: [String]?
 	public var includeDestinations: [String]?
 	public var excludeDestinations: [String]?
 
-    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil) {
+    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
         self.username = username
         self.password = password
+		self.dnsHost = dnsHost
+		self.dnsPort = dnsPort
 		self.includeProcesses = includeProcesses
 		self.excludeProcesses = excludeProcesses
 		self.includeDestinations = includeDestinations
@@ -26,6 +30,10 @@ public struct ProviderConfiguration: Codable, Sendable {
 	func validated() throws -> ProviderConfiguration {
 		guard !upstreamHost.isEmpty, upstreamPort > 0 else { throw ConfigurationError.invalidUpstream }
 		guard (username?.utf8.count ?? 0) <= 255, (password?.utf8.count ?? 0) <= 255 else { throw ConfigurationError.credentialsTooLong }
+		guard (dnsHost == nil) == (dnsPort == nil) else { throw ConfigurationError.invalidDNSUpstream }
+		if let dnsHost, let dnsPort {
+			guard dnsPort > 0, IPv4Address(dnsHost) != nil || IPv6Address(dnsHost) != nil else { throw ConfigurationError.invalidDNSUpstream }
+		}
 		for prefix in (includeDestinations ?? []) + (excludeDestinations ?? []) {
 			guard Self.validPrefix(prefix) else { throw ConfigurationError.invalidDestinationPrefix(prefix) }
 		}
@@ -37,6 +45,11 @@ public struct ProviderConfiguration: Codable, Sendable {
 		if let patterns = includeProcesses, !patterns.isEmpty, !Self.matchesAny(signingIdentifier, patterns: patterns) { return false }
 		if let prefixes = includeDestinations, !prefixes.isEmpty, !Self.matchesAnyPrefix(host, prefixes: prefixes) { return false }
 		return true
+	}
+
+	func routedDestination(for destination: SOCKSAddress) -> SOCKSAddress {
+		guard destination.port == 53, let dnsHost, let dnsPort else { return destination }
+		return SOCKSAddress(host: dnsHost, port: dnsPort)
 	}
 
 	private static func matchesAny(_ value: String, patterns: [String]) -> Bool {
@@ -83,6 +96,7 @@ public struct ProviderConfiguration: Codable, Sendable {
 
 enum ConfigurationError: Error, Equatable {
 	case invalidUpstream
+	case invalidDNSUpstream
 	case credentialsTooLong
 	case invalidDestinationPrefix(String)
 }
@@ -90,9 +104,11 @@ enum ConfigurationError: Error, Equatable {
 public struct FlowTelemetry: Codable, Sendable {
     public var protocolName: String
     public var destination: String
+	public var routedDestination: String?
     public var hostname: String?
     public var signingIdentifier: String
     public var timestamp: Date
+	public var event: String?
 }
 
 enum ControlRequest: Codable { case configuration, telemetry }

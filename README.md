@@ -16,7 +16,7 @@ rules.
 | Platform | Capture mechanism | Implementation status |
 | --- | --- | --- |
 | Linux | eBPF cgroup connect/sendmsg/recvmsg and sockops | Host and Docker namespace TCP plus connected/unconnected UDP4/UDP6 pass on kernels 5.10 and 6.8, ARM64 and x86-64 |
-| macOS | `NETransparentProxyProvider` system extension | Complete source, Swift integration tests and unsigned app build pass; signing/activation gate is unmet |
+| macOS | `NETransparentProxyProvider` system extension | Notarized universal build passes live trusted-DNS redirection, SOCKS TCP/UDP, HTTP/1.x, HTTP/2, TLS, and concurrency tests |
 | Windows | WFP ALE connect-redirect callout | TCP source and userspace service implemented; WDK, signing, fuzzing, runtime, and UDP gates are unmet |
 
 The portable core includes SOCKS5 TCP/UDP emission, HTTP CONNECT and SOCKS5
@@ -224,7 +224,8 @@ After signing with the Network Extension and System Extension entitlements,
 place `Tunless.app` in `/Applications` and run:
 
 ```console
-/Applications/Tunless.app/Contents/MacOS/Tunless --upstream 127.0.0.1:7890
+/Applications/Tunless.app/Contents/MacOS/Tunless \
+  --upstream 127.0.0.1:7890 --dns-upstream 1.1.1.1:53
 /Applications/Tunless.app/Contents/MacOS/Tunless --telemetry
 /Applications/Tunless.app/Contents/MacOS/Tunless --stop
 ```
@@ -233,7 +234,7 @@ The launcher accepts the same repeated process/destination filter names as the
 Go CLI. macOS process patterns match signing identifiers. Re-running the
 launcher updates a running provider, while `--telemetry` prints and drains its
 bounded JSON flow buffer. First activation requires normal macOS user approval.
-Detailed signing and the currently unmet gate are in
+Detailed signing, Clash loop exclusions, and runtime validation are in
 [the macOS notes](docs/MACOS.md).
 
 ## Windows

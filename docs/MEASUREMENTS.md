@@ -288,13 +288,32 @@ path.
   still produced `ECONNREFUSED` for a bridge container because its private
   loopback had no listener. Namespace-local sockets are the implemented fix,
   not an environment-variable or route workaround.
-- macOS: Swift address/filter/authenticated SOCKS relay tests and the complete
-  unsigned containing-app/system-extension Xcode build pass. The installed
-  Developer ID key also timestamp-signed the hardened app and nested extension
-  with their real entitlements; `codesign --verify --deep --strict` passed.
-  Gatekeeper reported `Unnotarized Developer ID`. After a test copy was placed
-  in `/Applications`, AMFI rejected launch with error -413, `No matching profile
-  found`, before extension activation. No Tunless extension was installed.
+- macOS: the 12-test Swift suite and universal Release containing-app/system-
+  extension build pass. On 2026-08-17, build 8 (`1.0.7`) was signed with
+  matching direct Developer ID profiles, notarized, stapled, accepted by
+  Gatekeeper, installed, activated, and enabled. Captured UDP and TCP queries
+  addressed to the configured `223.6.6.6` system resolver were rewritten to
+  `1.1.1.1:53` through Clash; Google, YouTube, Google Video, GitHub, and
+  Cloudflare returned public answers. Repeated DNS checks passed 20/20 UDP and
+  10/10 TCP, and Cloudflare DNS-over-HTTPS agreed. HTTP/1.0 close-delimited
+  responses passed 5/5 after the provider began propagating remote EOF as soon
+  as Clash closed. HTTP/1.1, HTTP/2, redirects, streaming, a POST upload, raw
+  TLS 1.3, SSH over TCP/443, Cloudflare and Google STUN, and 32 concurrent HTTPS
+  requests passed. A loopback packet capture measured 0.865 ms from Clash FIN
+  to Tunless FIN in the fixed path. A 2 MiB Cloudflare speed probe was slow in
+  both Tunless and explicit-SOCKS controls, identifying the selected Clash path
+  rather than Tunless as the bottleneck. Both paths reported the same public
+  egress IP. Private destination exclusions kept the LAN gateway reachable over
+  ICMP and HTTP with zero captured gateway records. Clash remained at the same
+  PIDs and its original HTTP/HTTPS proxy settings were restored and rechecked.
+- macOS negative boundary: when a client calls `shutdown(SHUT_WR)`, macOS marks
+  its `NEAppProxyTCPFlow` disconnected. Packet capture showed Clash returning
+  the response after FIN, but the provider's later write failed with
+  `NEAppProxyFlowErrorDomain` code 1. The SOCKS transport's delayed response-
+  after-FIN unit test passes, isolating this behavior to the Network Extension
+  flow API. Client-FIN-delimited protocols therefore require a packet-layer
+  backend. The installed Apple curl has HTTP/2 but no HTTP/3 feature, so QUIC
+  HTTP/3 was not claimed; non-DNS UDP was covered independently with STUN.
 - Windows userspace: Go cross-compiles to a PE32+ amd64 executable. The accepted
   WFP socket now carries queried redirect records into the flow, and the SOCKS
   dialer sets them before outbound connect. Both PowerShell Docker launchers
@@ -305,9 +324,8 @@ path.
 
 | Gate | Status / reason |
 | --- | --- |
-| macOS extension activation and conformance | The real Developer ID signature and entitlements verify, but Apple automatic provisioning reports a pending Program License Agreement and cannot create matching macOS profiles for either bundle ID. AMFI independently confirmed that no eligible local profile exists. The existing third-party network extension was not replaced. |
-| macOS `remoteHostname` fraction / declined flows | Requires an activated, provisioned extension and a realistic app corpus; no number is invented. |
-| macOS notarization | The locally signed artifact is explicitly unnotarized. Submission cannot produce a releasable artifact until the account agreement/profile state is resolved; no notarization credentials were present in the local environment or keychain. |
+| macOS `remoteHostname` fraction | Activation and representative declined-flow behavior are verified, but a statistically useful fraction still requires a defined realistic app corpus; no number is invented. |
+| macOS HTTP/3 | The installed curl lacks HTTP/3 support. HTTP/1.x, HTTP/2, TLS, DNS UDP/TCP, and non-DNS UDP passed, but no QUIC HTTP client was exercised. |
 | Windows WDK build/runtime/UDP | No Windows+WDK host was available. UDP is intentionally left direct. |
 | Windows verifier/fuzz/attestation/Secure Boot | Requires a Windows test machine, EV/Partner Center identity, and Microsoft attestation. |
 | Independent five-minute migration | Documentation exists, but no independent first-time user was available. |

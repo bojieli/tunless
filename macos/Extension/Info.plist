@@ -14,16 +14,16 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>SYSX</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>1.0.7</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>8</string>
 	<key>NSSystemExtensionUsageDescription</key>
 	<string>tunless transparently sends selected application connections to your local SOCKS5 proxy.</string>
 	<key>NetworkExtension</key>
 	<dict>
-		<key>NEMachServiceName</key>
-		<string>$(TeamIdentifierPrefix)com.bojieli.tunless.TunlessProxy</string>
 		<key>NEProviderClasses</key>
 		<dict>
 			<key>com.apple.networkextension.app-proxy</key>

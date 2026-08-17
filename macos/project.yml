@@ -16,11 +16,15 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: tunless
+        CFBundleShortVersionString: 1.0.7
+        CFBundleVersion: "8"
         LSMinimumSystemVersion: "15.0"
         LSUIElement: true
     entitlements:
       path: App/Tunless.entitlements
       properties:
+        com.apple.developer.networking.networkextension:
+          - app-proxy-provider-systemextension
         com.apple.developer.system-extension.install: true
     dependencies:
       - target: TunlessProxy
@@ -34,18 +38,24 @@ targets:
       path: Extension/Info.plist
       properties:
         CFBundleDisplayName: tunless transparent proxy
+        CFBundlePackageType: SYSX
+        CFBundleShortVersionString: 1.0.7
+        CFBundleVersion: "8"
         NetworkExtension:
           NEProviderClasses:
             com.apple.networkextension.app-proxy: $(PRODUCT_MODULE_NAME).TransparentProxyProvider
-          NEMachServiceName: $(TeamIdentifierPrefix)com.bojieli.tunless.TunlessProxy
         NSSystemExtensionUsageDescription: tunless transparently sends selected application connections to your local SOCKS5 proxy.
     settings:
       base:
         ENABLE_APP_SANDBOX: YES
+        EXECUTABLE_NAME: TunlessProxy
+        PRODUCT_MODULE_NAME: TunlessProxy
+        PRODUCT_NAME: com.bojieli.tunless.TunlessProxy
     entitlements:
       path: Extension/TunlessProxy.entitlements
       properties:
         com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
         com.apple.developer.networking.networkextension:
           - app-proxy-provider-systemextension
     dependencies:

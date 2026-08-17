@@ -1,4 +1,5 @@
 import AppKit
+import Network
 import NetworkExtension
 import SystemExtensions
 
@@ -7,12 +8,14 @@ private struct LauncherConfiguration: Codable {
     let upstreamPort: UInt16
     let username: String?
     let password: String?
+    let dnsHost: String?
+    let dnsPort: UInt16?
     let includeProcesses: [String]?
     let excludeProcesses: [String]?
     let includeDestinations: [String]?
     let excludeDestinations: [String]?
 
-	private enum ConfigurationError: Error { case invalidUpstream, credentialsTooLong }
+	private enum ConfigurationError: Error { case invalidUpstream, invalidDNSUpstream, credentialsTooLong }
 
 	init() throws {
         let upstream = Self.option("--upstream") ?? ProcessInfo.processInfo.environment["TUNLESS_UPSTREAM"] ?? "127.0.0.1:7890"
@@ -23,6 +26,15 @@ private struct LauncherConfiguration: Codable {
 		username = components.user
 		password = components.password
 		guard (username?.utf8.count ?? 0)<=255,(password?.utf8.count ?? 0)<=255 else{throw ConfigurationError.credentialsTooLong}
+		let dns = Self.option("--dns-upstream") ?? ProcessInfo.processInfo.environment["TUNLESS_DNS_UPSTREAM"] ?? "1.1.1.1:53"
+		let dnsComponents = URLComponents(string: dns.contains("://") ? dns : "dns://\(dns)")
+		guard let dnsComponents, dnsComponents.scheme == "dns", let dnsHost = dnsComponents.host, !dnsHost.isEmpty,
+			IPv4Address(dnsHost) != nil || IPv6Address(dnsHost) != nil,
+			let dnsPort = dnsComponents.port, dnsPort > 0, dnsPort <= 65535,
+			dnsComponents.user == nil, dnsComponents.password == nil, dnsComponents.path.isEmpty,
+			dnsComponents.query == nil, dnsComponents.fragment == nil else { throw ConfigurationError.invalidDNSUpstream }
+		self.dnsHost = dnsHost
+		self.dnsPort = UInt16(dnsPort)
         includeProcesses = Self.list("--include-process", environment: "TUNLESS_INCLUDE_PROCESS")
         excludeProcesses = Self.list("--exclude-process", environment: "TUNLESS_EXCLUDE_PROCESS")
         includeDestinations = Self.list("--include-destination", environment: "TUNLESS_INCLUDE_DESTINATION")

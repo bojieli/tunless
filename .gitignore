@@ -5,6 +5,7 @@
 /macos/Tunless.xcodeproj/
 /macos/DerivedData/
 /macos/build/
+/build/
 *.xcuserstate
 xcuserdata/
 *.pdb
