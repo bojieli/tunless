@@ -34,7 +34,11 @@ jobs:
       - name: Install integration dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bpftool clang-14 llvm-14 gcc iproute2 linux-tools-common podman
+          sudo apt-get install --yes clang-14 llvm-14 gcc iproute2 linux-tools-common linux-tools-generic podman
+          bpftool_binary=$(find /usr/lib -maxdepth 2 -type f -path '/usr/lib/linux-tools-*/bpftool' -print | sort -V | tail -n 1)
+          test -n "$bpftool_binary"
+          sudo install -m 0755 "$bpftool_binary" /usr/local/bin/bpftool
+          bpftool version
           go install "github.com/sagernet/sing-box/cmd/sing-box@${SING_BOX_VERSION}"
           curl --fail --location --retry 5 --output /tmp/kind https://github.com/kubernetes-sigs/kind/releases/download/v0.30.0/kind-linux-amd64
           echo '517ab7fc89ddeed5fa65abf71530d90648d9638ef0c4cde22c2c11f8097b8889  /tmp/kind' | sha256sum --check -
