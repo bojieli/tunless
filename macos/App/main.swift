@@ -12,13 +12,17 @@ private struct LauncherConfiguration: Codable {
     let includeDestinations: [String]?
     let excludeDestinations: [String]?
 
-    init() {
+	private enum ConfigurationError: Error { case invalidUpstream, credentialsTooLong }
+
+	init() throws {
         let upstream = Self.option("--upstream") ?? ProcessInfo.processInfo.environment["TUNLESS_UPSTREAM"] ?? "127.0.0.1:7890"
         let components = URLComponents(string: upstream.contains("://") ? upstream : "socks5://\(upstream)")
-        upstreamHost = components?.host ?? "127.0.0.1"
-        upstreamPort = UInt16(components?.port ?? 7890)
-        username = components?.user
-        password = components?.password
+		guard let components,let scheme=components.scheme,["socks5","socks5h"].contains(scheme),let host=components.host,!host.isEmpty,let port=components.port,port>0,port<=65535,components.path.isEmpty,components.query==nil,components.fragment==nil else{throw ConfigurationError.invalidUpstream}
+		upstreamHost = host
+		upstreamPort = UInt16(port)
+		username = components.user
+		password = components.password
+		guard (username?.utf8.count ?? 0)<=255,(password?.utf8.count ?? 0)<=255 else{throw ConfigurationError.credentialsTooLong}
         includeProcesses = Self.list("--include-process", environment: "TUNLESS_INCLUDE_PROCESS")
         excludeProcesses = Self.list("--exclude-process", environment: "TUNLESS_EXCLUDE_PROCESS")
         includeDestinations = Self.list("--include-destination", environment: "TUNLESS_INCLUDE_DESTINATION")
@@ -86,7 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         NETransparentProxyManager.loadAllFromPreferences { managers, error in
             if let error { NSLog("load proxy preferences: \(error)"); NSApp.terminate(nil); return }
             let manager = managers?.first(where: { $0.localizedDescription == "tunless" }) ?? NETransparentProxyManager()
-            let configuration = LauncherConfiguration()
+			let configuration:LauncherConfiguration
+			do{configuration=try LauncherConfiguration()}catch{NSLog("invalid proxy configuration: \(error)");NSApp.terminate(nil);return}
             guard let encoded = try? JSONEncoder().encode(configuration) else { NSLog("encode proxy configuration failed"); NSApp.terminate(nil); return }
             let proto = NETunnelProviderProtocol()
             proto.providerBundleIdentifier = "com.bojieli.tunless.TunlessProxy"

@@ -23,6 +23,15 @@ public struct ProviderConfiguration: Codable, Sendable {
 		self.excludeDestinations = excludeDestinations
     }
 
+	func validated() throws -> ProviderConfiguration {
+		guard !upstreamHost.isEmpty, upstreamPort > 0 else { throw ConfigurationError.invalidUpstream }
+		guard (username?.utf8.count ?? 0) <= 255, (password?.utf8.count ?? 0) <= 255 else { throw ConfigurationError.credentialsTooLong }
+		for prefix in (includeDestinations ?? []) + (excludeDestinations ?? []) {
+			guard Self.validPrefix(prefix) else { throw ConfigurationError.invalidDestinationPrefix(prefix) }
+		}
+		return self
+	}
+
 	func captures(host: String, signingIdentifier: String) -> Bool {
 		if Self.matchesAny(signingIdentifier, patterns: excludeProcesses ?? []) || Self.matchesAnyPrefix(host, prefixes: excludeDestinations ?? []) { return false }
 		if let patterns = includeProcesses, !patterns.isEmpty, !Self.matchesAny(signingIdentifier, patterns: patterns) { return false }
@@ -64,6 +73,18 @@ public struct ProviderConfiguration: Codable, Sendable {
 			return address[whole] & mask == network[whole] & mask
 		}
 	}
+
+	private static func validPrefix(_ text: String) -> Bool {
+		let pieces = text.split(separator: "/", maxSplits: 1)
+		guard pieces.count == 2, let bits = Int(pieces[1]), let network = IPv4Address(String(pieces[0]))?.rawValue ?? IPv6Address(String(pieces[0]))?.rawValue else { return false }
+		return bits >= 0 && bits <= network.count * 8
+	}
+}
+
+enum ConfigurationError: Error, Equatable {
+	case invalidUpstream
+	case credentialsTooLong
+	case invalidDestinationPrefix(String)
 }
 
 public struct FlowTelemetry: Codable, Sendable {
