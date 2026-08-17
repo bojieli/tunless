@@ -30,11 +30,13 @@ if [[ $driver != docker-container && -z ${TUNLESS_BUILDX_BUILDER:-} ]]; then
 fi
 
 docker build --progress plain --file packaging/release/Dockerfile --tag "$builder" .
-docker run --rm -v "$repository_root:/src" "$builder" "$version" "$output"
+docker run --rm --hostname tunless-release-builder \
+	-v "$repository_root:/src" "$builder" "$version" "$output"
 ./scripts/build-oci.sh "$version" "$output"
 
 repro_output=$output/.reproducibility
-docker run --rm -v "$repository_root:/src" "$builder" "$version" "$repro_output"
+docker run --rm --hostname tunless-release-builder \
+	-v "$repository_root:/src" "$builder" "$version" "$repro_output"
 ./scripts/build-oci.sh "$version" "$repro_output" "$repro_output"
 ./scripts/verify-release-reproducible.sh "$version" "$output" "$repro_output"
 
