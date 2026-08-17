@@ -34,13 +34,13 @@ jobs:
       - name: Install integration dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes clang-14 gcc iproute2 linux-tools-common podman
+          sudo apt-get install --yes bpftool clang-14 llvm-14 gcc iproute2 linux-tools-common podman
           go install "github.com/sagernet/sing-box/cmd/sing-box@${SING_BOX_VERSION}"
           curl --fail --location --retry 5 --output /tmp/kind https://github.com/kubernetes-sigs/kind/releases/download/v0.30.0/kind-linux-amd64
           echo '517ab7fc89ddeed5fa65abf71530d90648d9638ef0c4cde22c2c11f8097b8889  /tmp/kind' | sha256sum --check -
           sudo install -m 0755 /tmp/kind /usr/local/bin/kind
       - name: Verify embedded BPF object
-        run: ./scripts/verify-bpf.sh
+        run: BPF_VERIFY=1 ./scripts/verify-bpf.sh
       - name: Build release binary
         run: make build VERSION="ci-${GITHUB_SHA}"
       - name: Run privileged WAN and recovery suite

@@ -97,8 +97,18 @@ unreachable on teardown. BPF map diagnostics clone descriptors before
 iteration and are cached for one second, so monitoring cannot hold the
 datapath's backend lock while walking large maps.
 
+The canonical Ubuntu 22.04 clang 14.0.0 rebuild is byte-identical to the
+embedded BPF ELF at SHA-256
+`a915ec5fb1c6b5a0b9549c98bd8689b6dd8bfaa1cdffcea89f3675af74c9cd80`.
+Ubuntu 24.04 clang 14.0.6 emits different debug/BTF metadata because its UAPI
+headers and compiler build differ; after those metadata sections are removed,
+the program/map object is byte-identical at SHA-256
+`61cd30e8b026cf2f90742ae54f2533f480d987ad3ef198e9cae554664086ad99`.
+Hosted CI enforces that normalized comparison and verifier-loads the rebuilt
+object; the current-kernel and 5.10 runtime suites load the exact embedded ELF.
+
 The OCI controller was reduced to a static `scratch` image. With BuildKit
-inline provenance disabled (GitHub produces the separate candidate
+inline provenance disabled (the public candidate workflow produces a separate
 attestation), two independent amd64/arm64 OCI archives were byte-identical at
 SHA-256 `62a86d62c89f1f331127948d31ab0d1398ddc7526d0768a7ac6452f34f9b0b5d`.
 This digest is evidence from the development input used for the check, not a
