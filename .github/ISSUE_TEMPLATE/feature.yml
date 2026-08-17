@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a scoped improvement
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user problem independently of a proposed implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Platform and compatibility constraints
+      description: Note affected operating systems, kernels, runtimes, or proxy protocols.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Project scope
+      options:
+        - label: This preserves Tunless's socket-layer, fail-open architecture and does not require proxy environment variables.
+          required: true

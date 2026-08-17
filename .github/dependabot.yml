@@ -11,6 +11,14 @@ updates:
     directory: /packaging/docker
     schedule:
       interval: weekly
+  - package-ecosystem: docker
+    directory: /packaging/release
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /packaging/oci
+    schedule:
+      interval: weekly
   - package-ecosystem: github-actions
     directory: /
     schedule:

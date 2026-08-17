@@ -1,0 +1,56 @@
+name: Bug report
+description: Report reproducible incorrect behavior
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not report vulnerabilities here. Use the private security-advisory link instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or full commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux host
+        - Linux container on native Linux
+        - Linux container on Docker Desktop for macOS
+        - Linux container on Docker Desktop for Windows
+        - macOS host
+        - Windows host or Windows container
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, kernel, architecture, container engine/version, cgroup mode, and upstream proxy/version.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal commands and configuration with credentials removed.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Include `tunless --check`, status output, and relevant logs. Remove secrets and public IPs if needed.
+    validations:
+      required: true
