@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -272,7 +273,7 @@ func containerScope(pid int, containerID string) (string, string, error) {
 }
 
 func cgroupMatchesContainer(cgroup, containerID string) bool {
-	for _, component := range strings.Split(filepath.Clean(cgroup), string(filepath.Separator)) {
+	for _, component := range strings.Split(path.Clean(cgroup), "/") {
 		candidate := strings.TrimSuffix(component, ".scope")
 		for _, prefix := range []string{"docker-", "cri-containerd-", "crio-"} {
 			candidate = strings.TrimPrefix(candidate, prefix)
@@ -311,11 +312,11 @@ func cgroupPathFromProc(data []byte) (string, error) {
 				return "", errors.New("unsafe container cgroup-v2 path")
 			}
 		}
-		relative := filepath.Clean(raw)
+		relative := path.Clean(raw)
 		if relative == "/" || relative == "." {
 			return "", errors.New("unsafe container cgroup-v2 path")
 		}
-		return filepath.Join("/sys/fs/cgroup", strings.TrimPrefix(relative, "/")), nil
+		return path.Join("/sys/fs/cgroup", strings.TrimPrefix(relative, "/")), nil
 	}
 	return "", errors.New("container does not have a cgroup-v2 entry")
 }
