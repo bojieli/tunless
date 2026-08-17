@@ -47,7 +47,7 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.cancel != nil {
-		return nil, errors.New("Windows backend already started")
+		return nil, errors.New("windows backend already started")
 	}
 	address := b.Address
 	if address == "" {

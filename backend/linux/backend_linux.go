@@ -99,10 +99,10 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.cancel != nil {
-		return nil, errors.New("Linux backend already started")
+		return nil, errors.New("linux backend already started")
 	}
 	if b.CgroupPath == "" {
-		return nil, errors.New("Linux backend requires a cgroup v2 path")
+		return nil, errors.New("linux backend requires a cgroup v2 path")
 	}
 	if err := rlimit.RemoveMemlock(); err != nil && !errors.Is(err, os.ErrPermission) {
 		return nil, fmt.Errorf("memlock: %w", err)
