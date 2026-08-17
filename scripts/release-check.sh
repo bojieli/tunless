@@ -8,6 +8,7 @@ cd "$repository_root"
 output=${TUNLESS_RELEASE_OUTPUT:-dist}
 builder=${TUNLESS_RELEASE_BUILDER:-tunless-release-builder:local}
 export TUNLESS_RELEASE_BUILDER=$builder
+container_user="$(id -u):$(id -g)"
 source_date_epoch=${SOURCE_DATE_EPOCH:-$(git -c safe.directory="$repository_root" log -1 --format=%ct)}
 [[ $source_date_epoch =~ ^[0-9]+$ ]] || {
 	echo "SOURCE_DATE_EPOCH must be an integer Unix timestamp" >&2
@@ -37,19 +38,22 @@ fi
 
 docker build --progress plain --file packaging/release/Dockerfile --tag "$builder" .
 docker run --rm --hostname tunless-release-builder \
+	--user "$container_user" --env HOME=/tmp --env GOCACHE=/tmp/tunless-go-build \
 	--env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
 	-v "$repository_root:/src" "$builder" "$version" "$output"
 ./scripts/build-oci.sh "$version" "$output"
 
 repro_output=$output/.reproducibility
 docker run --rm --hostname tunless-release-builder \
+	--user "$container_user" --env HOME=/tmp --env GOCACHE=/tmp/tunless-go-build \
 	--env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
 	-v "$repository_root:/src" "$builder" "$version" "$repro_output"
 ./scripts/build-oci.sh "$version" "$repro_output" "$repro_output"
 ./scripts/verify-release-reproducible.sh "$version" "$output" "$repro_output"
 
 oci="/src/$output/tunless_${version}_oci.tar"
-docker run --rm --entrypoint syft -v "$repository_root:/src" "$builder" \
+docker run --rm --user "$container_user" --env HOME=/tmp --entrypoint syft \
+	-v "$repository_root:/src" "$builder" \
 	"oci-archive:$oci" -o "spdx-json=/src/$output/tunless_${version}_oci.spdx.json" >/dev/null
 
 ./scripts/finalize-release.sh "$output"
