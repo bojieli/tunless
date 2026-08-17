@@ -14,14 +14,17 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bojieli/tunless"
 )
 
 type Backend struct {
-	Address string
+	Address          string
+	HandshakeTimeout time.Duration
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -108,6 +111,15 @@ func (b *Backend) handle(ctx context.Context, conn net.Conn) {
 			_ = conn.Close()
 		}
 	}()
+	handshakeTimeout := b.HandshakeTimeout
+	if handshakeTimeout == 0 {
+		handshakeTimeout = 10 * time.Second
+	}
+	if handshakeTimeout > 0 {
+		if err := conn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+			return
+		}
+	}
 	reader := bufio.NewReader(conn)
 	first, err := reader.Peek(1)
 	if err != nil {
@@ -142,16 +154,19 @@ func (b *Backend) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	var request [3]byte
-	if _, err := io.ReadFull(reader, request[:]); err != nil || request[0] != 5 {
+	if _, err := io.ReadFull(reader, request[:]); err != nil || request[0] != 5 || request[2] != 0 {
 		return
 	}
-	dst, hostname, err := readAddress(reader)
+	dst, hostname, err := readAddress(ctx, reader)
 	if err != nil {
 		return
 	}
 	process := currentProcess()
 	switch request[1] {
 	case 1:
+		if err = conn.SetDeadline(time.Time{}); err != nil {
+			return
+		}
 		if _, err = conn.Write(reply(netip.AddrPortFrom(netip.IPv4Unspecified(), 0))); err != nil {
 			return
 		}
@@ -171,6 +186,9 @@ func (b *Backend) handle(ctx context.Context, conn net.Conn) {
 		}
 		defer udp.Close()
 		bound := udp.LocalAddr().(*net.UDPAddr).AddrPort()
+		if err = conn.SetDeadline(time.Time{}); err != nil {
+			return
+		}
 		if _, err = conn.Write(reply(bound)); err != nil {
 			return
 		}
@@ -214,6 +232,9 @@ func (b *Backend) handleHTTP(ctx context.Context, conn net.Conn, reader *bufio.R
 	dst, hostname, err := resolveHostPort(ctx, host, port)
 	if err != nil {
 		_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+		return false
+	}
+	if err = conn.SetDeadline(time.Time{}); err != nil {
 		return false
 	}
 	if _, err = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
@@ -270,6 +291,9 @@ func (b *Backend) handleHTTPForward(ctx context.Context, conn net.Conn, reader *
 		Process:  currentProcess(),
 		Conn:     &bufferedConn{Conn: conn, reader: bufio.NewReader(io.MultiReader(bytes.NewReader(prefix.Bytes()), reader))},
 	}
+	if err = conn.SetDeadline(time.Time{}); err != nil {
+		return false
+	}
 	select {
 	case b.flows <- flow:
 		return true
@@ -287,10 +311,11 @@ func splitHostPort(authority, defaultPort string) (string, string) {
 }
 
 func resolveHostPort(ctx context.Context, host, port string) (netip.AddrPort, string, error) {
-	var parsedPort uint16
-	if _, err := fmt.Sscan(port, &parsedPort); err != nil || parsedPort == 0 {
+	value, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || value == 0 {
 		return netip.AddrPort{}, "", errors.New("invalid port")
 	}
+	parsedPort := uint16(value)
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return netip.AddrPortFrom(addr, parsedPort), "", nil
 	}
@@ -319,7 +344,10 @@ func (b *Backend) serveUDP(ctx context.Context, control net.Conn, udp *net.UDPCo
 		if err != nil {
 			return
 		}
-		dst, used, err := parseDatagram(buf[:n])
+		if port != nil && !sameAddrPort(peer, port.peer) {
+			continue
+		}
+		dst, used, err := parseDatagram(ctx, buf[:n])
 		if err != nil {
 			continue
 		}
@@ -392,7 +420,7 @@ func encodeAddress(a netip.AddrPort) []byte {
 	return binary.BigEndian.AppendUint16(out, a.Port())
 }
 
-func readAddress(r io.Reader) (netip.AddrPort, string, error) {
+func readAddress(ctx context.Context, r io.Reader) (netip.AddrPort, string, error) {
 	var typ [1]byte
 	if _, err := io.ReadFull(r, typ[:]); err != nil {
 		return netip.AddrPort{}, "", err
@@ -410,6 +438,9 @@ func readAddress(r io.Reader) (netip.AddrPort, string, error) {
 			return netip.AddrPort{}, "", err
 		}
 		n = int(s[0])
+		if n == 0 {
+			return netip.AddrPort{}, "", errors.New("empty domain address")
+		}
 	default:
 		return netip.AddrPort{}, "", errors.New("bad address type")
 	}
@@ -420,9 +451,12 @@ func readAddress(r io.Reader) (netip.AddrPort, string, error) {
 	var addr netip.Addr
 	if typ[0] == 3 {
 		hostname = string(b[:n])
-		ips, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip", hostname)
-		if err != nil || len(ips) == 0 {
+		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", hostname)
+		if err != nil {
 			return netip.AddrPort{}, hostname, err
+		}
+		if len(ips) == 0 {
+			return netip.AddrPort{}, hostname, errors.New("domain address resolved without results")
 		}
 		addr = ips[0]
 	} else {
@@ -431,7 +465,7 @@ func readAddress(r io.Reader) (netip.AddrPort, string, error) {
 	return netip.AddrPortFrom(addr, binary.BigEndian.Uint16(b[n:])), hostname, nil
 }
 
-func parseDatagram(b []byte) (netip.AddrPort, int, error) {
+func parseDatagram(ctx context.Context, b []byte) (netip.AddrPort, int, error) {
 	if len(b) < 4 || b[0] != 0 || b[1] != 0 || b[2] != 0 {
 		return netip.AddrPort{}, 0, errors.New("invalid UDP frame")
 	}
@@ -443,6 +477,23 @@ func parseDatagram(b []byte) (netip.AddrPort, int, error) {
 		n = 4
 	case 4:
 		n = 16
+	case 3:
+		if len(b) < 5 {
+			return netip.AddrPort{}, 0, io.ErrUnexpectedEOF
+		}
+		n = int(b[4])
+		if n == 0 || len(b) < 5+n+2 {
+			return netip.AddrPort{}, 0, errors.New("invalid UDP domain address")
+		}
+		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", string(b[5:5+n]))
+		if err != nil {
+			return netip.AddrPort{}, 0, err
+		}
+		if len(ips) == 0 {
+			return netip.AddrPort{}, 0, errors.New("UDP domain address resolved without results")
+		}
+		port := binary.BigEndian.Uint16(b[5+n:])
+		return netip.AddrPortFrom(ips[0], port), 5 + n + 2, nil
 	default:
 		return netip.AddrPort{}, 0, errors.New("unsupported UDP address")
 	}
@@ -452,4 +503,8 @@ func parseDatagram(b []byte) (netip.AddrPort, int, error) {
 	a, _ := netip.AddrFromSlice(b[offset : offset+n])
 	port := binary.BigEndian.Uint16(b[offset+n:])
 	return netip.AddrPortFrom(a, port), offset + n + 2, nil
+}
+
+func sameAddrPort(a, b netip.AddrPort) bool {
+	return a.Port() == b.Port() && a.Addr().Unmap() == b.Addr().Unmap()
 }

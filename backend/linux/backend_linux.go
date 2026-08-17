@@ -511,14 +511,11 @@ func (p *packetPort) Close() error {
 	p.once.Do(func() {
 		p.backend.mu.Lock()
 		delete(p.backend.sessions, p.sessionKey)
-		if p.backend.collection != nil {
-			_ = p.backend.collection.Maps["original_map"].Delete(p.cookie)
-			_ = p.backend.collection.Maps["tuple_map"].Delete(tupleKey(p.peer, 17))
-			if p.relay.Is4() {
-				relay := p.relay.As4()
-				_ = p.backend.collection.Maps["udp_relay_map"].Delete(binary.LittleEndian.Uint32(relay[:]))
-			}
-		}
+		// Keep kernel correlation until the LRU maps reclaim it. A connected UDP
+		// socket has already had its destination rewritten by connect(2), so it
+		// cannot recreate these entries in sendmsg after a transient SOCKS relay
+		// failure. Retaining them lets the next datagram open a fresh association;
+		// a newly created socket always refreshes entries for its own cookie.
 		p.backend.mu.Unlock()
 	})
 	return nil

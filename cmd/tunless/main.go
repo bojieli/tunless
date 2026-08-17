@@ -6,12 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -126,7 +128,7 @@ func run() error {
 	switch backendName {
 	case "linux":
 		if len(filter.IncludeProcesses) > 0 || len(filter.ExcludeProcesses) > 0 {
-			return errors.New("Linux process selection is the --cgroup scope; process glob flags are only supported by metadata-capable backends")
+			return errors.New("linux process selection is the --cgroup scope; process glob flags are only supported by metadata-capable backends")
 		}
 		backend = &linuxbackend.Backend{Address: listen, CgroupPath: cgroupPath, NetworkNamespace: networkNamespace, Filter: filter}
 		coreFilter = tunless.Filter{}
@@ -140,7 +142,7 @@ func run() error {
 			return errors.New("--network-namespace requires the Linux backend")
 		}
 		if len(filter.IncludeProcesses)+len(filter.ExcludeProcesses)+len(filter.IncludeDestinations)+len(filter.ExcludeDestinations) > 0 {
-			return errors.New("Windows capture filters require driver-side enforcement and are unavailable until the Windows runtime gate is complete")
+			return errors.New("windows capture filters require driver-side enforcement and are unavailable until the Windows runtime gate is complete")
 		}
 		backend = &windowsbackend.Backend{Address: listen}
 	default:
@@ -259,7 +261,7 @@ func containerScope(pid int, containerID string) (string, string, error) {
 		if err = validateContainerID(containerID); err != nil {
 			return "", "", err
 		}
-		if !strings.Contains(cgroup, containerID[:12]) {
+		if !cgroupMatchesContainer(cgroup, containerID) {
 			return "", "", errors.New("container PID no longer belongs to the expected Docker container")
 		}
 	}
@@ -267,6 +269,19 @@ func containerScope(pid int, containerID string) (string, string, error) {
 		return "", "", fmt.Errorf("container cgroup: %w", err)
 	}
 	return cgroup, filepath.Join(proc, "ns/net"), nil
+}
+
+func cgroupMatchesContainer(cgroup, containerID string) bool {
+	for _, component := range strings.Split(filepath.Clean(cgroup), string(filepath.Separator)) {
+		candidate := strings.TrimSuffix(component, ".scope")
+		for _, prefix := range []string{"docker-", "cri-containerd-", "crio-"} {
+			candidate = strings.TrimPrefix(candidate, prefix)
+		}
+		if candidate == containerID {
+			return true
+		}
+	}
+	return false
 }
 
 func validateContainerID(value string) error {
@@ -307,21 +322,47 @@ func cgroupPathFromProc(data []byte) (string, error) {
 
 func parseUpstream(value string) (*socks5.Client, error) {
 	if !strings.Contains(value, "://") {
-		return &socks5.Client{Address: value}, nil
+		address, err := normalizeHostPort(value)
+		if err != nil {
+			return nil, fmt.Errorf("upstream: %w", err)
+		}
+		return &socks5.Client{Address: address}, nil
 	}
 	u, err := url.Parse(value)
 	if err != nil || (u.Scheme != "socks5" && u.Scheme != "socks5h") {
 		return nil, errors.New("upstream must be host:port or a socks5 URL")
 	}
-	if u.Host == "" {
-		return nil, errors.New("upstream address is empty")
+	if u.Opaque != "" || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("SOCKS5 upstream URL must contain only credentials, host, and port")
 	}
-	c := &socks5.Client{Address: u.Host}
+	address, err := normalizeHostPort(net.JoinHostPort(u.Hostname(), u.Port()))
+	if err != nil {
+		return nil, fmt.Errorf("upstream: %w", err)
+	}
+	c := &socks5.Client{Address: address}
 	if u.User != nil {
 		c.Username = u.User.Username()
 		c.Password, _ = u.User.Password()
+		if len(c.Username) > 255 || len(c.Password) > 255 {
+			return nil, errors.New("SOCKS5 upstream credentials exceed 255 bytes")
+		}
 	}
 	return c, nil
+}
+
+func normalizeHostPort(value string) (string, error) {
+	host, portText, err := net.SplitHostPort(value)
+	if err != nil {
+		return "", errors.New("address must be host:port (IPv6 addresses require brackets)")
+	}
+	if host == "" {
+		return "", errors.New("host is empty")
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 {
+		return "", errors.New("port must be between 1 and 65535")
+	}
+	return net.JoinHostPort(host, strconv.FormatUint(port, 10)), nil
 }
 
 func prefixes(values []string) ([]netip.Prefix, error) {

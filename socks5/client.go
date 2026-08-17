@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/bojieli/tunless"
 )
@@ -19,6 +20,7 @@ type Client struct {
 	MetadataUsername bool
 	Registry         MetadataRegistry
 	Dialer           net.Dialer
+	HandshakeTimeout time.Duration
 }
 
 type MetadataRegistry interface {
@@ -73,6 +75,15 @@ func (c *Client) connect(ctx context.Context, command byte, dst netip.AddrPort, 
 		cleanup()
 		_ = conn.Close()
 		return nil, netip.AddrPort{}, func() {}, err
+	}
+	handshakeTimeout := c.HandshakeTimeout
+	if handshakeTimeout == 0 {
+		handshakeTimeout = 10 * time.Second
+	}
+	if handshakeTimeout > 0 {
+		if err = conn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+			return fail(fmt.Errorf("set SOCKS5 handshake deadline: %w", err))
+		}
 	}
 	wantsAuth := username != "" || password != ""
 	methods := []byte{0}
@@ -138,12 +149,20 @@ func (c *Client) connect(ctx context.Context, command byte, dst netip.AddrPort, 
 	if _, err = io.ReadFull(conn, header[:]); err != nil {
 		return fail(err)
 	}
-	if header[0] != 5 || header[2] != 0 || header[1] != 0 {
+	if header[0] != 5 || header[2] != 0 {
+		return fail(errors.New("invalid SOCKS5 response header"))
+	}
+	if header[1] != 0 {
 		return fail(fmt.Errorf("SOCKS5 request failed with status %d", header[1]))
 	}
-	bound, err := readAddr(conn)
+	bound, err := readAddr(ctx, conn)
 	if err != nil {
 		return fail(err)
+	}
+	if handshakeTimeout > 0 {
+		if err = conn.SetDeadline(time.Time{}); err != nil {
+			return fail(fmt.Errorf("clear SOCKS5 handshake deadline: %w", err))
+		}
 	}
 	return conn, bound, cleanup, nil
 }
@@ -172,14 +191,29 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 	if remote, ok := control.RemoteAddr().(*net.TCPAddr); ok {
 		relay = reachableRelayAddress(relay, remote.AddrPort())
 	}
-	udp, err := net.ListenUDP("udp", nil)
+	if !relay.IsValid() || relay.Port() == 0 {
+		return errors.New("SOCKS5 server returned an invalid UDP relay address")
+	}
+	udpNetwork := "udp6"
+	if relay.Addr().Unmap().Is4() {
+		udpNetwork = "udp4"
+	}
+	udp, err := net.ListenUDP(udpNetwork, nil)
 	if err != nil {
 		return err
 	}
 	defer udp.Close()
 	stop := context.AfterFunc(ctx, func() { _ = udp.Close(); _ = flow.Packets.Close() })
 	defer stop()
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
+	go func() {
+		var unexpected [1]byte
+		_, err := control.Read(unexpected[:])
+		if err == nil {
+			err = errors.New("SOCKS5 UDP control connection returned unexpected data")
+		}
+		errCh <- err
+	}()
 	go func() {
 		for {
 			packet, err := flow.Packets.ReadPacket(ctx)
@@ -199,15 +233,18 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 	go func() {
 		buf := make([]byte, 65535)
 		for {
-			n, _, err := udp.ReadFromUDPAddrPort(buf)
+			n, peer, err := udp.ReadFromUDPAddrPort(buf)
 			if err != nil {
 				errCh <- err
 				return
 			}
-			if n < 4 || buf[2] != 0 {
+			if !sameAddrPort(peer, relay) {
 				continue
 			}
-			dst, used, err := parseAddr(buf[3:n])
+			if n < 4 || buf[0] != 0 || buf[1] != 0 || buf[2] != 0 {
+				continue
+			}
+			dst, used, err := parseAddr(ctx, buf[3:n])
 			if err != nil {
 				continue
 			}
@@ -223,6 +260,10 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 		return nil
 	}
 	return err
+}
+
+func sameAddrPort(a, b netip.AddrPort) bool {
+	return a.Port() == b.Port() && a.Addr().Unmap() == b.Addr().Unmap()
 }
 
 func reachableRelayAddress(relay, server netip.AddrPort) netip.AddrPort {
@@ -249,7 +290,7 @@ func encodeAddr(a netip.AddrPort) []byte {
 	return binary.BigEndian.AppendUint16(out, a.Port())
 }
 
-func readAddr(r io.Reader) (netip.AddrPort, error) {
+func readAddr(ctx context.Context, r io.Reader) (netip.AddrPort, error) {
 	var atyp [1]byte
 	if _, err := io.ReadFull(r, atyp[:]); err != nil {
 		return netip.AddrPort{}, err
@@ -266,6 +307,9 @@ func readAddr(r io.Reader) (netip.AddrPort, error) {
 			return netip.AddrPort{}, err
 		}
 		n = int(size[0])
+		if n == 0 {
+			return netip.AddrPort{}, errors.New("empty SOCKS5 domain address")
+		}
 	default:
 		return netip.AddrPort{}, errors.New("invalid SOCKS5 address type")
 	}
@@ -274,9 +318,12 @@ func readAddr(r io.Reader) (netip.AddrPort, error) {
 		return netip.AddrPort{}, err
 	}
 	if atyp[0] == 3 {
-		ips, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip", string(b[:n]))
-		if err != nil || len(ips) == 0 {
+		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", string(b[:n]))
+		if err != nil {
 			return netip.AddrPort{}, err
+		}
+		if len(ips) == 0 {
+			return netip.AddrPort{}, errors.New("SOCKS5 domain address resolved without results")
 		}
 		return netip.AddrPortFrom(ips[0], binary.BigEndian.Uint16(b[n:])), nil
 	}
@@ -287,7 +334,7 @@ func readAddr(r io.Reader) (netip.AddrPort, error) {
 	return netip.AddrPortFrom(addr, binary.BigEndian.Uint16(b[n:])), nil
 }
 
-func parseAddr(b []byte) (netip.AddrPort, int, error) {
+func parseAddr(ctx context.Context, b []byte) (netip.AddrPort, int, error) {
 	if len(b) < 1 {
 		return netip.AddrPort{}, 0, io.ErrUnexpectedEOF
 	}
@@ -297,6 +344,22 @@ func parseAddr(b []byte) (netip.AddrPort, int, error) {
 		n = 4
 	case 4:
 		n = 16
+	case 3:
+		if len(b) < 2 {
+			return netip.AddrPort{}, 0, io.ErrUnexpectedEOF
+		}
+		n = int(b[1])
+		if n == 0 || len(b) < 2+n+2 {
+			return netip.AddrPort{}, 0, errors.New("invalid SOCKS5 UDP domain address")
+		}
+		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", string(b[2:2+n]))
+		if err != nil {
+			return netip.AddrPort{}, 0, err
+		}
+		if len(ips) == 0 {
+			return netip.AddrPort{}, 0, errors.New("SOCKS5 UDP domain address resolved without results")
+		}
+		return netip.AddrPortFrom(ips[0], binary.BigEndian.Uint16(b[2+n:])), 2 + n + 2, nil
 	default:
 		return netip.AddrPort{}, 0, errors.New("unsupported address")
 	}

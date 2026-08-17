@@ -1,11 +1,13 @@
 package socks5
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/bojieli/tunless"
 )
@@ -49,6 +51,118 @@ func TestCredentialsRequireUserPasswordMethod(t *testing.T) {
 	methods := <-seen
 	if len(methods) != 1 || methods[0] != 2 {
 		t.Fatalf("offered methods %v, want username/password only", methods)
+	}
+}
+
+func TestHandshakeTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{})
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		close(accepted)
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+	client := &Client{Address: listener.Addr().String(), HandshakeTimeout: 25 * time.Millisecond}
+	conn, _, cleanup, err := client.connect(context.Background(), 1, netip.MustParseAddrPort("192.0.2.1:443"), "", "", "", tunless.ProcessInfo{}, nil)
+	cleanup()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("SOCKS5 handshake without a reply did not time out")
+	}
+	<-accepted
+}
+
+func TestReadAddrRejectsEmptyDomain(t *testing.T) {
+	_, err := readAddr(context.Background(), bytes.NewReader([]byte{3, 0, 0, 80}))
+	if err == nil {
+		t.Fatal("accepted an empty SOCKS5 domain address")
+	}
+}
+
+func TestParseUDPDomainAddress(t *testing.T) {
+	frame := []byte{3, 9}
+	frame = append(frame, "localhost"...)
+	frame = append(frame, 0, 53)
+	address, used, err := parseAddr(context.Background(), frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != len(frame) || address.Port() != 53 || !address.Addr().IsLoopback() {
+		t.Fatalf("address = %s, used = %d", address, used)
+	}
+}
+
+func TestSameAddrPortUnmapsIPv4(t *testing.T) {
+	v4 := netip.MustParseAddrPort("127.0.0.1:53")
+	mapped := netip.MustParseAddrPort("[::ffff:127.0.0.1]:53")
+	if !sameAddrPort(v4, mapped) {
+		t.Fatal("IPv4 and IPv4-mapped relay endpoints should compare equal")
+	}
+}
+
+type contextPacketPort struct{}
+
+func (contextPacketPort) ReadPacket(ctx context.Context) (tunless.Packet, error) {
+	<-ctx.Done()
+	return tunless.Packet{}, ctx.Err()
+}
+
+func (contextPacketPort) WritePacket(context.Context, tunless.Packet) error { return nil }
+func (contextPacketPort) Close() error                                      { return nil }
+
+func TestUDPAssociationEndsWithControlConnection(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	relay, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		var greeting [3]byte
+		_, _ = io.ReadFull(conn, greeting[:])
+		_, _ = conn.Write([]byte{5, 0})
+		var request [10]byte
+		_, _ = io.ReadFull(conn, request[:])
+		bound := relay.LocalAddr().(*net.UDPAddr).AddrPort()
+		reply := []byte{5, 0, 0, 1}
+		reply = append(reply, bound.Addr().AsSlice()...)
+		reply = append(reply, byte(bound.Port()>>8), byte(bound.Port()))
+		_, _ = conn.Write(reply)
+	}()
+	done := make(chan error, 1)
+	go func() {
+		done <- (&Client{Address: listener.Addr().String()}).Emit(context.Background(), tunless.Flow{
+			Proto:   tunless.UDP,
+			OrigDst: netip.MustParseAddrPort("1.1.1.1:53"),
+			Packets: contextPacketPort{},
+		})
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("UDP association ended without reporting the closed control connection")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("UDP association ignored its closed control connection")
 	}
 }
 

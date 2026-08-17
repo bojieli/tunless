@@ -17,3 +17,13 @@ func TestFlowValidate(t *testing.T) {
 		t.Fatal("expected missing connection error")
 	}
 }
+
+func TestFlowRejectsZeroDestinationPort(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	flow := Flow{Proto: TCP, OrigDst: netip.MustParseAddrPort("192.0.2.1:0"), Conn: a}
+	if err := flow.Validate(); err == nil {
+		t.Fatal("accepted a destination with port zero")
+	}
+}

@@ -34,17 +34,20 @@ func (c *Core) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer c.Backend.Close()
 	var wg sync.WaitGroup
+	defer func() {
+		// Closing the backend first releases any flow-owned sockets on which an
+		// emitter may still be blocked. Waiting first deadlocks when a backend
+		// closes its flow channel because of an internal shutdown.
+		_ = c.Backend.Close()
+		wg.Wait()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
-			_ = c.Backend.Close()
-			wg.Wait()
 			return nil
 		case flow, ok := <-flows:
 			if !ok {
-				wg.Wait()
 				return nil
 			}
 			if flow.Hostname == "" && c.Resolver != nil {

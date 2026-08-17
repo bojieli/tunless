@@ -15,6 +15,6 @@ type Backend struct {
 }
 
 func (*Backend) Start(context.Context) (<-chan tunless.Flow, error) {
-	return nil, errors.New("Linux eBPF backend is only available on Linux")
+	return nil, errors.New("linux eBPF backend is only available on Linux")
 }
 func (*Backend) Close() error { return nil }

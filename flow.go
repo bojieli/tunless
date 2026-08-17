@@ -65,6 +65,9 @@ func (f Flow) Validate() error {
 	if !f.OrigDst.IsValid() {
 		return errors.New("original destination is required")
 	}
+	if f.OrigDst.Port() == 0 {
+		return errors.New("original destination port is required")
+	}
 	switch f.Proto {
 	case TCP:
 		if f.Conn == nil && !f.DatapathOwned {
