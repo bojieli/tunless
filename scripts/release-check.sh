@@ -20,10 +20,38 @@ if [[ ${TUNLESS_ALLOW_DIRTY_RELEASE:-0} != 1 ]] && [[ -n $(git status --porcelai
 	echo "release candidates must be built from a clean working tree (set TUNLESS_ALLOW_DIRTY_RELEASE=1 only for local development)" >&2
 	exit 2
 fi
+case "$output" in
+"" | . | .. | /* | ../* | */../* | */..)
+	echo "release output must be a non-parent relative directory inside the repository" >&2
+	exit 2
+	;;
+esac
+mkdir -p "$output"
+output_real=$(cd "$output" && pwd -P)
+[[ $output_real == "$repository_root/"* ]] || {
+	echo "release output resolves outside the repository: $output" >&2
+	exit 2
+}
+find "$output_real" -xdev -mindepth 1 -depth -delete
 
 created_builder=
 cleanup() {
 	if [[ -n "$created_builder" ]]; then docker buildx rm "$created_builder" >/dev/null 2>&1 || true; fi
+}
+
+build_oci_sboms() {
+	local artifact_dir=$1 arch sbom oci
+	oci="/src/$artifact_dir/tunless_${version}_oci.tar"
+	for arch in amd64 arm64; do
+		sbom="tunless_${version}_oci_linux_${arch}.spdx.json"
+		docker run --rm --user "$container_user" --env HOME=/tmp --entrypoint syft \
+			-v "$repository_root:/src" "$builder" --platform "linux/$arch" \
+			--source-name "tunless_${version}_oci_linux_${arch}" "oci-archive:$oci" \
+			-o "spdx-json=/src/$artifact_dir/$sbom" >/dev/null
+		go run ./cmd/spdx-normalize --epoch "$SOURCE_DATE_EPOCH" \
+			--namespace "https://github.com/bojieli/tunless/sbom/$version/$sbom" \
+			"$artifact_dir/$sbom"
+	done
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -42,6 +70,7 @@ docker run --rm --hostname tunless-release-builder \
 	--env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
 	-v "$repository_root:/src" "$builder" "$version" "$output"
 ./scripts/build-oci.sh "$version" "$output"
+build_oci_sboms "$output"
 
 repro_output=$output/.reproducibility
 docker run --rm --hostname tunless-release-builder \
@@ -49,12 +78,8 @@ docker run --rm --hostname tunless-release-builder \
 	--env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
 	-v "$repository_root:/src" "$builder" "$version" "$repro_output"
 ./scripts/build-oci.sh "$version" "$repro_output" "$repro_output"
+build_oci_sboms "$repro_output"
 ./scripts/verify-release-reproducible.sh "$version" "$output" "$repro_output"
-
-oci="/src/$output/tunless_${version}_oci.tar"
-docker run --rm --user "$container_user" --env HOME=/tmp --entrypoint syft \
-	-v "$repository_root:/src" "$builder" \
-	"oci-archive:$oci" -o "spdx-json=/src/$output/tunless_${version}_oci.spdx.json" >/dev/null
 
 ./scripts/finalize-release.sh "$output"
 ./scripts/test-packages.sh "$version" "$output"

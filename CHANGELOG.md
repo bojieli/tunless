@@ -20,8 +20,9 @@ use ISO 8601. The repository has not made a public release yet.
   and a non-publishing release-candidate workflow.
 - Reproducible static `scratch` controller images plus amd64/arm64 DEB, RPM,
   archive, and OCI install/runtime smoke tests.
-- SPDX SBOMs and synchronized third-party license notices carried by every
-  archive and native package.
+- Deterministic SPDX SBOMs for both raw binaries and each OCI architecture,
+  plus synchronized third-party license notices carried by every archive and
+  native package.
 
 ### Security
 

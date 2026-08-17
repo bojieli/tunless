@@ -52,7 +52,10 @@ for arch in amd64 arm64; do
 		-C "$stage" -cf - "$base" | gzip -n >"$output/$base.tar.gz"
 	rm -rf -- "$stage"
 
-	syft "$binary" -o "spdx-json=$output/$base.spdx.json" >/dev/null
+	sbom="$output/$base.spdx.json"
+	syft --source-name "$base" "$binary" -o "spdx-json=$sbom" >/dev/null
+	go run ./cmd/spdx-normalize --epoch "$epoch" \
+		--namespace "https://github.com/bojieli/tunless/sbom/$version/${sbom##*/}" "$sbom"
 
 	config=$(mktemp "${TMPDIR:-/tmp}/tunless-nfpm.XXXXXX")
 	NFPM_ARCH="$arch" VERSION="$version" BINARY="$binary" \

@@ -114,6 +114,13 @@ SHA-256 `62a86d62c89f1f331127948d31ab0d1398ddc7526d0768a7ac6452f34f9b0b5d`.
 This digest is evidence from the development input used for the check, not a
 published candidate checksum.
 
+The release check generates separate amd64 and arm64 OCI SPDX documents rather
+than letting the scanner silently select its host architecture. Syft's random
+document namespace and wall-clock creation time are replaced with a stable
+release namespace and `SOURCE_DATE_EPOCH`; package, file, relationship, and
+checksum evidence is not modified. Both binary SBOMs and both per-platform OCI
+SBOMs must now match across the two isolated candidate builds.
+
 `scripts/benchmark-wan.sh` is the reproducible download harness. `curl` timing
 includes DNS/TCP/TLS as applicable. Transparent `time_connect` ends at the
 local redirect listener, so TTFB—not connect time—is the comparable latency
