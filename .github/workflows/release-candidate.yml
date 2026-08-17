@@ -32,6 +32,7 @@ jobs:
       - name: Build and test release candidate
         run: ./scripts/release-check.sh "${{ inputs.version }}"
       - name: Attest candidate artifacts
+        if: github.event.repository.visibility == 'public'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: dist/*
