@@ -1,0 +1,31 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class=NetService
+ClassGuid={4D36E974-E325-11CE-BFC1-08002BE10318}
+Provider=%Provider%
+DriverVer=08/17/2026,1.0.0.0
+CatalogFile=tunless.cat
+PnpLockdown=1
+[DefaultInstall.NTamd64]
+CopyFiles=DriverCopy
+[DefaultInstall.NTamd64.Services]
+AddService=tunless,,ServiceInstall
+[ServiceInstall]
+DisplayName=%Service%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\tunless.sys
+Security="D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+[DestinationDirs]
+DriverCopy=12
+[DriverCopy]
+tunless.sys
+[SourceDisksNames]
+1=%DiskName%,,,
+[SourceDisksFiles]
+tunless.sys=1
+[Strings]
+Provider="tunless"
+Service="tunless WFP redirect driver"
+DiskName="tunless installation media"
