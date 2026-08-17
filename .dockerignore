@@ -3,5 +3,6 @@
 build
 macos/.build
 macos/Tunless.xcodeproj
+macos/DerivedData
 tunless
 *.log

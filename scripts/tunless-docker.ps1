@@ -55,9 +55,11 @@ if ($env:TUNLESS_DOCKER_BUILD -ne 'never') {
 }
 
 $desktopUpstream = $upstream
-$desktopUpstream = $desktopUpstream -replace '^127\.0\.0\.1(?=:)', 'host.docker.internal'
-$desktopUpstream = $desktopUpstream -replace '^localhost(?=:)', 'host.docker.internal'
-$desktopUpstream = $desktopUpstream -replace '^\[::1\](?=:)', 'host.docker.internal'
+if ($upstream -match '^(socks5h?://(?:[^/@]+@)?)(?:127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)$') {
+    $desktopUpstream = $Matches[1] + 'host.docker.internal' + $Matches[2]
+} elseif ($upstream -match '^(?:127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)$') {
+    $desktopUpstream = 'host.docker.internal' + $Matches[1]
+}
 $bridgeProcess = $null
 $bridgeDirectory = $null
 if ($env:TUNLESS_DOCKER_BRIDGE -ne 'never' -and $upstream -match '^(socks5h?://([^/@]+@)?)?(127\.0\.0\.1|localhost|\[::1\]):') {
@@ -86,8 +88,24 @@ if ($env:TUNLESS_DOCKER_BRIDGE -ne 'never' -and $upstream -match '^(socks5h?://(
         '--backend', 'loopback', '--listen', "127.0.0.1:$bridgePort",
         '--upstream', $upstream, '--log-level', 'warn'
     ) -NoNewWindow -PassThru
-    Start-Sleep -Milliseconds 200
-    if ($bridgeProcess.HasExited) { throw 'The Docker Desktop host SOCKS bridge stopped during startup.' }
+	$bridgeReady = $false
+	for ($attempt = 0; $attempt -lt 20; $attempt++) {
+		if ($bridgeProcess.HasExited) { break }
+		$probe = [Net.Sockets.TcpClient]::new()
+		try {
+			$task = $probe.ConnectAsync([Net.IPAddress]::Loopback, $bridgePort)
+			if ($task.Wait(100) -and $probe.Connected) { $bridgeReady = $true; break }
+		} catch {
+			# The listener may still be starting.
+		} finally {
+			$probe.Dispose()
+		}
+		Start-Sleep -Milliseconds 50
+	}
+	if (-not $bridgeReady) {
+		if (-not $bridgeProcess.HasExited) { Stop-Process -Id $bridgeProcess.Id -Force }
+		throw 'The Docker Desktop host SOCKS bridge did not become ready.'
+	}
     $desktopUpstream = "host.docker.internal:$bridgePort"
     Write-Host "Bridging Docker Desktop TCP/UDP to host upstream $upstream"
 }

@@ -112,9 +112,12 @@ else
 		echo "Docker controller image is unavailable: $image" >&2
 		exit 1
 	fi
-	desktop_upstream=${upstream//127.0.0.1/host.docker.internal}
-	desktop_upstream=${desktop_upstream//localhost/host.docker.internal}
-	desktop_upstream=${desktop_upstream//\[::1\]/host.docker.internal}
+	desktop_upstream=$upstream
+	if [[ "$upstream" =~ ^(socks5h?://([^/@]+@)?)(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)$ ]]; then
+		desktop_upstream=${BASH_REMATCH[1]}host.docker.internal${BASH_REMATCH[4]}
+	elif [[ "$upstream" =~ ^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)$ ]]; then
+		desktop_upstream=host.docker.internal${BASH_REMATCH[2]}
+	fi
 	if [[ $(uname -s) == Darwin && ${TUNLESS_DOCKER_BRIDGE:-auto} != never ]] &&
 		[[ "$upstream" =~ ^(socks5h?://([^/@]+@)?)?(127\.0\.0\.1|localhost|\[::1\]): ]]; then
 		if [[ -n ${TUNLESS_DOCKER_BRIDGE_BINARY:-} ]]; then
@@ -140,8 +143,19 @@ else
 			bridge_port=$((35000 + (($$ + attempt) % 20000)))
 			"$bridge_binary" --backend loopback --listen "127.0.0.1:$bridge_port" --upstream "$upstream" --log-level warn &
 			bridge_job=$!
-			sleep 0.1
-			if kill -0 "$bridge_job" 2>/dev/null; then break; fi
+			bridge_ready=false
+			for _ in {1..20}; do
+				if ! kill -0 "$bridge_job" 2>/dev/null; then break; fi
+				if { exec 9<>"/dev/tcp/127.0.0.1/$bridge_port"; } 2>/dev/null; then
+					exec 9>&-
+					exec 9<&-
+					bridge_ready=true
+					break
+				fi
+				sleep 0.05
+			done
+			if [[ "$bridge_ready" == true ]]; then break; fi
+			kill "$bridge_job" 2>/dev/null || true
 			wait "$bridge_job" 2>/dev/null || true
 			bridge_job=
 		done
