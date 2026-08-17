@@ -214,6 +214,19 @@ else
 		--listen 127.0.0.1:0 &
 	relay_job=$!
 fi
+
+# The native controller already watches both the target cgroup and network
+# namespace and exits when either identity disappears. A concurrent `podman
+# wait` can hold Podman's state lock after a forced removal, preventing the
+# watcher from discovering a replacement container with the same name.
+if [[ "$mode" == native && ${engine##*/} == podman ]]; then
+	set +e
+	wait "$relay_job"
+	status=$?
+	set -e
+	exit "$status"
+fi
+
 "$engine" wait "$container" >/dev/null &
 waiter_job=$!
 
