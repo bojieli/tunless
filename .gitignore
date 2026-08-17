@@ -1,4 +1,5 @@
 /.DS_Store
+/dist/
 /tunless
 /macos/.build/
 /macos/Tunless.xcodeproj/
@@ -10,3 +11,4 @@ xcuserdata/
 *.sys
 *.cat
 *.exe
+*.test

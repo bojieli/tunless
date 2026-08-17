@@ -1,6 +1,7 @@
 .git
 .build
 build
+dist
 macos/.build
 macos/Tunless.xcodeproj
 macos/DerivedData

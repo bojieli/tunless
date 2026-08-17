@@ -1,0 +1,44 @@
+name: Release candidate dry run
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Candidate semantic version without a leading v
+        required: true
+        default: 0.1.0-rc.1
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    name: Build without publishing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: 1.26.6
+          cache: true
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Build and test release candidate
+        run: ./scripts/release-check.sh "${{ inputs.version }}"
+      - name: Attest candidate artifacts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: dist/*
+      - name: Upload candidate for review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: tunless-${{ inputs.version }}-unpublished
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,57 @@
+name: tunless
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: Tunless contributors <bojieli@users.noreply.github.com>
+description: Socket-layer transparent SOCKS5 capture for Linux
+vendor: Tunless contributors
+homepage: https://github.com/bojieli/tunless
+license: MIT
+contents:
+  - src: ${BINARY}
+    dst: /usr/bin/tunless
+    file_info:
+      mode: 0755
+  - src: packaging/systemd/tunless-package.service
+    dst: /usr/lib/systemd/system/tunless.service
+    file_info:
+      mode: 0644
+  - src: packaging/systemd/tunless-container-watch.service
+    dst: /usr/lib/systemd/system/tunless-container-watch.service
+    file_info:
+      mode: 0644
+  - src: scripts/tunless-docker.sh
+    dst: /usr/libexec/tunless/tunless-docker.sh
+    file_info:
+      mode: 0755
+  - src: scripts/tunless-docker-watch.sh
+    dst: /usr/libexec/tunless/tunless-docker-watch.sh
+    file_info:
+      mode: 0755
+  - src: scripts/tunless-podman.sh
+    dst: /usr/libexec/tunless/tunless-podman.sh
+    file_info:
+      mode: 0755
+  - src: scripts/tunless-podman-watch.sh
+    dst: /usr/libexec/tunless/tunless-podman-watch.sh
+    file_info:
+      mode: 0755
+  - src: scripts/tunless-cri.sh
+    dst: /usr/libexec/tunless/tunless-cri.sh
+    file_info:
+      mode: 0755
+  - src: packaging/tunless.env.example
+    dst: /etc/tunless.env
+    type: config|noreplace
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/doc/tunless/LICENSE
+    file_info:
+      mode: 0644
+scripts:
+  postinstall: packaging/nfpm/postinstall.sh
+  preremove: packaging/nfpm/preremove.sh
+  postremove: packaging/nfpm/postremove.sh

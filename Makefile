@@ -3,7 +3,7 @@ DESTDIR ?=
 VERSION ?= dev
 SYSTEMD_UNIT_DIR ?= /usr/lib/systemd/system
 
-.PHONY: all build test check install uninstall
+.PHONY: all build test check check-bpf stress release-candidate install uninstall
 
 all: build
 
@@ -18,6 +18,15 @@ check: test
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/tunless-linux-amd64 ./cmd/tunless
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/tunless-windows-amd64.exe ./cmd/tunless
 	cd macos && swift test
+
+check-bpf:
+	./scripts/verify-bpf.sh
+
+stress:
+	./scripts/stress.sh
+
+release-candidate:
+	./scripts/release-check.sh '$(VERSION)'
 
 install: build
 	install -d '$(DESTDIR)$(PREFIX)/bin'
