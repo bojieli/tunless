@@ -284,9 +284,9 @@ func TestCancellationMidTransfer(t *testing.T) {
 	_, _ = conn.Write(make([]byte, 64<<10))
 	s.close()
 	_ = conn.SetDeadline(time.Now().Add(time.Second))
-	_, err := conn.Read(make([]byte, 1))
-	if err == nil {
-		t.Fatal("connection remained open after cancellation")
+	_, err := io.Copy(io.Discard, conn)
+	if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatal("connection did not close after cancellation")
 	}
 	_ = conn.Close()
 }
