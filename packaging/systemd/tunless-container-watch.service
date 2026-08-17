@@ -1,0 +1,30 @@
+[Unit]
+Description=TUN-less transparent capture for labelled application containers
+Documentation=https://github.com/bojieli/tunless/blob/main/docs/CONTAINERS.md
+After=network-online.target docker.service podman.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=TUNLESS_UPSTREAM=127.0.0.1:7890
+Environment=TUNLESS_CONTAINER_LABEL=com.bojieli.tunless
+Environment=TUNLESS_BINARY=/usr/bin/tunless
+Environment=TUNLESS_DOCKER_MODE=native
+EnvironmentFile=-/etc/tunless.env
+ExecStart=/usr/libexec/tunless/tunless-docker-watch.sh --log-level=info
+Restart=on-failure
+RestartSec=2
+User=root
+Slice=system.slice
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_RESOURCE
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_RESOURCE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelModules=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

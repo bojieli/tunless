@@ -9,7 +9,8 @@ Runs a host Tunless process whose redirect listeners live in CONTAINER's
 network namespace and whose eBPF programs attach to that container's cgroup.
 The container itself needs no proxy variables, capabilities, or route changes.
 
-On native Linux, set TUNLESS_BINARY to select the host binary. On Docker
+Set TUNLESS_CONTAINER_ENGINE=podman for rootful Podman on native Linux. On
+native Linux, set TUNLESS_BINARY to select the host binary. On Docker
 Desktop for macOS/Windows, TUNLESS_DOCKER_IMAGE selects the privileged Linux
 controller image. TUNLESS_UPSTREAM is honored, or pass --upstream explicitly.
 For a loopback host upstream, the macOS helper automatically starts a local
@@ -22,14 +23,19 @@ EOF
 container=$1
 shift
 tunless_args=("$@")
+engine=${TUNLESS_CONTAINER_ENGINE:-docker}
+command -v "$engine" >/dev/null 2>&1 || {
+	echo "container engine is unavailable: $engine" >&2
+	exit 1
+}
 
-container_id=$(docker inspect --format '{{.Id}}' "$container")
+container_id=$("$engine" inspect --format '{{.Id}}' "$container")
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 refresh_pid() {
 	local running current
-	running=$(docker inspect --format '{{.State.Running}}' "$container")
-	current=$(docker inspect --format '{{.State.Pid}}' "$container")
+	running=$("$engine" inspect --format '{{.State.Running}}' "$container")
+	current=$("$engine" inspect --format '{{.State.Pid}}' "$container")
 	[[ "$running" == true && "$current" =~ ^[1-9][0-9]*$ ]] || {
 		echo "container is not running: $container" >&2
 		exit 1
@@ -59,6 +65,22 @@ fi
 	echo "TUNLESS_DOCKER_MODE must be auto, native, or desktop" >&2
 	exit 1
 }
+if [[ "$mode" == desktop && ${engine##*/} != docker ]]; then
+	echo "desktop mode requires Docker; $engine is supported in native mode only" >&2
+	exit 1
+fi
+if [[ "$mode" == native ]]; then
+	rootless=false
+	if [[ ${engine##*/} == podman ]]; then
+		[[ $("$engine" info --format '{{.Host.Security.Rootless}}' 2>/dev/null || true) == true ]] && rootless=true
+	elif "$engine" info --format '{{json .SecurityOptions}}' 2>/dev/null | grep -qi rootless; then
+		rootless=true
+	fi
+	if [[ "$rootless" == true ]]; then
+		echo "rootless $engine cannot attach host cgroup eBPF or enter another network namespace; use a rootful engine" >&2
+		exit 1
+	fi
+fi
 
 relay_job=
 waiter_job=
@@ -69,9 +91,9 @@ cleanup() {
 	trap - EXIT HUP INT TERM
 	if [[ -n "$waiter_job" ]]; then kill "$waiter_job" 2>/dev/null || true; fi
 	if [[ "$mode" == desktop && -n "$controller_name" ]]; then
-		docker stop --time 2 "$controller_name" >/dev/null 2>&1 || true
+		"$engine" stop --time 2 "$controller_name" >/dev/null 2>&1 || true
 	elif [[ -n "$relay_job" ]] && kill -0 "$relay_job" 2>/dev/null; then
-		sudo kill "$relay_job" 2>/dev/null || true
+		if [[ $(id -u) -eq 0 ]]; then kill "$relay_job" 2>/dev/null || true; else sudo kill "$relay_job" 2>/dev/null || true; fi
 	fi
 	if [[ -n "$bridge_job" ]]; then kill "$bridge_job" 2>/dev/null || true; fi
 	if [[ -n "$relay_job" ]]; then wait "$relay_job" 2>/dev/null || true; fi
@@ -82,7 +104,10 @@ cleanup() {
 		rmdir "$bridge_dir" 2>/dev/null || true
 	fi
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ "$mode" == native ]]; then
 	refresh_pid
@@ -97,7 +122,9 @@ if [[ "$mode" == native ]]; then
 		echo "tunless binary is not executable: $binary" >&2
 		exit 1
 	}
-	sudo "$binary" "${tunless_args[@]}" \
+	privilege=(sudo)
+	if [[ $(id -u) -eq 0 ]]; then privilege=(); fi
+	"${privilege[@]}" "$binary" "${tunless_args[@]}" \
 		--upstream "$upstream" \
 		--backend linux \
 		--container-pid "$pid" \
@@ -107,8 +134,8 @@ if [[ "$mode" == native ]]; then
 else
 	image=${TUNLESS_DOCKER_IMAGE:-tunless:local}
 	if [[ ${TUNLESS_DOCKER_BUILD:-auto} != never ]]; then
-		docker build --quiet --tag "$image" --file "$repository_root/packaging/docker/Dockerfile" "$repository_root" >/dev/null
-	elif ! docker image inspect "$image" >/dev/null 2>&1; then
+		"$engine" build --quiet --tag "$image" --file "$repository_root/packaging/docker/Dockerfile" "$repository_root" >/dev/null
+	elif ! "$engine" image inspect "$image" >/dev/null 2>&1; then
 		echo "Docker controller image is unavailable: $image" >&2
 		exit 1
 	fi
@@ -168,7 +195,7 @@ else
 	fi
 	refresh_pid
 	controller_name=tunless-${container_id:0:12}-$$
-	docker run --rm \
+	"$engine" run --rm \
 		--name "$controller_name" \
 		--label com.bojieli.tunless.container="$container_id" \
 		--privileged \
@@ -184,7 +211,7 @@ else
 		--listen 127.0.0.1:0 &
 	relay_job=$!
 fi
-docker wait "$container" >/dev/null &
+"$engine" wait "$container" >/dev/null &
 waiter_job=$!
 
 while kill -0 "$relay_job" 2>/dev/null && kill -0 "$waiter_job" 2>/dev/null; do

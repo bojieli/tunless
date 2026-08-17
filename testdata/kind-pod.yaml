@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tunless-integration
+spec:
+  restartPolicy: Never
+  containers:
+    - name: application
+      image: python:3.11-slim
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "300"]

@@ -16,8 +16,21 @@ if ($engineOS -eq 'windows') {
 }
 if ($engineOS -ne 'linux') { throw "Unsupported Docker engine OS: $engineOS" }
 
+# Build the shared Linux controller once before jobs fan out. Child jobs inherit
+# the environment and only inspect the image, avoiding concurrent rebuilds.
+if ($env:TUNLESS_DOCKER_BUILD -ne 'never') {
+    $repositoryRoot = Split-Path -Parent $PSScriptRoot
+    $image = if ($env:TUNLESS_DOCKER_IMAGE) { $env:TUNLESS_DOCKER_IMAGE } else { 'tunless:local' }
+    & docker build --quiet --tag $image --file (Join-Path $repositoryRoot 'packaging/docker/Dockerfile') $repositoryRoot | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to build the Tunless Docker controller image.' }
+    $env:TUNLESS_DOCKER_BUILD = 'never'
+}
+
 $jobs = @{}
-$requiredLabel = $env:TUNLESS_DOCKER_LABEL
+$requiredLabel = if ($env:TUNLESS_CONTAINER_LABEL) { $env:TUNLESS_CONTAINER_LABEL } else { $env:TUNLESS_DOCKER_LABEL }
+if ($requiredLabel -and $requiredLabel -notmatch '^[A-Za-z0-9_.:/-]+$') {
+    throw "Docker label contains unsupported characters: $requiredLabel"
+}
 Write-Host 'Watching Docker containers for transparent Tunless attachment.'
 if ($requiredLabel) { Write-Host "Requiring Docker label: $requiredLabel" }
 

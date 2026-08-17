@@ -1,0 +1,11 @@
+services:
+  development:
+    image: python:3.11-slim
+    command: ["sleep", "infinity"]
+    labels:
+      com.bojieli.tunless: "true"
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: ""

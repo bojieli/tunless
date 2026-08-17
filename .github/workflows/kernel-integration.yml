@@ -1,0 +1,79 @@
+name: Privileged Linux integration
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      run_kernel_5_10:
+        description: Run on a registered self-hosted kernel 5.10 runner
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+  SING_BOX_VERSION: v1.13.18
+
+jobs:
+  current-kernel:
+    name: Current kernel eBPF and WAN
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: 1.26.6
+          cache: true
+      - name: Install integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang-14 gcc iproute2 linux-tools-common podman
+          go install "github.com/sagernet/sing-box/cmd/sing-box@${SING_BOX_VERSION}"
+          curl --fail --location --retry 5 --output /tmp/kind https://github.com/kubernetes-sigs/kind/releases/download/v0.30.0/kind-linux-amd64
+          echo '517ab7fc89ddeed5fa65abf71530d90648d9638ef0c4cde22c2c11f8097b8889  /tmp/kind' | sha256sum --check -
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+      - name: Verify embedded BPF object
+        run: ./scripts/verify-bpf.sh
+      - name: Build release binary
+        run: make build VERSION="ci-${GITHUB_SHA}"
+      - name: Run privileged WAN and recovery suite
+        run: sudo --preserve-env=PATH env SINGBOX_BINARY="$(go env GOPATH)/bin/sing-box" ./scripts/integration-linux.sh
+      - name: Run multi-container lifecycle suite
+        run: sudo --preserve-env=PATH env SINGBOX_BINARY="$(go env GOPATH)/bin/sing-box" ./scripts/integration-containers.sh
+      - name: Run rootful Podman lifecycle suite
+        run: sudo --preserve-env=PATH env TUNLESS_CONTAINER_ENGINE=podman SINGBOX_BINARY="$(go env GOPATH)/bin/sing-box" ./scripts/integration-containers.sh
+      - name: Run containerd CRI lifecycle suite
+        run: env SINGBOX_BINARY="$(go env GOPATH)/bin/sing-box" ./scripts/integration-cri-kind.sh
+      - name: Assert teardown removed Tunless links
+        if: always()
+        run: |
+          if sudo bpftool link show 2>/dev/null | grep -q tunless; then
+            sudo bpftool link show
+            exit 1
+          fi
+
+  kernel-5-10:
+    name: Kernel 5.10 eBPF and WAN
+    if: github.event_name == 'workflow_dispatch' && inputs.run_kernel_5_10
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: 1.26.6
+          cache: true
+      - name: Enforce kernel floor runner
+        run: test "$(uname -r | cut -d. -f1-2)" = 5.10
+      - name: Verify object, build, and run suite
+        run: |
+          ./scripts/verify-bpf.sh
+          make build VERSION="ci-${GITHUB_SHA}"
+          sudo --preserve-env=PATH env SINGBOX_BINARY="$(command -v sing-box)" ./scripts/integration-linux.sh
