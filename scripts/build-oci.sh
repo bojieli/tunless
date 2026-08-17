@@ -13,7 +13,12 @@ mkdir -p "$output"
 	echo "release binaries are missing from: $binary_root" >&2
 	exit 2
 }
-epoch=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+epoch=${SOURCE_DATE_EPOCH:-$(git -c safe.directory="$repository_root" log -1 --format=%ct)}
+[[ $epoch =~ ^[0-9]+$ ]] || {
+	echo "SOURCE_DATE_EPOCH must be an integer Unix timestamp" >&2
+	exit 2
+}
 builder=${TUNLESS_BUILDX_BUILDER:-}
 created_builder=
 cleanup() {

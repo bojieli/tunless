@@ -8,6 +8,12 @@ cd "$repository_root"
 output=${TUNLESS_RELEASE_OUTPUT:-dist}
 builder=${TUNLESS_RELEASE_BUILDER:-tunless-release-builder:local}
 export TUNLESS_RELEASE_BUILDER=$builder
+source_date_epoch=${SOURCE_DATE_EPOCH:-$(git -c safe.directory="$repository_root" log -1 --format=%ct)}
+[[ $source_date_epoch =~ ^[0-9]+$ ]] || {
+	echo "SOURCE_DATE_EPOCH must be an integer Unix timestamp" >&2
+	exit 2
+}
+export SOURCE_DATE_EPOCH=$source_date_epoch
 
 if [[ ${TUNLESS_ALLOW_DIRTY_RELEASE:-0} != 1 ]] && [[ -n $(git status --porcelain=v1 --untracked-files=all) ]]; then
 	echo "release candidates must be built from a clean working tree (set TUNLESS_ALLOW_DIRTY_RELEASE=1 only for local development)" >&2
@@ -31,11 +37,13 @@ fi
 
 docker build --progress plain --file packaging/release/Dockerfile --tag "$builder" .
 docker run --rm --hostname tunless-release-builder \
+	--env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
 	-v "$repository_root:/src" "$builder" "$version" "$output"
 ./scripts/build-oci.sh "$version" "$output"
 
 repro_output=$output/.reproducibility
 docker run --rm --hostname tunless-release-builder \
+	--env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
 	-v "$repository_root:/src" "$builder" "$version" "$repro_output"
 ./scripts/build-oci.sh "$version" "$repro_output" "$repro_output"
 ./scripts/verify-release-reproducible.sh "$version" "$output" "$repro_output"

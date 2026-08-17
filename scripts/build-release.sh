@@ -18,7 +18,11 @@ esac
 mkdir -p "$output"
 cp THIRD_PARTY_NOTICES.md "$output/"
 
-epoch=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
+epoch=${SOURCE_DATE_EPOCH:-$(git -c safe.directory="$repository_root" log -1 --format=%ct)}
+[[ $epoch =~ ^[0-9]+$ ]] || {
+	echo "SOURCE_DATE_EPOCH must be an integer Unix timestamp" >&2
+	exit 2
+}
 export SOURCE_DATE_EPOCH=$epoch
 export TZ=UTC
 
