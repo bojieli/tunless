@@ -1,0 +1,7 @@
+.git
+.build
+build
+macos/.build
+macos/Tunless.xcodeproj
+tunless
+*.log
