@@ -1,5 +1,7 @@
 # tunless
 
+[![CI](https://github.com/bojieli/tunless/actions/workflows/ci.yml/badge.svg)](https://github.com/bojieli/tunless/actions/workflows/ci.yml)
+
 **TUN-less transparent proxying. No fake IP, no route hijack, no second TCP stack.**
 
 `tunless` captures local TCP and UDP flows at the socket layer and hands them to
@@ -256,10 +258,16 @@ upstream to accept username/password negotiation.
 
 ## Development
 
+Source builds require Go 1.25 or newer. The module toolchain directive and
+container build pin Go 1.26.6 so released binaries do not silently inherit
+known standard-library vulnerabilities from an older local compiler.
+
 ```console
 go test -race ./...
 go vet ./...
 cd macos && swift test
+sudo TUNLESS_BINARY=./tunless SINGBOX_BINARY=sing-box \
+  ./scripts/integration-linux.sh
 ./scripts/benchmark-wan.sh
 ```
 
@@ -267,6 +275,9 @@ The committed eBPF object is built from
 [`backend/linux/bpf/tunless.bpf.c`](backend/linux/bpf/tunless.bpf.c). Run the
 benchmark on the Linux capture host and set `TUNLESS_PID`,
 `TUNLESS_PROXY_PID`, `TUNLESS_CGROUP`, and `TUNLESS_UPSTREAM` as needed.
+Every push and pull request runs the race suite, vet, Linux/Windows builds,
+Swift tests, Docker build, shell parsing, and `govulncheck`. Security reports
+should follow [`SECURITY.md`](SECURITY.md).
 
 This project is local socket capture, not an IP-forwarding proxy. Container
 support attaches inside the container's cgroup and network namespace; Tunless

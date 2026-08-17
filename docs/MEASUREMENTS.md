@@ -19,6 +19,40 @@ qualification; an untested gate is not called complete.
 - WAN object: OVH VIN 100 MiB static test file over IPv4 and HTTP/1.1. Five
   runs per mode, with mode order rotated each run.
 
+## Follow-up hardening validation
+
+After the initial measurements, the build toolchain was pinned to Go 1.26.6
+and the direct dependencies were updated to cilium/ebpf 0.22.0, x/net 0.58.0,
+and x/sys 0.47.0. `govulncheck ./...` initially found one reachable x/net DNS
+parser vulnerability plus eleven reachable standard-library findings from the
+older local compiler. The same scan reports `No vulnerabilities found` with
+the pinned toolchain and updated modules. `staticcheck`, `actionlint`, the Go
+race suite, vet, Linux/Windows cross-builds, seven Swift tests, and the unsigned
+Release app/system-extension build all pass.
+
+The new `scripts/integration-linux.sh` was then run as root on RTX-PRO with the
+updated x86-64 binary. A captured, unmodified curl completed real WAN TLS and
+reported `155.103.252.95`. The harness kept one connected UDP socket open,
+killed and restarted sing-box, and recovered that same socket on its second
+retry. Five UDP flow events were observed across the run, and teardown left
+zero Tunless BPF links. This specifically validates preservation of the kernel
+socket correlation needed to create a new SOCKS UDP association after an
+upstream failure.
+
+On macOS Docker Desktop, the updated controller image and host bridge captured
+an unmodified `python:3.11-slim` container. WAN TLS reported the Mac proxy exit
+`23.135.236.244`; a UDP DNS query returned 45 bytes with its original
+transaction ID `0x7200`; three flow events were observed. The second run used
+an active TCP readiness probe for the temporary bridge and reduced the Docker
+build context from 99.09 MB of Xcode artifacts to 7.56 kB compressed.
+
+Finally, a fresh Debian 11 Lima/QEMU ARM64 guest revalidated the dependency
+update on kernel `5.10.0-46-cloud-arm64` (`5.10.262-1`). The shipped BPF object
+loaded through cilium/ebpf 0.22.0; captured WAN TLS and UDP DNS completed with
+three flow events; and a new connection in the same cgroup succeeded after
+Tunless stopped. The disposable guest was deleted after the run while Lima's
+download cache was retained.
+
 `scripts/benchmark-wan.sh` is the reproducible download harness. `curl` timing
 includes DNS/TCP/TLS as applicable. Transparent `time_connect` ends at the
 local redirect listener, so TTFB—not connect time—is the comparable latency
