@@ -40,7 +40,7 @@ docker run --rm --hostname tunless-release-builder \
 ./scripts/build-oci.sh "$version" "$repro_output" "$repro_output"
 ./scripts/verify-release-reproducible.sh "$version" "$output" "$repro_output"
 
-oci="$repository_root/$output/tunless_${version}_oci.tar"
+oci="/src/$output/tunless_${version}_oci.tar"
 docker run --rm --entrypoint syft -v "$repository_root:/src" "$builder" \
 	"oci-archive:$oci" -o "spdx-json=/src/$output/tunless_${version}_oci.spdx.json" >/dev/null
 
