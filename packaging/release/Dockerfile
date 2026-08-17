@@ -25,5 +25,14 @@ RUN case "$TARGETARCH" in \
     && tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft \
     && rm -f /tmp/nfpm.tar.gz /tmp/syft.tar.gz
 
+WORKDIR /tmp/tunless-module
+COPY go.mod go.sum ./
+RUN success= \
+    && for attempt in 1 2 3 4 5; do \
+         if go mod download && go mod verify; then success=1; break; fi; \
+         sleep "$((attempt * 2))"; \
+       done \
+    && test -n "$success"
+
 WORKDIR /src
 ENTRYPOINT ["/src/scripts/build-release.sh"]
