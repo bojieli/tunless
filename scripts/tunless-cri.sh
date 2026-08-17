@@ -54,7 +54,7 @@ for ((index = 0; index < ${#args[@]}; index++)); do
 done
 
 relay_pid=
-# shellcheck disable=SC2329 # Invoked by the signal/exit trap below.
+# shellcheck disable=SC2317,SC2329 # Invoked indirectly by the signal/exit trap below.
 cleanup() {
 	trap - EXIT HUP INT TERM
 	if [[ -n "$relay_pid" ]]; then kill "$relay_pid" 2>/dev/null || true; wait "$relay_pid" 2>/dev/null || true; fi
