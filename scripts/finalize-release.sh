@@ -9,4 +9,4 @@ output=${1:-dist}
 
 find "$output" -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
 	sort -z | xargs -0 sha256sum | sed "s#  $output/#  #" >"$output/SHA256SUMS"
-sha256sum --check "$output/SHA256SUMS"
+(cd "$output" && sha256sum --check SHA256SUMS)
