@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/tunless-icon.png" alt="Tunless icon" width="160">
+</p>
+
 # tunless
 
 [![CI](https://github.com/bojieli/tunless/actions/workflows/ci.yml/badge.svg)](https://github.com/bojieli/tunless/actions/workflows/ci.yml)
