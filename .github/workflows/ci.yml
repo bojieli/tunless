@@ -28,6 +28,9 @@ jobs:
         with:
           go-version-input: 1.26.6
           go-package: ./...
+          check-latest: false
+          cache: false
+          repo-checkout: false
 
   macos:
     name: macOS extension
