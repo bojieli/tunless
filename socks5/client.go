@@ -27,6 +27,45 @@ type MetadataRegistry interface {
 	Register(uint16, tunless.ProcessInfo) func()
 }
 
+type CheckResult struct {
+	TCP      bool           `json:"tcp_connect"`
+	UDP      bool           `json:"udp_associate"`
+	UDPRelay netip.AddrPort `json:"udp_relay"`
+}
+
+// Check authenticates to the configured server, opens a TCP CONNECT to target,
+// and verifies that the server grants a UDP ASSOCIATE. It does not retain
+// either association or send application payload.
+func (c *Client) Check(ctx context.Context, target netip.AddrPort) (CheckResult, error) {
+	if !target.IsValid() || target.Port() == 0 {
+		return CheckResult{}, errors.New("SOCKS5 check target is invalid")
+	}
+	result := CheckResult{}
+	tcp, _, cleanupTCP, err := c.connect(ctx, 1, target, "", c.Username, c.Password, tunless.ProcessInfo{}, nil)
+	if err != nil {
+		return result, fmt.Errorf("SOCKS5 TCP CONNECT check: %w", err)
+	}
+	result.TCP = true
+	cleanupTCP()
+	_ = tcp.Close()
+
+	control, relay, cleanupUDP, err := c.connect(ctx, 3, netip.AddrPortFrom(netip.IPv4Unspecified(), 0), "", c.Username, c.Password, tunless.ProcessInfo{}, nil)
+	if err != nil {
+		return result, fmt.Errorf("SOCKS5 UDP ASSOCIATE check: %w", err)
+	}
+	defer control.Close()
+	defer cleanupUDP()
+	if remote, ok := control.RemoteAddr().(*net.TCPAddr); ok {
+		relay = reachableRelayAddress(relay, remote.AddrPort())
+	}
+	if !relay.IsValid() || relay.Port() == 0 {
+		return result, errors.New("SOCKS5 check returned an invalid UDP relay")
+	}
+	result.UDP = true
+	result.UDPRelay = relay
+	return result, nil
+}
+
 func (c *Client) register(conn net.Conn, process tunless.ProcessInfo) func() {
 	if c.Registry == nil {
 		return func() {}

@@ -44,6 +44,17 @@ func (b *Backend) Addr() net.Addr {
 	return b.listener.Addr()
 }
 
+func (b *Backend) Diagnostics() tunless.BackendDiagnostics {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	started := b.listener != nil
+	listeners := 0
+	if started {
+		listeners = 1
+	}
+	return tunless.BackendDiagnostics{Name: "loopback", Started: started, Listeners: listeners}
+}
+
 func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

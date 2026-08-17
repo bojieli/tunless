@@ -230,3 +230,48 @@ func TestReachableRelayAddress(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckValidatesTCPAndUDPCommands(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	commands := make(chan byte, 2)
+	go func() {
+		for range 2 {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			func() {
+				defer conn.Close()
+				var greeting [2]byte
+				if _, acceptErr = io.ReadFull(conn, greeting[:]); acceptErr != nil {
+					return
+				}
+				methods := make([]byte, greeting[1])
+				_, _ = io.ReadFull(conn, methods)
+				_, _ = conn.Write([]byte{5, 0})
+				var request [3]byte
+				if _, acceptErr = io.ReadFull(conn, request[:]); acceptErr != nil {
+					return
+				}
+				commands <- request[1]
+				_, _ = readAddr(context.Background(), conn)
+				_, _ = conn.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0xcf, 0x08})
+			}()
+		}
+	}()
+	client := &Client{Address: listener.Addr().String()}
+	result, err := client.Check(context.Background(), netip.MustParseAddrPort("192.0.2.1:443"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.TCP || !result.UDP || result.UDPRelay.Port() != 53000 {
+		t.Fatalf("unexpected check result: %+v", result)
+	}
+	if first, second := <-commands, <-commands; first != 1 || second != 3 {
+		t.Fatalf("commands = %d, %d", first, second)
+	}
+}

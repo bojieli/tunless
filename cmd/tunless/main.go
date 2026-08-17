@@ -26,6 +26,7 @@ import (
 	"github.com/bojieli/tunless/dnsobserver"
 	"github.com/bojieli/tunless/metadata"
 	"github.com/bojieli/tunless/socks5"
+	statusapi "github.com/bojieli/tunless/status"
 )
 
 var version = "dev"
@@ -43,10 +44,11 @@ func main() {
 }
 
 func run() error {
-	var upstream, listen, logLevel, backendName, cgroupPath, networkNamespace, containerID, dnsListen, dnsUpstream, metadataSocket string
-	var showVersion bool
+	var upstream, listen, logLevel, backendName, cgroupPath, networkNamespace, containerID, dnsListen, dnsUpstream, metadataSocket, statusListen string
+	var showVersion, check bool
 	var metadataUsername bool
-	var containerPID int
+	var containerPID, maxFlows int
+	var checkTarget string
 	var containerDNS []string
 	var includeProc, excludeProc, includeDst, excludeDst stringsFlag
 	flag.StringVar(&upstream, "upstream", os.Getenv("TUNLESS_UPSTREAM"), "SOCKS5 upstream, e.g. 127.0.0.1:7890 or socks5://user:pass@host:port")
@@ -55,13 +57,17 @@ func run() error {
 	flag.StringVar(&cgroupPath, "cgroup", os.Getenv("TUNLESS_CGROUP"), "cgroup v2 path captured by the Linux backend")
 	flag.StringVar(&networkNamespace, "network-namespace", "", "optional Linux network namespace path for namespace-local redirect listeners")
 	flag.IntVar(&containerPID, "container-pid", 0, "optional Linux container init PID; derives its cgroup and network namespace")
-	flag.StringVar(&containerID, "container-id", "", "expected Docker container ID; protects --container-pid from PID reuse")
+	flag.StringVar(&containerID, "container-id", "", "expected container ID; protects --container-pid from PID reuse")
 	flag.StringVar(&dnsListen, "dns-listen", "", "optional real-answer DNS observer listen address")
 	flag.StringVar(&dnsUpstream, "dns-upstream", "1.1.1.1:53", "resolver used by the optional DNS observer")
 	flag.StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error")
 	flag.BoolVar(&showVersion, "version", false, "print version")
+	flag.BoolVar(&check, "check", false, "run machine-readable preflight checks without starting capture")
+	flag.StringVar(&checkTarget, "check-target", "1.1.1.1:443", "numeric TCP destination used by --check SOCKS5 CONNECT")
 	flag.BoolVar(&metadataUsername, "metadata-username", false, "encode process identity in the SOCKS5 username")
 	flag.StringVar(&metadataSocket, "metadata-socket", "", "optional Unix socket exposing process metadata by SOCKS source port")
+	flag.StringVar(&statusListen, "status-listen", "", "optional loopback HTTP health/status address, e.g. 127.0.0.1:6060")
+	flag.IntVar(&maxFlows, "max-flows", 4096, "maximum concurrent captured flows before fail-fast rejection")
 	flag.Var(&includeProc, "include-process", "capture executable path/name glob (repeatable)")
 	flag.Var(&excludeProc, "exclude-process", "exclude executable path/name glob (repeatable)")
 	flag.Var(&includeDst, "include-destination", "capture CIDR prefix (repeatable)")
@@ -73,6 +79,16 @@ func run() error {
 	}
 	if upstream == "" {
 		return errors.New("--upstream is required")
+	}
+	if maxFlows < 1 {
+		return errors.New("--max-flows must be positive")
+	}
+	if statusListen != "" {
+		var statusErr error
+		statusListen, statusErr = statusapi.ValidateAddress(statusListen)
+		if statusErr != nil {
+			return statusErr
+		}
 	}
 	if containerPID != 0 {
 		if runtime.GOOS != "linux" || containerPID < 1 {
@@ -149,6 +165,15 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown backend %q", backendName)
 	}
+	if check {
+		target, targetErr := netip.ParseAddrPort(checkTarget)
+		if targetErr != nil || target.Port() == 0 {
+			return errors.New("--check-target must be a numeric IP:port")
+		}
+		checkCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		return runDoctor(checkCtx, backendName, cgroupPath, networkNamespace, filter, client, target)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if containerPID != 0 {
@@ -179,8 +204,36 @@ func run() error {
 		defer observer.Close()
 		logger.Info("DNS observer enabled", "listen", dnsListen, "upstream", dnsUpstream)
 	}
+	stats := &tunless.Stats{}
+	if statusListen != "" {
+		server := &statusapi.Server{
+			Address:       statusListen,
+			Version:       version,
+			BackendName:   backendName,
+			Upstream:      client.Address,
+			MaxConcurrent: maxFlows,
+			Stats:         stats,
+			Backend:       backend,
+		}
+		go func() {
+			if err := server.Serve(ctx); err != nil && ctx.Err() == nil {
+				logger.Error("status API stopped", "error", err)
+				stop()
+			}
+		}()
+		defer server.Close()
+		logger.Info("status API enabled", "listen", statusListen)
+	}
 	logger.Info("starting tunless", "backend", backendName, "listen", listen, "upstream", client.Address)
-	return (&tunless.Core{Backend: backend, Emitter: client, Filter: coreFilter, Logger: logger, Resolver: resolver}).Run(ctx)
+	return (&tunless.Core{
+		Backend:       backend,
+		Emitter:       client,
+		Filter:        coreFilter,
+		Logger:        logger,
+		Resolver:      resolver,
+		Stats:         stats,
+		MaxConcurrent: maxFlows,
+	}).Run(ctx)
 }
 
 func containerDNSPrefixes(pid int) []string {
@@ -263,7 +316,7 @@ func containerScope(pid int, containerID string) (string, string, error) {
 			return "", "", err
 		}
 		if !cgroupMatchesContainer(cgroup, containerID) {
-			return "", "", errors.New("container PID no longer belongs to the expected Docker container")
+			return "", "", errors.New("container PID no longer belongs to the expected container")
 		}
 	}
 	if _, err = os.Stat(cgroup); err != nil {
@@ -275,7 +328,7 @@ func containerScope(pid int, containerID string) (string, string, error) {
 func cgroupMatchesContainer(cgroup, containerID string) bool {
 	for _, component := range strings.Split(path.Clean(cgroup), "/") {
 		candidate := strings.TrimSuffix(component, ".scope")
-		for _, prefix := range []string{"docker-", "cri-containerd-", "crio-"} {
+		for _, prefix := range []string{"docker-", "cri-containerd-", "crio-", "libpod-"} {
 			candidate = strings.TrimPrefix(candidate, prefix)
 		}
 		if candidate == containerID {

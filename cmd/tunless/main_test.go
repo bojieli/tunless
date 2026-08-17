@@ -21,7 +21,13 @@ func TestCgroupPathFromProc(t *testing.T) {
 
 func TestCgroupMatchesExactContainer(t *testing.T) {
 	id := strings.Repeat("a", 64)
-	for _, path := range []string{"/docker/" + id, "/system.slice/docker-" + id + ".scope", "/cri-containerd-" + id + ".scope"} {
+	for _, path := range []string{
+		"/docker/" + id,
+		"/system.slice/docker-" + id + ".scope",
+		"/cri-containerd-" + id + ".scope",
+		"/crio-" + id + ".scope",
+		"/machine.slice/libpod-" + id + ".scope",
+	} {
 		if !cgroupMatchesContainer(path, id) {
 			t.Fatalf("did not match %q", path)
 		}

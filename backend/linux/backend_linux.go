@@ -44,6 +44,57 @@ type Backend struct {
 	sessions   map[string]*packetPort
 }
 
+func (b *Backend) Diagnostics() tunless.BackendDiagnostics {
+	b.mu.Lock()
+	diagnostics := tunless.BackendDiagnostics{
+		Name:         "linux",
+		Started:      b.collection != nil,
+		Listeners:    len(b.listeners),
+		UDPSockets:   len(b.udp),
+		Links:        len(b.links),
+		Associations: len(b.sessions),
+	}
+	if b.collection == nil {
+		b.mu.Unlock()
+		return diagnostics
+	}
+	diagnostics.Maps = make(map[string]tunless.MapDiagnostics, len(b.collection.Maps))
+	clones := make(map[string]*ebpf.Map, len(b.collection.Maps))
+	for name, m := range b.collection.Maps {
+		clone, err := m.Clone()
+		if err != nil {
+			diagnostics.Maps[name] = tunless.MapDiagnostics{Error: err.Error()}
+			continue
+		}
+		clones[name] = clone
+	}
+	b.mu.Unlock()
+	for name, m := range clones {
+		item := tunless.MapDiagnostics{}
+		info, err := m.Info()
+		if err != nil {
+			item.Error = err.Error()
+			diagnostics.Maps[name] = item
+			_ = m.Close()
+			continue
+		}
+		item.MaxEntries = info.MaxEntries
+		item.Memlock, _ = info.Memlock()
+		key := make([]byte, info.KeySize)
+		value := make([]byte, info.ValueSize)
+		iterator := m.Iterate()
+		for iterator.Next(&key, &value) {
+			item.Entries++
+		}
+		if err = iterator.Err(); err != nil {
+			item.Error = err.Error()
+		}
+		diagnostics.Maps[name] = item
+		_ = m.Close()
+	}
+	return diagnostics
+}
+
 func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
