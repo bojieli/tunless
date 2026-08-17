@@ -75,7 +75,7 @@ containers and one recreated instance all returned the Mac proxy exit
 `23.135.236.244`; the watcher recorded three attachments, six TCP flows, and
 four UDP flows. On RTX-PRO, rootful Docker recorded three attachments, six TCP
 flows, and six UDP flows. Rootful Podman 3.4.4 on the same host recorded three
-attachments, six TCP flows, and seven UDP flows. All application containers
+attachments, six TCP flows, and six UDP flows. All application containers
 had proxy variables explicitly empty, and the recreated instance was captured
 without restarting the watcher.
 

@@ -5,25 +5,28 @@ qualified. Link each completed item to a run, commit, or measurement.
 
 ## Source and project
 
-- [ ] Scope, license, changelog, compatibility matrix, threat model, support,
+- [x] Scope, license, changelog, compatibility matrix, threat model, support,
       governance, conduct, contribution guide, and release notes reviewed
-- [ ] Repository history contains no secrets or oversized unintended artifacts
-- [ ] Branch protection, required CI/security checks, private vulnerability
-      reporting, Discussions, and issue templates configured
+- [x] Repository history contains no secrets or oversized unintended artifacts
+- [ ] Branch protection and required hosted CI/security checks configured;
+      Discussions, issue templates, dependency alerts, and automated security
+      fixes are already enabled
+- [ ] Private vulnerability reporting enabled after the repository becomes public
+      and before a public tag or release is created
 - [ ] Dependencies and licenses reviewed; CodeQL, govulncheck, dependency review,
       secret scan, and public-only Scorecard have acceptable results
 
 ## Correctness and resilience
 
-- [ ] Race, vet, static analysis, fuzz smoke, 10,000-connection stress, soak, and
+- [x] Race, vet, static analysis, fuzz smoke, 10,000-connection stress, soak, and
       malformed-input suites pass
-- [ ] Linux exact embedded BPF object is reproducible and verifier/runtime-tested
+- [x] Linux exact embedded BPF object is reproducible and verifier/runtime-tested
       on x86-64 current kernel and ARM64 kernel 5.10
-- [ ] TCP/UDP WAN, upstream restart, overload, controller crash, stale PID,
+- [x] TCP/UDP WAN, upstream restart, overload, controller crash, stale PID,
       container stop/recreate, and fail-open recovery pass
-- [ ] Docker native Linux and Docker Desktop macOS tests cover unmodified,
-      no-proxy-environment applications; Windows Docker Desktop test is recorded
-- [ ] Rootful Podman and selected CRI/Kubernetes behavior are tested or marked
+- [x] Docker native Linux and Docker Desktop macOS tests cover unmodified,
+      no-proxy-environment applications
+- [x] Rootful Podman and selected CRI/Kubernetes behavior are tested or marked
       experimental; rootless limitation is documented
 
 ## Artifacts
@@ -42,6 +45,15 @@ qualified. Link each completed item to a run, commit, or measurement.
       clean-machine runtime qualification complete
 - [ ] Windows WDK driver build/signing, Driver Verifier, Windows host/container
       runtime, coexistence, and rollback qualification complete
+
+## Evidence snapshot
+
+The checked items above were revalidated on 2026-08-17. Exact host versions,
+test counts, WAN results, resource measurements, BPF object hash, OCI digest,
+and deliberately unqualified platforms are recorded in
+[Measurements and release gates](MEASUREMENTS.md). The remaining unchecked
+items are release blockers, not waived requirements. In particular, Windows
+Docker behavior is source-complete but remains part of the Windows runtime gate.
 
 ## Approval
 
