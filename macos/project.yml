@@ -1,0 +1,53 @@
+name: Tunless
+options:
+  bundleIdPrefix: com.bojieli.tunless
+  deploymentTarget:
+    macOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: 5BR9M56H9W
+targets:
+  Tunless:
+    type: application
+    platform: macOS
+    sources: [App]
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: tunless
+        LSMinimumSystemVersion: "15.0"
+        LSUIElement: true
+    entitlements:
+      path: App/Tunless.entitlements
+      properties:
+        com.apple.developer.system-extension.install: true
+    dependencies:
+      - target: TunlessProxy
+        embed: true
+        codeSign: true
+  TunlessProxy:
+    type: system-extension
+    platform: macOS
+    sources: [Sources/TunlessExtension, Extension/main.swift]
+    info:
+      path: Extension/Info.plist
+      properties:
+        CFBundleDisplayName: tunless transparent proxy
+        NetworkExtension:
+          NEProviderClasses:
+            com.apple.networkextension.app-proxy: $(PRODUCT_MODULE_NAME).TransparentProxyProvider
+          NEMachServiceName: $(TeamIdentifierPrefix)com.bojieli.tunless.TunlessProxy
+        NSSystemExtensionUsageDescription: tunless transparently sends selected application connections to your local SOCKS5 proxy.
+    settings:
+      base:
+        ENABLE_APP_SANDBOX: YES
+    entitlements:
+      path: Extension/TunlessProxy.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.developer.networking.networkextension:
+          - app-proxy-provider-systemextension
+    dependencies:
+      - sdk: Network.framework
+      - sdk: NetworkExtension.framework
