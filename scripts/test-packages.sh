@@ -15,8 +15,10 @@ rpm="$output/tunless_${version}_linux_x86_64.rpm"
 archive_arm64="$output/tunless_${version}_linux_arm64.tar.gz"
 deb_arm64="$output/tunless_${version}_linux_arm64.deb"
 rpm_arm64="$output/tunless_${version}_linux_aarch64.rpm"
-debian_image=debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
-rocky_image=rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6
+debian_amd64_image=debian:bookworm-slim@sha256:362e64223cc0da95422b3b13c045186fc0a81250e765d31c025fbddf257f6143
+debian_arm64_image=debian:bookworm-slim@sha256:817e6cf99d6fc127ff4ffe8580049b60deba0adfbbb2bd65ddc3ef8fbb7aade0
+rocky_amd64_image=rockylinux:9@sha256:d644d203142cd5b54ad2a83a203e1dee68af2229f8fe32f52a30c6e1d3c3a9e0
+rocky_arm64_image=rockylinux:9@sha256:370b6bd1851d5023c5c673535c85cdc5c1d8a59416ad83380a8db7ce3691bd45
 for artifact in "$archive" "$deb" "$rpm" "$archive_arm64" "$deb_arm64" "$rpm_arm64"; do
 	[[ -f "$artifact" ]] || {
 		echo "missing release artifact: $artifact" >&2
@@ -24,7 +26,7 @@ for artifact in "$archive" "$deb" "$rpm" "$archive_arm64" "$deb_arm64" "$rpm_arm
 	}
 done
 
-docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_image" sh -euxc "
+docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_amd64_image" sh -euxc "
   apt-get update >/dev/null
   apt-get install -y /release/$(basename "$deb") >/dev/null
   test \"\$(tunless --version)\" = '$version'
@@ -43,7 +45,7 @@ docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_image" 
   test -f /etc/tunless.env
 "
 
-docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$debian_image" sh -euxc "
+docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$debian_arm64_image" sh -euxc "
   apt-get update >/dev/null
   apt-get install -y /release/$(basename "$deb_arm64") >/dev/null
   test \"\$(tunless --version)\" = '$version'
@@ -56,7 +58,7 @@ docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$debian_image" 
   test ! -e /usr/bin/tunless
 "
 
-docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$rocky_image" sh -euxc "
+docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$rocky_amd64_image" sh -euxc "
   dnf install -y /release/$(basename "$rpm") >/dev/null
   test \"\$(tunless --version)\" = '$version'
   test -f /usr/lib/systemd/system/tunless.service
@@ -72,7 +74,7 @@ docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$rocky_image" s
   test -f /etc/tunless.env -o -f /etc/tunless.env.rpmsave
 "
 
-docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$rocky_image" sh -euxc "
+docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$rocky_arm64_image" sh -euxc "
   dnf install -y /release/$(basename "$rpm_arm64") >/dev/null
   test \"\$(tunless --version)\" = '$version'
   test -f /usr/lib/systemd/system/tunless.service
@@ -84,7 +86,7 @@ docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$rocky_image" s
   test ! -e /usr/bin/tunless
 "
 
-docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_image" sh -euxc "
+docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_amd64_image" sh -euxc "
   mkdir /unpack
   tar -xzf /release/$(basename "$archive") -C /unpack
   mkdir /unpack-arm64
