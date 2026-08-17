@@ -14,12 +14,14 @@ or repository-visibility step.
    SPDX JSON SBOMs, synchronized third-party notices, and SHA-256 checksums under
    ignored `dist/`. Syft may retain `NOASSERTION` for licenses it cannot infer
    from a static binary; `THIRD_PARTY_NOTICES.md` contains the reviewed license
-   texts and is verified against each binary's embedded module metadata. The command
-   rejects a dirty tree; `TUNLESS_ALLOW_DIRTY_RELEASE=1` exists only for local
+   texts and is verified against each binary's embedded module metadata. The
+   command rejects a dirty tree; `TUNLESS_ALLOW_DIRTY_RELEASE=1` exists only for local
    pipeline development and is never set by the candidate workflow.
 3. Run the same candidate through the manual **Release candidate** workflow.
-   Download the artifact, verify the provenance attestation and checksums, and
-   compare the reproducibility report.
+   Download the artifact, verify its checksums, and compare the reproducibility
+   report. On GitHub Free, provenance attestations are unavailable while this
+   repository is private; the attestation step is intentionally gated until
+   public visibility and must pass before a tag is created.
 4. Install/upgrade/uninstall DEB and RPM packages in clean amd64 and arm64
    systems; verify systemd units and run both archive and `scratch` OCI
    architecture smoke tests. Run Linux kernel 5.10 plus current-kernel integration,

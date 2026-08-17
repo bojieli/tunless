@@ -8,13 +8,15 @@ qualified. Link each completed item to a run, commit, or measurement.
 - [x] Scope, license, changelog, compatibility matrix, threat model, support,
       governance, conduct, contribution guide, and release notes reviewed
 - [x] Repository history contains no secrets or oversized unintended artifacts
-- [ ] Branch protection and required hosted CI/security checks configured;
-      Discussions, issue templates, dependency alerts, and automated security
-      fixes are already enabled
+- [x] Discussions, issue templates, dependency alerts, and automated security
+      fixes configured while the repository remains private
+- [ ] Branch protection and required hosted CI/security checks enabled during
+      the public visibility transition and before a tag is created
 - [ ] Private vulnerability reporting enabled after the repository becomes public
       and before a public tag or release is created
-- [ ] Dependencies and licenses reviewed; CodeQL, govulncheck, dependency review,
-      secret scan, and public-only Scorecard have acceptable results
+- [x] Dependencies and licenses reviewed; govulncheck and the full-history
+      secret scan have acceptable results
+- [ ] Public-only CodeQL, dependency review, and Scorecard have acceptable results
 
 ## Correctness and resilience
 
@@ -31,11 +33,13 @@ qualified. Link each completed item to a run, commit, or measurement.
 
 ## Artifacts
 
-- [ ] Two clean builds of release binaries/archives/packages are byte-identical
-- [ ] DEB/RPM install, service hardening, upgrade, uninstall, archives, and OCI
+- [x] Two clean builds of release binaries/archives/packages are byte-identical
+- [x] DEB/RPM install, service hardening, upgrade, uninstall, archives, and OCI
       amd64/arm64 smoke tests pass
-- [ ] SBOMs, checksums, package manifests, licenses, versions, and provenance
-      attestations reviewed
+- [x] SBOMs, checksums, package manifests, licenses, and versions reviewed;
+      synchronized notices cover every embedded third-party Go module
+- [ ] GitHub provenance attestations generated and reviewed after public
+      visibility enables that service and before a tag is created
 - [ ] Candidate was produced by the manual non-publishing workflow and reviewed
       without changing repository visibility, creating a tag, or publishing
 
@@ -54,6 +58,14 @@ and deliberately unqualified platforms are recorded in
 [Measurements and release gates](MEASUREMENTS.md). The remaining unchecked
 items are release blockers, not waived requirements. In particular, Windows
 Docker behavior is source-complete but remains part of the Windows runtime gate.
+The current GitHub plan returns `403` for branch protection on this private
+repository. GitHub documents the relevant plan boundaries for
+[protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
+and [security features](https://docs.github.com/en/code-security/getting-started/github-security-features),
+including CodeQL, dependency review, and artifact attestations. Those unchecked
+items are ordered visibility-transition gates: make the repository public,
+enable them, obtain passing results, and only then consider a tag. The
+unpublished private candidate does not satisfy those public gates.
 
 ## Approval
 
