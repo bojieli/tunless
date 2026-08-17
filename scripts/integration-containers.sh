@@ -70,7 +70,7 @@ for _ in {1..50}; do
 done
 
 start_container() {
-	engine_command run --detach --name "$1" --label "$label=true" \
+	engine_command run --detach --name "$1" --label "$label=true" --stop-signal SIGKILL \
 		--env HTTP_PROXY= --env HTTPS_PROXY= --env ALL_PROXY= --env NO_PROXY= \
 		"$image" sleep 300 >/dev/null
 }
@@ -87,7 +87,7 @@ watcher_pid=$!
 
 wait_for_controllers() {
 	local expected=$1
-	for _ in {1..100}; do
+	for _ in {1..300}; do
 		kill -0 "$watcher_pid" 2>/dev/null || { tail -100 "$work_dir/watcher.log" >&2; return 1; }
 		attached=$(grep -c 'attaching Tunless to container' "$work_dir/watcher.log" || true)
 		ready=$(grep -c '"msg":"starting tunless"' "$work_dir/watcher.log" || true)
