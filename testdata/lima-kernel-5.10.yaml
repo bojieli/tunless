@@ -1,0 +1,24 @@
+vmType: qemu
+arch: aarch64
+cpus: 4
+memory: 4GiB
+disk: 20GiB
+
+images:
+  - location: "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-arm64.qcow2"
+    arch: aarch64
+    digest: "sha256:e88cd2a62b447987c1cb9a85cb76e45844e1c7d3f0b6e759f4531c7211676381"
+
+mounts: []
+
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eux
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl iproute2 python3

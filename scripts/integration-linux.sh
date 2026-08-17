@@ -29,6 +29,7 @@ done
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/tunless-integration.XXXXXX")
 cgroup=/sys/fs/cgroup/tunless-integration-$$
+status_port=$((20000 + ($$ % 20000)))
 mkdir "$cgroup"
 tunless_pid=
 proxy_pid=
@@ -43,10 +44,13 @@ cleanup() {
 		if [[ -n "$pid" ]]; then wait "$pid" 2>/dev/null || true; fi
 	done
 	rmdir "$cgroup" 2>/dev/null || true
-	rm -f -- "$work_dir/ready" "$work_dir/continue" "$work_dir/udp-result" "$work_dir/tunless.log" "$work_dir/proxy.log"
+	rm -f -- "$work_dir/ready" "$work_dir/continue" "$work_dir/udp-result" "$work_dir/tunless.log" "$work_dir/proxy.log" "$work_dir/doctor.json" "$work_dir/status.json"
 	rmdir "$work_dir" 2>/dev/null || true
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 start_proxy() {
 	"$SINGBOX_BINARY" run -c "$SINGBOX_CONFIG" >>"$work_dir/proxy.log" 2>&1 &
@@ -68,7 +72,15 @@ cgroup_exec() {
 }
 
 start_proxy
-"$TUNLESS_BINARY" --backend linux --cgroup "$cgroup" --upstream "$UPSTREAM" --listen 127.0.0.1:0 --log-level debug >"$work_dir/tunless.log" 2>&1 &
+"$TUNLESS_BINARY" --backend linux --cgroup "$cgroup" --upstream "$UPSTREAM" --check >"$work_dir/doctor.json"
+python3 - "$work_dir/doctor.json" <<'PY'
+import json,sys
+report=json.load(open(sys.argv[1], encoding="utf-8"))
+assert report["ok"] is True, report
+assert {check["name"] for check in report["checks"]} >= {"kernel","cgroup_v2","loop_avoidance","bpf_load_attach","socks5_upstream"}
+PY
+
+"$TUNLESS_BINARY" --backend linux --cgroup "$cgroup" --upstream "$UPSTREAM" --listen 127.0.0.1:0 --status-listen "127.0.0.1:$status_port" --log-level debug >"$work_dir/tunless.log" 2>&1 &
 tunless_pid=$!
 for _ in {1..50}; do
 	kill -0 "$tunless_pid" 2>/dev/null || {
@@ -82,6 +94,19 @@ grep -q 'starting tunless' "$work_dir/tunless.log" || {
 	echo "Tunless did not finish startup" >&2
 	exit 1
 }
+for _ in {1..50}; do
+	if curl -fsS "http://127.0.0.1:$status_port/v1/status" >"$work_dir/status.json"; then break; fi
+	sleep 0.1
+done
+python3 - "$work_dir/status.json" <<'PY'
+import json,sys
+status=json.load(open(sys.argv[1], encoding="utf-8"))
+assert status["status"] == "ok", status
+assert status["capture"]["links"] == 7, status
+assert status["capture"]["listeners"] == 2, status
+assert status["capture"]["udp_sockets"] == 2, status
+assert status["capture"]["maps"], status
+PY
 
 exit_address=$(cgroup_exec env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --noproxy '*' -4 -fsS --max-time 20 https://icanhazip.com)
 [[ "$exit_address" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || {
@@ -160,4 +185,12 @@ udp_flows=$(grep -Ec '"proto":("udp"|2)' "$work_dir/tunless.log" || true)
 	exit 1
 }
 
-printf 'wan_exit=%s udp_%s udp_flows=%s\n' "$exit_address" "$(<"$work_dir/udp-result")" "$udp_flows"
+curl -fsS "http://127.0.0.1:$status_port/v1/status" >"$work_dir/status.json"
+python3 - "$work_dir/status.json" <<'PY'
+import json,sys
+status=json.load(open(sys.argv[1], encoding="utf-8"))
+assert status["flows"]["accepted_flows"] >= 3, status
+assert status["flows"]["active_tcp"] == 0, status
+PY
+
+printf 'wan_exit=%s udp_%s udp_flows=%s doctor=pass status=pass\n' "$exit_address" "$(<"$work_dir/udp-result")" "$udp_flows"
