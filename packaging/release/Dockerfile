@@ -11,11 +11,13 @@ RUN apt-get update && apt-get install --yes --no-install-recommends \
          arm64) nfpm_arch=arm64; nfpm_sha=1c0f5f2999b9a974bfb04fdb0cc3306096de530ac5dbb25d739cc5f5219c919c; syft_sha=6c0466811541ea03add5213a60a1562f0851e4c0b0ecfdee1a694a9455285900 ;; \
          *) echo "unsupported release-builder architecture: $TARGETARCH" >&2; exit 1 ;; \
        esac \
-    && curl --fail --location --retry 5 --output /tmp/nfpm.tar.gz \
+    && curl --fail --http1.1 --location --retry 5 --retry-all-errors \
+         --retry-delay 2 --output /tmp/nfpm.tar.gz \
          "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_${nfpm_arch}.tar.gz" \
     && echo "$nfpm_sha  /tmp/nfpm.tar.gz" | sha256sum --check - \
     && tar -xzf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm \
-    && curl --fail --location --retry 5 --output /tmp/syft.tar.gz \
+    && curl --fail --http1.1 --location --retry 5 --retry-all-errors \
+         --retry-delay 2 --output /tmp/syft.tar.gz \
          "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_${TARGETARCH}.tar.gz" \
     && echo "$syft_sha  /tmp/syft.tar.gz" | sha256sum --check - \
     && tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft \
