@@ -1,8 +1,8 @@
 # tunless — blueprint
 
-Status: design of record, nothing implemented. Every claim in §3 that is marked
-**unverified** is an assumption that a stage gate must convert into a
-measurement before the design depends on it.
+Status: design of record. All stages now have implementation artifacts; release
+gates are recorded in `docs/MEASUREMENTS.md`. Every claim in §3 that remains
+marked **unverified** is still an assumption, not a completed measurement.
 
 ---
 
@@ -416,6 +416,8 @@ recorded as not met, not as pending.
 
 ### Stage 0 — skeleton and conformance harness
 
+**Implementation status (2026-08-17): complete; gate met.**
+
 - Go module, repo layout, the `Backend` interface from §3.1.
 - The generic core: SOCKS5 client emitter, capture filter, CLI, structured logs.
 - A **`loopback` reference backend** — an ordinary explicit SOCKS5/HTTP listener
@@ -432,6 +434,10 @@ downstream.
 
 ### Stage 1 — Linux backend
 
+**Implementation status (2026-08-17): complete on kernel 5.10 ARM64 and kernel
+6.8 x86-64, including the live TCP/UDP/browser/fail-open and Docker namespace
+gates.**
+
 First because it is free, needs no signing, has the best teardown semantics, and
 is where the abstraction gets its first real test.
 
@@ -444,6 +450,9 @@ a real browser and a CLI tool both work through mihomo unchanged; `SIGKILL`
 under load leaves connectivity intact.
 
 ### Stage 2 — macOS backend
+
+**Implementation status (2026-08-17): source and unsigned build complete;
+provisioned activation and measurement gate unmet.**
 
 The platform where the design is most clearly better than TUN, and the one that
 will decide whether the §3.1 abstraction is right.
@@ -458,6 +467,10 @@ populated; (b) an enumerated list of what the system declines to divert. Both go
 into the README as known limits, whatever the numbers say.
 
 ### Stage 3 — drop-in ergonomics
+
+**Implementation status (2026-08-17): service, flags, filters, migrations, and
+host-side Docker/Dev Container lifecycle launchers complete; independent
+first-time-user gate not measured.**
 
 The stage that decides whether anyone adopts it.
 
@@ -475,11 +488,14 @@ setup in under five minutes using only the README.
 
 ### Stage 4 — Windows backend
 
+**Implementation status (2026-08-17): TCP source complete; Windows/WDK build,
+UDP, signing, fuzzing, and runtime gate unmet.**
+
 Only once stages 1–3 have demonstrated that anyone wants this. It is the only
 stage with a hard monetary floor and the only one that can bugcheck a machine.
 
 - WFP callout driver, dynamic session, userspace recovery of original
-  destination.
+  destination, and query/set propagation of opaque redirect records.
 - EV certificate, Partner Center enrollment, attestation signing.
 
 **Gate**: conformance passes; the driver survives a fuzzing pass at the redirect
@@ -487,6 +503,9 @@ layer without a bugcheck; an attestation-signed build loads on a clean Windows
 11 with Secure Boot enabled.
 
 ### Stage 5 — optional and deferred
+
+**Implementation status (2026-08-17): DNS observer and both metadata transports
+complete. TPROXY remains conditional on a router-deployment request.**
 
 - DNS observer (§3.4), opt-in, off by default.
 - Process identity conveyed downstream: SOCKS5 username encoding, then a unix
@@ -524,13 +543,10 @@ Ranked by how much they could invalidate the design.
 
 ## 6. Decisions not yet made
 
-- **License.** Apache-2.0 for the patent grant if corporate adoption is plausible;
-  MIT for simplicity. Not decided.
+- **License.** MIT.
 - **Module path.** `github.com/bojieli/tunless`.
-- **Config format.** YAML for familiarity with the ecosystem, or flags only for
-  v1. Leaning flags only until stage 3 proves a config file is needed.
-- **Whether the macOS containing app is a GUI or a bare launcher.** A system
-  extension needs a containing app; it does not need to be interesting.
+- **Config format.** Flags and environment variables for v1.
+- **macOS containing app.** Bare activation/configuration launcher.
 - **Relationship to `queqiao`.** None, deliberately. `queqiao` is a transport;
   this is a capture layer. If they are ever used together it is because a user
   pointed `tunless --upstream` at a SOCKS5 port that happens to be queqiao's,
