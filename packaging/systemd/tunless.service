@@ -1,0 +1,25 @@
+[Unit]
+Description=TUN-less transparent SOCKS5 capture
+Documentation=https://github.com/bojieli/tunless
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=TUNLESS_UPSTREAM=127.0.0.1:7890
+Environment=TUNLESS_CGROUP=/sys/fs/cgroup/user.slice
+EnvironmentFile=-/etc/tunless.env
+ExecStart=/usr/local/bin/tunless --backend=linux --cgroup=${TUNLESS_CGROUP} --upstream=${TUNLESS_UPSTREAM}
+Restart=on-failure
+RestartSec=2
+User=root
+Slice=system.slice
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_RESOURCE
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_RESOURCE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

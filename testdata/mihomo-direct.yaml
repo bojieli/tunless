@@ -1,0 +1,10 @@
+mode: direct
+log-level: warning
+ipv6: true
+listeners:
+  - name: tunless-conformance
+    type: socks
+    listen: 127.0.0.1
+    port: 17898
+    udp: true
+    users: []
