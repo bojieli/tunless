@@ -5,7 +5,7 @@ ARG NFPM_VERSION=2.47.0
 ARG SYFT_VERSION=1.51.0
 
 RUN apt-get update && apt-get install --yes --no-install-recommends \
-      ca-certificates curl gettext-base git gzip rpm skopeo xz-utils zstd \
+      ca-certificates curl gettext-base git gzip rpm xz-utils zstd \
     && case "$TARGETARCH" in \
          amd64) nfpm_arch=x86_64; nfpm_sha=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783; syft_sha=2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f ;; \
          arm64) nfpm_arch=arm64; nfpm_sha=1c0f5f2999b9a974bfb04fdb0cc3306096de530ac5dbb25d739cc5f5219c919c; syft_sha=6c0466811541ea03add5213a60a1562f0851e4c0b0ecfdee1a694a9455285900 ;; \
