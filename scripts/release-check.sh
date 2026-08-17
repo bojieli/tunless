@@ -22,7 +22,7 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-driver=$(docker buildx inspect 2>/dev/null | awk '/^Driver:/ { print $2; exit }')
+driver=$(docker buildx inspect 2>/dev/null | awk '/^Driver:/ && !driver { driver=$2 } END { print driver }')
 if [[ $driver != docker-container && -z ${TUNLESS_BUILDX_BUILDER:-} ]]; then
 	created_builder=tunless-release-check-$$
 	docker buildx create --name "$created_builder" --driver docker-container --bootstrap >/dev/null
