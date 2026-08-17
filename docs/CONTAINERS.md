@@ -19,9 +19,12 @@ fail-open behavior.
 
 ## Platform matrix
 
-| Host / Docker engine | Application containers | Capture path |
+| Host / engine | Application containers | Capture path |
 | --- | --- | --- |
 | Native Linux | Linux | Host Tunless, namespace-local sockets, container cgroup eBPF |
+| Native Linux, rootful Podman | Linux | Same host namespace/cgroup path; Podman `libpod` scope identity is verified |
+| Kubernetes node, containerd | Linux | Per-container `crictl` helper validated on a disposable kind/Kubernetes node |
+| Kubernetes node, CRI-O | Linux | Source-complete per-container helper; runtime qualification pending |
 | macOS Docker Desktop | Linux | Privileged Tunless controller in LinuxKit; temporary local SOCKS bridge when needed |
 | Windows Docker Desktop | Linux | Privileged Tunless controller in the Desktop Linux VM; temporary local SOCKS bridge when needed |
 | Windows Docker engine | Windows | Global host WFP backend for host and container TCP; Windows UDP stays direct |
@@ -50,6 +53,20 @@ passes the expected full container ID; Tunless refuses attachment if PID reuse
 changed the cgroup. The helper remains in the foreground and terminates Tunless
 when the container stops. `SIGHUP`, `SIGINT`, and `SIGTERM` perform the same
 cleanup. Pass ordinary Tunless flags after the container name.
+
+Rootful Podman on native Linux uses the same implementation:
+
+```console
+TUNLESS_UPSTREAM=127.0.0.1:7890 \
+  TUNLESS_BINARY=/usr/local/bin/tunless \
+  ./scripts/tunless-podman.sh CONTAINER_NAME_OR_ID
+```
+
+Use `tunless-podman-watch.sh` for lifecycle discovery. Rootless Docker and
+Podman cannot attach host cgroup BPF or enter another process's network
+namespace; the launchers detect rootless mode and stop with an actionable
+error. A rootful host controller is required. The application container itself
+remains unprivileged.
 
 On macOS Docker Desktop, omit `TUNLESS_BINARY`; the helper builds
 `packaging/docker/Dockerfile` and launches the Linux controller. On Windows
@@ -116,6 +133,48 @@ This is host-side configuration. Nothing is added to `devcontainer.json`, the
 image, the container environment, or the application command. Run the normal
 host Tunless backend at the same time; both use `TUNLESS_UPSTREAM` and the same
 destination flags while retaining the correct platform capture mechanism.
+
+DEB/RPM installations include the helpers under `/usr/libexec/tunless` and an
+opt-in `tunless-container-watch.service`. Its default label gate is
+`com.bojieli.tunless`; `examples/compose.yaml` demonstrates it. Review
+`/etc/tunless.env`, label selected containers, then enable the watcher. The
+ordinary `tunless.service` can run simultaneously for host applications:
+
+```console
+sudo systemctl enable --now tunless tunless-container-watch
+```
+
+Set `TUNLESS_CONTAINER_ENGINE=podman` in the environment file for rootful
+Podman. Neither unit is enabled automatically by package installation.
+
+## Kubernetes and CRI runtimes
+
+On a containerd or CRI-O node, a root operator can attach one running workload
+container by its CRI ID:
+
+```console
+sudo TUNLESS_UPSTREAM=127.0.0.1:7890 \
+  TUNLESS_BINARY=/usr/local/bin/tunless \
+  ./scripts/tunless-cri.sh "$(sudo crictl ps --name my-app --quiet)"
+```
+
+The helper asks the configured CRI endpoint for the full ID, running state, and
+host PID, then Tunless independently verifies that PID's cgroup component is an
+exact `cri-containerd-…scope` or `crio-…scope` match. It polls identity and PID
+and detaches when the container stops or is replaced. This is intentionally a
+node-side privileged operation; mounting the runtime socket into an ordinary
+workload would grant a host-control capability and is not recommended.
+
+The one-container path passed on a disposable kind v0.30.0 Kubernetes v1.34.0
+node backed by containerd: TCP and UDP from an unmodified pod used Tunless, all
+seven links and map diagnostics were present, and pod deletion detached the
+helper. `scripts/integration-cri-kind.sh` reproduces that test and deletes only
+the uniquely named cluster it creates. CRI-O remains untested.
+
+Automatic cluster-wide policy/controller behavior remains experimental rather
+than being hidden in a privileged DaemonSet. Operators should first validate
+the one-container helper against their runtime's cgroup driver. Full VMs still
+require an in-guest installation as described below.
 
 ## Windows containers
 

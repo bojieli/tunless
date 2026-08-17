@@ -1,0 +1,28 @@
+# Changelog
+
+This project follows semantic versioning after its first public release. Dates
+use ISO 8601. The repository has not made a public release yet.
+
+## Unreleased
+
+### Added
+
+- Linux cgroup eBPF capture for TCP and connected/unconnected UDP over IPv4 and
+  IPv6, including namespace-local Docker, Podman, and one-container
+  Kubernetes/containerd application capture.
+- SOCKS5 TCP/UDP relay, optional real-answer DNS observation, metadata
+  transports, bounded runtime statistics, a loopback-only status API, and an
+  active `--check` diagnostic.
+- macOS Network Extension and Windows WFP source paths with explicit runtime
+  qualification gates.
+- Kernel 5.10 and current-kernel integration harnesses, fuzz targets, stress and
+  WAN benchmarks, deterministic BPF verification, SBOMs, packages, OCI output,
+  and a non-publishing release-candidate workflow.
+- Reproducible static `scratch` controller images plus amd64/arm64 DEB, RPM,
+  archive, and OCI install/runtime smoke tests.
+
+### Security
+
+- Exact cgroup/container identity validation, privilege separation, fail-open
+  BPF lifecycle, bounded flow concurrency, full-history secret scanning,
+  CodeQL, dependency review, and provenance attestations for review artifacts.

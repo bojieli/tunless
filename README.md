@@ -21,6 +21,11 @@ observer, and two opt-in process-metadata transports. See
 [measurements and release gates](docs/MEASUREMENTS.md) for results that were
 actually demonstrated rather than assumed.
 
+The repository is preparing an unpublished candidate; no public release has
+been made. Reviewable packages, SBOMs, checksums, and OCI output are built only
+by the manual non-publishing workflow described in
+[the release process](docs/RELEASING.md).
+
 ## Linux quick start
 
 Requirements: cgroup v2, kernel 5.7 or newer, and privileges to load and attach
@@ -103,6 +108,15 @@ the equivalent `tunless-docker-watch.ps1`. Controller containers are excluded,
 and recreated containers are discovered automatically. Both one-shot and watch
 modes detach when the target stops; forced process death leaves new traffic
 direct.
+
+On native Linux, rootful Podman uses `tunless-podman.sh` and
+`tunless-podman-watch.sh`. A node operator can attach a containerd or CRI-O
+workload with `tunless-cri.sh`. Rootless engines cannot provide the host cgroup
+and network-namespace authority this socket-layer design needs; the helpers
+reject that configuration instead of silently falling back to proxy variables.
+Rootful Docker and Podman lifecycle tests pass on RTX-PRO, and the containerd
+helper passes inside a disposable kind/Kubernetes node; CRI-O remains an
+explicitly untested runtime.
 
 Windows containers share the Windows kernel rather than the Docker Desktop
 Linux VM. The host WFP backend therefore covers host applications and Windows
@@ -243,6 +257,24 @@ Point selected clients at that listener yourself. It is opt-in and never edits
 system DNS. If another installed VPN intercepts the observer's upstream DNS,
 that VPN can still alter the answer; remove the old TUN/VPN when migrating.
 
+## Diagnostics and health
+
+Before starting privileged Linux capture, validate the exact embedded BPF
+program, cgroup topology, loop avoidance, and both SOCKS5 commands:
+
+```console
+sudo tunless --upstream 127.0.0.1:7890 \
+  --backend linux --cgroup /sys/fs/cgroup/my-apps --check
+```
+
+`--check` prints JSON and does not leave capture attached. For monitoring, add
+`--status-listen 127.0.0.1:6060`; `GET /healthz` is a liveness response and
+`GET /v1/status` reports bounded flow counters, backend resources, BPF map
+occupancy, and the credential-free upstream address. The API accepts only a
+numeric loopback listener. `--max-flows` defaults to 4096; excess flows are
+failed immediately and counted instead of allowing unbounded goroutine growth.
+See [operations](docs/OPERATIONS.md).
+
 ## Optional process metadata
 
 `--metadata-socket /run/tunless/metadata.sock` exposes:
@@ -276,7 +308,9 @@ The committed eBPF object is built from
 benchmark on the Linux capture host and set `TUNLESS_PID`,
 `TUNLESS_PROXY_PID`, `TUNLESS_CGROUP`, and `TUNLESS_UPSTREAM` as needed.
 Every push and pull request runs the race suite, vet, Linux/Windows builds,
-Swift tests, Docker build, shell parsing, and `govulncheck`. Security reports
+Swift tests, Docker build, shell parsing, and `govulncheck`. Scheduled checks
+add privileged kernel integration, fuzzing, CodeQL, full-history secret
+scanning, and public-only OpenSSF Scorecard analysis. Security reports
 should follow [`SECURITY.md`](SECURITY.md).
 
 This project is local socket capture, not an IP-forwarding proxy. Container
@@ -287,3 +321,5 @@ protocols. It is not a VPN, rule engine, proxy protocol collection, GUI, or
 mobile backend.
 
 MIT licensed. [`BLUEPRINT.md`](BLUEPRINT.md) remains the design of record.
+Contribution, support, governance, threat-model, and release-review policies
+are linked from [`CONTRIBUTING.md`](CONTRIBUTING.md).

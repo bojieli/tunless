@@ -6,7 +6,7 @@ qualification; an untested gate is not called complete.
 ## Hosts
 
 - Local: Apple Silicon Mac, macOS 26.3 (25D125), Xcode 26.2, Swift 6.2.3,
-  Go 1.25.7. Docker Desktop reported server 27.3.1, LinuxKit 6.10.14,
+  Go 1.26.6. Docker Desktop reported server 27.3.1, LinuxKit 6.10.14,
   ARM64, and cgroup v2.
 - Local VM: Lima/QEMU ARM64, Debian 11, kernel
   `5.10.0-46-cloud-arm64` (`5.10.262-1`). The VM used 4 vCPUs and 4 GiB RAM.
@@ -52,6 +52,57 @@ loaded through cilium/ebpf 0.22.0; captured WAN TLS and UDP DNS completed with
 three flow events; and a new connection in the same cgroup succeeded after
 Tunless stopped. The disposable guest was deleted after the run while Lima's
 download cache was retained.
+
+## Prerelease resilience and container matrix
+
+The release-hardening run added five native Go fuzz targets covering SOCKS5
+client/inbound address parsing, DNS observations, the metadata API, and CLI
+configuration. Each target completed a 10-second local smoke run without a
+crash; the final run executed approximately 40,000 to 774,000 inputs per target.
+A race-enabled 10,000-connection TCP relay run completed in 1.639 s (6,101
+connections/s) and retained 382,696 bytes after a forced GC. The final
+post-hardening rerun completed in 2.113 s (4,732 connections/s) and retained
+397,744 bytes. A separate
+60-second soak completed 26 iterations of 1,000 connections (26,000 total),
+with observed iteration rates around 5,000–5,900 connections/s and retained
+heap around 300 KiB. These are local loopback resilience measurements, not WAN
+throughput claims.
+
+The final multi-container lifecycle harness forces the WAN probe to IPv4 so a
+host without usable IPv6 does not turn DNS address ordering into a false
+capture failure. On Docker Desktop for macOS, two initial unmodified Python
+containers and one recreated instance all returned the Mac proxy exit
+`23.135.236.244`; the watcher recorded three attachments, six TCP flows, and
+four UDP flows. On RTX-PRO, rootful Docker recorded three attachments, six TCP
+flows, and six UDP flows. Rootful Podman 3.4.4 on the same host recorded three
+attachments, six TCP flows, and seven UDP flows. All application containers
+had proxy variables explicitly empty, and the recreated instance was captured
+without restarting the watcher.
+
+The CRI helper was exercised inside a disposable kind v0.30.0 Kubernetes
+v1.34.0 node using its containerd runtime. An unmodified Python pod returned
+the RTX-PRO WAN exit `155.103.252.95`, completed UDP DNS through the SOCKS
+association, exposed seven attached BPF links plus map diagnostics, and caused
+the helper to detach after Kubernetes deleted the pod. The kind cluster was
+then deleted. This qualifies the one-container containerd helper and its
+lifecycle; it does not qualify CRI-O or a cluster-wide policy controller.
+
+The new `--check` path was run against sing-box on both current-kernel RTX-PRO
+and the kernel-floor guest. It verifier-loaded and attached the exact embedded
+object to an empty temporary cgroup, checked cgroup-v2 and loop avoidance, and
+successfully negotiated SOCKS5 TCP CONNECT plus UDP ASSOCIATE. The loopback
+status API was also exercised during live capture: it reported all seven BPF
+links, bounded flow counters, map capacity/occupancy and memlock, then became
+unreachable on teardown. BPF map diagnostics clone descriptors before
+iteration and are cached for one second, so monitoring cannot hold the
+datapath's backend lock while walking large maps.
+
+The OCI controller was reduced to a static `scratch` image. With BuildKit
+inline provenance disabled (GitHub produces the separate candidate
+attestation), two independent amd64/arm64 OCI archives were byte-identical at
+SHA-256 `62a86d62c89f1f331127948d31ab0d1398ddc7526d0768a7ac6452f34f9b0b5d`.
+This digest is evidence from the development input used for the check, not a
+published candidate checksum.
 
 `scripts/benchmark-wan.sh` is the reproducible download harness. `curl` timing
 includes DNS/TCP/TLS as applicable. Transparent `time_connect` ends at the
@@ -101,6 +152,20 @@ regression check rather than evidence that either proxy path is faster. During
 the three transparent transfers, Tunless used 34 ticks at 100 Hz (0.34 CPU
 seconds, about 2.3% of one core over their 14.75 seconds aggregate) and RSS
 moved from 10,040 KiB to 10,052 KiB.
+
+The final post-hardening binary transferred another 900 MiB over the real WAN
+with the same three-mode rotation:
+
+| Mode | Median TTFB | Median total | Median throughput |
+| --- | ---: | ---: | ---: |
+| Direct | 374.5 ms | 3.341 s | 31.39 MB/s |
+| Explicit SOCKS5 → sing-box | 377.3 ms | 4.114 s | 25.49 MB/s |
+| eBPF transparent → Tunless → sing-box | 328.1 ms | 4.164 s | 25.18 MB/s |
+
+The three transparent transfers took 12.04 seconds in aggregate. Tunless used
+35 clock ticks at 100 Hz (0.35 CPU seconds, about 2.9% of one core) and RSS
+moved from 10,860 KiB to 11,156 KiB. As in the earlier samples, the result is a
+regression/resource check over a variable WAN, not a ranking claim.
 
 ## Docker namespace throughput
 
