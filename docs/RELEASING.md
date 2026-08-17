@@ -11,7 +11,10 @@ or repository-visibility step.
    scope is final. Update `CHANGELOG.md` and the measurements.
 2. Run `./scripts/release-check.sh VERSION`. This creates Linux amd64/arm64 raw
    binaries, normalized archives, DEB/RPM packages, an amd64/arm64 OCI archive,
-   SPDX JSON SBOMs, and SHA-256 checksums under ignored `dist/`. The command
+   SPDX JSON SBOMs, synchronized third-party notices, and SHA-256 checksums under
+   ignored `dist/`. Syft may retain `NOASSERTION` for licenses it cannot infer
+   from a static binary; `THIRD_PARTY_NOTICES.md` contains the reviewed license
+   texts and is verified against each binary's embedded module metadata. The command
    rejects a dirty tree; `TUNLESS_ALLOW_DIRTY_RELEASE=1` exists only for local
    pipeline development and is never set by the candidate workflow.
 3. Run the same candidate through the manual **Release candidate** workflow.

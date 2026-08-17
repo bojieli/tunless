@@ -16,6 +16,7 @@ case "$output" in
 *) output="$repository_root/$output" ;;
 esac
 mkdir -p "$output"
+cp THIRD_PARTY_NOTICES.md "$output/"
 
 epoch=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
 export SOURCE_DATE_EPOCH=$epoch
@@ -30,11 +31,12 @@ for arch in amd64 arm64; do
 		-trimpath -buildvcs=false \
 		-ldflags "-s -w -buildid= -X main.version=$version" \
 		-o "$binary" ./cmd/tunless
+	./scripts/verify-third-party-notices.sh "$binary"
 
 	rm -rf -- "$stage"
 	mkdir -p "$stage/$base/packaging/systemd" "$stage/$base/scripts"
 	cp "$binary" "$stage/$base/tunless"
-	cp LICENSE README.md "$stage/$base/"
+	cp LICENSE README.md THIRD_PARTY_NOTICES.md "$stage/$base/"
 	cp packaging/tunless.env.example "$stage/$base/"
 	cp packaging/systemd/tunless-package.service "$stage/$base/packaging/systemd/tunless.service"
 	cp packaging/systemd/tunless-container-watch.service "$stage/$base/packaging/systemd/"

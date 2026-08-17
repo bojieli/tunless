@@ -19,6 +19,7 @@ for arch in x86_64 aarch64; do
 	name=tunless_${version}_linux_${arch}.rpm
 	cmp "$first/$name" "$second/$name"
 done
+cmp "$first/THIRD_PARTY_NOTICES.md" "$second/THIRD_PARTY_NOTICES.md"
 
 first_oci=$first/tunless_${version}_oci.tar
 second_oci=$second/tunless_${version}_oci.tar
@@ -35,5 +36,6 @@ report=$first/REPRODUCIBILITY.txt
 	printf 'version=%s\n' "$version"
 	printf 'source_date_epoch=%s\n' "${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
 	printf 'binary_archive_deb_rpm_oci=byte-identical\n'
+	printf 'third_party_notices=byte-identical\n'
 	printf 'oci_index_sha256=%s\n' "$first_index"
 } >"$report"

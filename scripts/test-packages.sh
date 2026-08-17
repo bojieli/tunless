@@ -27,6 +27,7 @@ for artifact in "$archive" "$deb" "$rpm" "$archive_arm64" "$deb_arm64" "$rpm_arm
 done
 
 docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_amd64_image" sh -euxc "
+  printf '%s\n' 'path-include /usr/share/doc/tunless/*' > /etc/dpkg/dpkg.cfg.d/tunless-test
   apt-get update >/dev/null
   apt-get install -y /release/$(basename "$deb") >/dev/null
   test \"\$(tunless --version)\" = '$version'
@@ -34,6 +35,7 @@ docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_amd64_i
   test -f /usr/lib/systemd/system/tunless-container-watch.service
   test -x /usr/libexec/tunless/tunless-docker-watch.sh
   test -f /usr/share/doc/tunless/copyright
+  test -f /usr/share/doc/tunless/THIRD_PARTY_NOTICES.md
   apt-get install -y systemd >/dev/null
   systemd-analyze verify /usr/lib/systemd/system/tunless.service /usr/lib/systemd/system/tunless-container-watch.service
   test \"\$(stat -c %a /usr/bin/tunless)\" = 755
@@ -46,6 +48,7 @@ docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_amd64_i
 "
 
 docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$debian_arm64_image" sh -euxc "
+  printf '%s\n' 'path-include /usr/share/doc/tunless/*' > /etc/dpkg/dpkg.cfg.d/tunless-test
   apt-get update >/dev/null
   apt-get install -y /release/$(basename "$deb_arm64") >/dev/null
   test \"\$(tunless --version)\" = '$version'
@@ -53,6 +56,7 @@ docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$debian_arm64_i
   test -f /usr/lib/systemd/system/tunless-container-watch.service
   test -x /usr/libexec/tunless/tunless-cri.sh
   test -f /usr/share/doc/tunless/copyright
+  test -f /usr/share/doc/tunless/THIRD_PARTY_NOTICES.md
   dpkg -V tunless
   dpkg --remove tunless >/dev/null
   test ! -e /usr/bin/tunless
@@ -65,6 +69,7 @@ docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$rocky_amd64_im
   test -f /usr/lib/systemd/system/tunless-container-watch.service
   test -x /usr/libexec/tunless/tunless-podman.sh
   test -f /usr/share/licenses/tunless/LICENSE
+  test -f /usr/share/licenses/tunless/THIRD_PARTY_NOTICES.md
   test \"\$(stat -c %a /usr/bin/tunless)\" = 755
   printf '%s\\n' 'TUNLESS_UPSTREAM=127.0.0.1:9999' > /etc/tunless.env
   rpm -U --replacepkgs /release/$(basename "$rpm")
@@ -81,6 +86,7 @@ docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$rocky_arm64_im
   test -f /usr/lib/systemd/system/tunless-container-watch.service
   test -x /usr/libexec/tunless/tunless-podman.sh
   test -f /usr/share/licenses/tunless/LICENSE
+  test -f /usr/share/licenses/tunless/THIRD_PARTY_NOTICES.md
   rpm -V tunless
   rpm -e tunless
   test ! -e /usr/bin/tunless
@@ -91,6 +97,8 @@ docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_amd64_i
   tar -xzf /release/$(basename "$archive") -C /unpack
   mkdir /unpack-arm64
   tar -xzf /release/$(basename "$archive_arm64") -C /unpack-arm64
+  test -f /unpack/tunless_${version}_linux_amd64/THIRD_PARTY_NOTICES.md
+  test -f /unpack-arm64/tunless_${version}_linux_arm64/THIRD_PARTY_NOTICES.md
   test \"\$(/unpack-arm64/tunless_${version}_linux_arm64/tunless --version)\" = '$version'
   test \"\$(/unpack/tunless_${version}_linux_amd64/tunless --version)\" = '$version'
 "
