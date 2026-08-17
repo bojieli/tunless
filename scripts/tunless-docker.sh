@@ -71,9 +71,12 @@ if [[ "$mode" == desktop && ${engine##*/} != docker ]]; then
 fi
 if [[ "$mode" == native ]]; then
 	rootless=false
-	if [[ ${engine##*/} == podman ]]; then
+	# A UID 0 engine is rootful by definition. Avoid probing engine-wide state in
+	# that case: freshly initialized Podman can serialize concurrent `info`
+	# requests while the watcher starts controllers for existing containers.
+	if [[ $(id -u) -ne 0 && ${engine##*/} == podman ]]; then
 		[[ $("$engine" info --format '{{.Host.Security.Rootless}}' 2>/dev/null || true) == true ]] && rootless=true
-	elif "$engine" info --format '{{json .SecurityOptions}}' 2>/dev/null | grep -qi rootless; then
+	elif [[ $(id -u) -ne 0 ]] && "$engine" info --format '{{json .SecurityOptions}}' 2>/dev/null | grep -qi rootless; then
 		rootless=true
 	fi
 	if [[ "$rootless" == true ]]; then
