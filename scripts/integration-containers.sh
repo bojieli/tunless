@@ -11,6 +11,8 @@ TUNLESS_BINARY=${TUNLESS_BINARY:-./tunless}
 SINGBOX_BINARY=${SINGBOX_BINARY:-sing-box}
 SINGBOX_CONFIG=${SINGBOX_CONFIG:-testdata/singbox-direct.json}
 UPSTREAM=${TUNLESS_UPSTREAM:-127.0.0.1:17898}
+engine_timeout=${TUNLESS_CONTAINER_ENGINE_TIMEOUT:-120}
+image=${TUNLESS_CONTAINER_IMAGE:-docker.io/library/python:3.11-slim}
 label=com.bojieli.tunless.integration
 suffix=$$
 names=("tunless-integration-a-$suffix" "tunless-integration-b-$suffix")
@@ -22,9 +24,21 @@ for command in "$engine" "$TUNLESS_BINARY" "$SINGBOX_BINARY"; do
 		exit 2
 	}
 done
+command -v timeout >/dev/null 2>&1 || {
+	echo "required integration-test command is missing: timeout" >&2
+	exit 2
+}
 [[ -r "$SINGBOX_CONFIG" ]] || {
 	echo "required integration-test config is missing: $SINGBOX_CONFIG" >&2
 	exit 2
+}
+[[ $engine_timeout =~ ^[1-9][0-9]*$ ]] || {
+	echo "TUNLESS_CONTAINER_ENGINE_TIMEOUT must be a positive integer number of seconds" >&2
+	exit 2
+}
+
+engine_command() {
+	timeout --signal=TERM --kill-after=10s "${engine_timeout}s" "$engine" "$@"
 }
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/tunless-container-integration.XXXXXX")
@@ -35,7 +49,7 @@ cleanup() {
 	trap - EXIT HUP INT TERM
 	if [[ $status -ne 0 && -f "$work_dir/watcher.log" ]]; then tail -100 "$work_dir/watcher.log" >&2; fi
 	if [[ -n "$watcher_pid" ]]; then kill "$watcher_pid" 2>/dev/null || true; fi
-	for name in "${names[@]}"; do "$engine" rm --force "$name" >/dev/null 2>&1 || true; done
+	for name in "${names[@]}"; do engine_command rm --force "$name" >/dev/null 2>&1 || true; done
 	if [[ -n "$proxy_pid" ]]; then kill "$proxy_pid" 2>/dev/null || true; fi
 	if [[ -n "$watcher_pid" ]]; then wait "$watcher_pid" 2>/dev/null || true; fi
 	if [[ -n "$proxy_pid" ]]; then wait "$proxy_pid" 2>/dev/null || true; fi
@@ -56,10 +70,11 @@ for _ in {1..50}; do
 done
 
 start_container() {
-	"$engine" run --detach --name "$1" --label "$label=true" \
+	engine_command run --detach --name "$1" --label "$label=true" \
 		--env HTTP_PROXY= --env HTTPS_PROXY= --env ALL_PROXY= --env NO_PROXY= \
-		python:3.11-slim sleep 300 >/dev/null
+		"$image" sleep 300 >/dev/null
 }
+engine_command pull "$image" >/dev/null
 for name in "${names[@]}"; do start_container "$name"; done
 
 TUNLESS_CONTAINER_ENGINE=$engine \
@@ -97,7 +112,7 @@ assert r[:2]==b"\x73\x41"; print(wan)'
 probe_container() {
 	local name=$1 exit_address=
 	for _ in {1..3}; do
-		if exit_address=$("$engine" exec "$name" python -c "$probe"); then printf '%s\n' "$exit_address"; return 0; fi
+		if exit_address=$(engine_command exec "$name" python -c "$probe"); then printf '%s\n' "$exit_address"; return 0; fi
 		sleep 1
 	done
 	return 1
@@ -107,7 +122,7 @@ for name in "${names[@]}"; do
 	[[ "$exit_address" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || { echo "unexpected WAN result from $name: $exit_address" >&2; exit 1; }
 done
 
-"$engine" rm --force "${names[0]}" >/dev/null
+engine_command rm --force "${names[0]}" >/dev/null
 start_container "${names[0]}"
 wait_for_controllers 3
 exit_address=$(probe_container "${names[0]}")

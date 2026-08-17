@@ -28,14 +28,14 @@ done
 
 docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_amd64_image" sh -euxc "
   printf '%s\n' 'path-include /usr/share/doc/tunless/*' > /etc/dpkg/dpkg.cfg.d/tunless-test
-  apt-get update >/dev/null
-  apt-get install -y /release/$(basename "$deb") >/dev/null
+  dpkg -i /release/$(basename "$deb") >/dev/null
   test \"\$(tunless --version)\" = '$version'
   test -f /usr/lib/systemd/system/tunless.service
   test -f /usr/lib/systemd/system/tunless-container-watch.service
   test -x /usr/libexec/tunless/tunless-docker-watch.sh
   test -f /usr/share/doc/tunless/copyright
   test -f /usr/share/doc/tunless/THIRD_PARTY_NOTICES.md
+  apt-get update >/dev/null
   apt-get install -y systemd >/dev/null
   systemd-analyze verify /usr/lib/systemd/system/tunless.service /usr/lib/systemd/system/tunless-container-watch.service
   test \"\$(stat -c %a /usr/bin/tunless)\" = 755
@@ -49,8 +49,7 @@ docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_amd64_i
 
 docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$debian_arm64_image" sh -euxc "
   printf '%s\n' 'path-include /usr/share/doc/tunless/*' > /etc/dpkg/dpkg.cfg.d/tunless-test
-  apt-get update >/dev/null
-  apt-get install -y /release/$(basename "$deb_arm64") >/dev/null
+  dpkg -i /release/$(basename "$deb_arm64") >/dev/null
   test \"\$(tunless --version)\" = '$version'
   test -f /usr/lib/systemd/system/tunless.service
   test -f /usr/lib/systemd/system/tunless-container-watch.service
@@ -63,7 +62,7 @@ docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$debian_arm64_i
 "
 
 docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$rocky_amd64_image" sh -euxc "
-  dnf install -y /release/$(basename "$rpm") >/dev/null
+  rpm -i /release/$(basename "$rpm")
   test \"\$(tunless --version)\" = '$version'
   test -f /usr/lib/systemd/system/tunless.service
   test -f /usr/lib/systemd/system/tunless-container-watch.service
@@ -80,7 +79,7 @@ docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$rocky_amd64_im
 "
 
 docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$rocky_arm64_image" sh -euxc "
-  dnf install -y /release/$(basename "$rpm_arm64") >/dev/null
+  rpm -i /release/$(basename "$rpm_arm64")
   test \"\$(tunless --version)\" = '$version'
   test -f /usr/lib/systemd/system/tunless.service
   test -f /usr/lib/systemd/system/tunless-container-watch.service
