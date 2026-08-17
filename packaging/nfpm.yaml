@@ -48,10 +48,19 @@ contents:
     file_info:
       mode: 0644
   - src: LICENSE
-    dst: /usr/share/doc/tunless/LICENSE
+    dst: /usr/share/doc/tunless/copyright
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/licenses/tunless/LICENSE
+    type: license
+    packager: rpm
     file_info:
       mode: 0644
 scripts:
   postinstall: packaging/nfpm/postinstall.sh
   preremove: packaging/nfpm/preremove.sh
   postremove: packaging/nfpm/postremove.sh
+rpm:
+  buildhost: tunless-release-builder
