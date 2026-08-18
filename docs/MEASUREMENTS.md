@@ -288,8 +288,15 @@ path.
   still produced `ECONNREFUSED` for a bridge container because its private
   loopback had no listener. Namespace-local sockets are the implemented fix,
   not an environment-variable or route workaround.
-- macOS: the 12-test Swift suite and universal Release containing-app/system-
-  extension build pass. On 2026-08-17, build 8 (`1.0.7`) was signed with
+- macOS build 9 upgrade smoke: on 2026-08-18 the 25-test Swift suite, Go suite,
+  and unsigned Debug containing-app/system-extension build passed. The
+  universal Release bundle was signed with direct Developer ID profiles,
+  notarized, stapled, accepted by Gatekeeper, and installed over build 8. The
+  build 9 (`1.0.8`) extension was the single `activated enabled` entry, status
+  reported `connected` through the Clash Verge preset at `127.0.0.1:7897`, and
+  SOCKS5 preflight plus live HTTPS passed. Provider telemetry confirmed live
+  DNS rewriting to `1.1.1.1:53`.
+- macOS build 8 full validation: on 2026-08-17, build 8 (`1.0.7`) was signed with
   matching direct Developer ID profiles, notarized, stapled, accepted by
   Gatekeeper, installed, activated, and enabled. Captured UDP and TCP queries
   addressed to the configured `223.6.6.6` system resolver were rewritten to

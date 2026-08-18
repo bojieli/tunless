@@ -31,6 +31,28 @@ xcodebuild -project macos/Tunless.xcodeproj -scheme Tunless \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
+After producing a correctly signed Release bundle, notarize and verify the
+exact bundle that will be installed. `store-credentials` prompts for the
+app-specific password and stores it in the login Keychain; never put that
+password in the command line or repository:
+
+```console
+xcrun notarytool store-credentials tunless-notary \
+  --apple-id APPLE_ID --team-id TEAM_ID
+ditto -c -k --keepParent Tunless.app Tunless.zip
+xcrun notarytool submit Tunless.zip \
+  --keychain-profile tunless-notary --wait
+xcrun stapler staple Tunless.app
+xcrun stapler validate Tunless.app
+codesign --verify --deep --strict --verbose=2 Tunless.app
+spctl --assess --type execute --verbose=4 Tunless.app
+```
+
+If the accelerated upload times out before transferring any bytes, submit the
+same archive again with `--no-s3-acceleration`. Do not install until that
+complete upload reports `Accepted` and the staple, signature, and Gatekeeper
+checks all pass.
+
 For a provisioned team, build Release normally, put `Tunless.app` in
 `/Applications`, and invoke its executable with `start --upstream`. First
 activation opens the standard macOS approval path. `stop` disables every
@@ -193,10 +215,15 @@ the response. Normal full-duplex TCP, HTTP/1.x, HTTP/2, TLS, and remote-first EO
 supported. Protocols that require a client FIN as an application-level message
 delimiter need a packet-layer implementation rather than an app-proxy flow.
 
-Current source is build 9 (`1.0.8`). On 2026-08-18 its 25-test Swift suite and
-unsigned containing-app/system-extension Debug build passed. It has not yet
-replaced the installed notarized build or been represented as a new live
-network validation.
+Current source is build 9 (`1.0.8`). On 2026-08-18 its 25-test Swift suite, Go
+suite, and unsigned containing-app/system-extension Debug build passed. The
+universal Release app and nested extension were signed with direct Developer
+ID profiles, notarized, stapled, accepted by Gatekeeper, and installed over
+build 8. The build 9 extension became the single `activated enabled` entry and
+the launcher reported `connected` with the Clash Verge preset at
+`127.0.0.1:7897`. SOCKS5 preflight and a live HTTPS request passed, while live
+telemetry showed captured DNS requests rewritten from the configured system
+resolver to `1.1.1.1:53`.
 
 Validated on macOS 26.3 on 2026-08-17: build 8 (`1.0.7`) of the universal
 Release app and nested system extension was signed with direct Developer ID
