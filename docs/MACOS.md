@@ -78,6 +78,37 @@ new configuration to an active provider; `--telemetry` prints and drains a JSON
 buffer capped at 4,096 flow records, so an unattended extension cannot grow the
 buffer without bound.
 
+### Persistent telemetry log
+
+The optional user LaunchAgent in
+`packaging/launchd/com.bojieli.tunless.telemetry.plist` drains non-empty
+telemetry batches every 10 seconds into `~/.tunless/flow.log`. The collector
+keeps the active log and five 10 MiB backups, and forces the directory and log
+permissions to `0700` and `0600` because flow records contain destinations,
+hostnames, and source application signing identifiers.
+
+Install it for the current user after installing `Tunless.app`:
+
+```console
+install -d -m 0700 ~/.tunless/bin ~/Library/LaunchAgents
+install -m 0700 scripts/tunless-macos-telemetry-log.sh \
+  ~/.tunless/bin/tunless-macos-telemetry-log.sh
+sed "s|/Users/YOU|$HOME|g" \
+  packaging/launchd/com.bojieli.tunless.telemetry.plist \
+  > ~/Library/LaunchAgents/com.bojieli.tunless.telemetry.plist
+launchctl bootstrap "gui/$(id -u)" \
+  ~/Library/LaunchAgents/com.bojieli.tunless.telemetry.plist
+```
+
+Follow the JSON log with `tail -f ~/.tunless/flow.log`. Stop collecting with:
+
+```console
+launchctl bootout "gui/$(id -u)/com.bojieli.tunless.telemetry"
+```
+
+The collector does not change Tunless routing. Each successful poll consumes
+the provider's in-memory telemetry snapshot after it has been persisted.
+
 The Network Extension flow API does not preserve a client TCP half-close. A
 test application that calls `shutdown(SHUT_WR)` causes its
 `NEAppProxyTCPFlow` to become disconnected; a later provider `write` fails with

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bojieli.tunless.telemetry</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/Users/YOU/.tunless/bin/tunless-macos-telemetry-log.sh</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>10</integer>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TUNLESS_LOG_MAX_BYTES</key>
+    <string>10485760</string>
+    <key>TUNLESS_LOG_BACKUPS</key>
+    <string>5</string>
+  </dict>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/.tunless/collector.log</string>
+</dict>
+</plist>

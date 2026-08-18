@@ -7,6 +7,8 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Added
 
+- An optional macOS user LaunchAgent that persists bounded, private flow
+  telemetry under `~/.tunless`, with size-based rotation.
 - Linux cgroup eBPF capture for TCP and connected/unconnected UDP over IPv4 and
   IPv6, including namespace-local Docker, Podman, and one-container
   Kubernetes/containerd application capture.
