@@ -12,7 +12,8 @@ The container itself needs no proxy variables, capabilities, or route changes.
 Set TUNLESS_CONTAINER_ENGINE=podman for rootful Podman on native Linux. On
 native Linux, set TUNLESS_BINARY to select the host binary. On Docker
 Desktop for macOS/Windows, TUNLESS_DOCKER_IMAGE selects the privileged Linux
-controller image. TUNLESS_UPSTREAM is honored, or pass --upstream explicitly.
+controller image. TUNLESS_UPSTREAM, TUNLESS_DNS_UPSTREAM, and
+TUNLESS_DISABLE_DNS_OVERRIDE are honored, or pass their flags explicitly.
 For a loopback host upstream, the macOS helper automatically starts a local
 SOCKS bridge so both TCP and SOCKS5 UDP relay addresses cross Docker Desktop.
 EOF
@@ -45,14 +46,24 @@ refresh_pid() {
 refresh_pid
 
 upstream=${TUNLESS_UPSTREAM:-127.0.0.1:7890}
+has_dns_upstream=false
+has_dns_override_policy=false
 for ((index = 0; index < ${#tunless_args[@]}; index++)); do
 	case ${tunless_args[index]} in
 	--upstream)
 		if ((index + 1 < ${#tunless_args[@]})); then upstream=${tunless_args[index + 1]}; fi
 		;;
 	--upstream=*) upstream=${tunless_args[index]#--upstream=} ;;
+	--dns-upstream|--dns-upstream=*) has_dns_upstream=true ;;
+	--disable-dns-override|--disable-dns-override=*) has_dns_override_policy=true ;;
 	esac
 done
+if [[ "$has_dns_upstream" == false && -n ${TUNLESS_DNS_UPSTREAM:-} ]]; then
+	tunless_args+=(--dns-upstream "$TUNLESS_DNS_UPSTREAM")
+fi
+if [[ "$has_dns_override_policy" == false && -n ${TUNLESS_DISABLE_DNS_OVERRIDE:-} ]]; then
+	tunless_args+=(--disable-dns-override="$TUNLESS_DISABLE_DNS_OVERRIDE")
+fi
 
 mode=${TUNLESS_DOCKER_MODE:-auto}
 if [[ "$mode" == auto ]]; then
@@ -171,7 +182,7 @@ else
 		}
 		for attempt in {0..19}; do
 			bridge_port=$((35000 + (($$ + attempt) % 20000)))
-			"$bridge_binary" --backend loopback --listen "127.0.0.1:$bridge_port" --upstream "$upstream" --log-level warn &
+			"$bridge_binary" --backend loopback --listen "127.0.0.1:$bridge_port" --upstream "$upstream" --disable-dns-override --log-level warn &
 			bridge_job=$!
 			bridge_ready=false
 			for _ in {1..20}; do

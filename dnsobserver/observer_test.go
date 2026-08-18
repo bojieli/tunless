@@ -1,6 +1,8 @@
 package dnsobserver
 
 import (
+	"context"
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
@@ -16,6 +18,38 @@ func TestLookupRejectsAmbiguity(t *testing.T) {
 	o.records[netip.MustParseAddr("203.0.113.1")]["b.example."] = time.Now().Add(time.Minute)
 	if got := o.Lookup(netip.MustParseAddr("203.0.113.1")); got != "" {
 		t.Fatalf("ambiguous lookup returned %q", got)
+	}
+}
+
+func TestConfiguredProxyExchangesReplaceDirectResolverSockets(t *testing.T) {
+	want := []byte{1, 2, 3}
+	udpCalled, tcpCalled := false, false
+	observer := &Observer{
+		Upstream: "192.0.2.1:53",
+		UDPExchange: func(context.Context, []byte) ([]byte, error) {
+			udpCalled = true
+			return want, nil
+		},
+		TCPExchange: func(context.Context, []byte) ([]byte, error) {
+			tcpCalled = true
+			return want, nil
+		},
+	}
+	udpReply, err := observer.exchangeUDP(context.Background(), []byte{0})
+	if err != nil || !udpCalled || string(udpReply) != string(want) {
+		t.Fatalf("UDP proxy exchange = %v, %v, called=%v", udpReply, err, udpCalled)
+	}
+	tcpReply, err := observer.exchangeTCP(context.Background(), []byte{0})
+	if err != nil || !tcpCalled || string(tcpReply) != string(want) {
+		t.Fatalf("TCP proxy exchange = %v, %v, called=%v", tcpReply, err, tcpCalled)
+	}
+}
+
+func TestProxyExchangeErrorsAreReturned(t *testing.T) {
+	want := errors.New("proxy unavailable")
+	observer := &Observer{UDPExchange: func(context.Context, []byte) ([]byte, error) { return nil, want }}
+	if _, err := observer.exchangeUDP(context.Background(), []byte{0}); !errors.Is(err, want) {
+		t.Fatalf("exchange error = %v, want %v", err, want)
 	}
 }
 

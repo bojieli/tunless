@@ -59,7 +59,13 @@ does not send them to the resolver named in macOS network settings. A numeric
 address is required so selecting the trusted resolver cannot itself depend on
 system DNS. UDP replies are presented to the application as coming from the
 resolver it originally addressed, preserving connected-datagram semantics.
-Set `TUNLESS_DNS_UPSTREAM` to choose another trusted resolver.
+Tunless assigns a private transaction ID to each outstanding UDP query, then
+restores the application's original ID and resolver endpoint on reply. This
+prevents concurrent reused IDs and out-of-order responses from being matched by
+FIFO order. Entries expire after 30 seconds and are capped at 4,096. Set
+`TUNLESS_DNS_UPSTREAM` to choose another trusted resolver. Use
+`--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to preserve the
+original DNS destination while continuing to proxy the flow.
 
 Adjust the port to the active Clash mixed/SOCKS listener. If Xray is also
 running independently, exclude its signing identifier as well. Apply this
@@ -77,6 +83,13 @@ the provider, which is structural loop avoidance. Re-running the launcher sends
 new configuration to an active provider; `--telemetry` prints and drains a JSON
 buffer capped at 4,096 flow records, so an unattended extension cannot grow the
 buffer without bound.
+
+Every accepted TCP and UDP flow emits a terminal completion record. Provider
+stop closes all active Apple flows, cancels their tasks, and waits for teardown.
+SOCKS setup is bounded to 10 seconds, inactive TCP and UDP flows to five and two
+minutes, and a TCP peer has 30 seconds to finish after an application half-close.
+Re-running the launcher updates only new flows; each accepted flow retains the
+configuration snapshot under which it started.
 
 ### Persistent telemetry log
 
@@ -109,13 +122,22 @@ launchctl bootout "gui/$(id -u)/com.bojieli.tunless.telemetry"
 The collector does not change Tunless routing. Each successful poll consumes
 the provider's in-memory telemetry snapshot after it has been persisted.
 
-The Network Extension flow API does not preserve a client TCP half-close. A
+On application EOF, Tunless now half-closes the SOCKS connection and continues
+reading the peer until EOF or the 30-second drain bound. The Network Extension
+flow API still does not reliably preserve a client TCP half-close. A
 test application that calls `shutdown(SHUT_WR)` causes its
 `NEAppProxyTCPFlow` to become disconnected; a later provider `write` fails with
 `NEAppProxyFlowErrorDomain` code 1 even though the SOCKS peer can still return
-data. Normal full-duplex TCP, HTTP/1.x, HTTP/2, TLS, and remote-first EOF are
+data. Tunless recognizes that disconnect as an application EOF and attempts the
+correct SOCKS lifecycle, but it cannot make the disconnected Apple flow accept
+the response. Normal full-duplex TCP, HTTP/1.x, HTTP/2, TLS, and remote-first EOF are
 supported. Protocols that require a client FIN as an application-level message
 delimiter need a packet-layer implementation rather than an app-proxy flow.
+
+Current source is build 9 (`1.0.8`). On 2026-08-18 its 18-test Swift suite and
+unsigned containing-app/system-extension Debug build passed. It has not yet
+replaced the installed notarized build or been represented as a new live
+network validation.
 
 Validated on macOS 26.3 on 2026-08-17: build 8 (`1.0.7`) of the universal
 Release app and nested system extension was signed with direct Developer ID

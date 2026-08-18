@@ -7,6 +7,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=TUNLESS_UPSTREAM=127.0.0.1:7890
+Environment=TUNLESS_DNS_UPSTREAM=1.1.1.1:53
+Environment=TUNLESS_DISABLE_DNS_OVERRIDE=false
 Environment=TUNLESS_CONTAINER_LABEL=com.bojieli.tunless
 Environment=TUNLESS_BINARY=/usr/bin/tunless
 Environment=TUNLESS_DOCKER_MODE=native

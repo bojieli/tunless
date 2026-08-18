@@ -42,6 +42,7 @@ and run:
 
 ```console
 TUNLESS_UPSTREAM=127.0.0.1:7890 \
+  TUNLESS_DNS_UPSTREAM=1.1.1.1:53 \
   TUNLESS_BINARY=/usr/local/bin/tunless \
   ./scripts/tunless-docker.sh CONTAINER_NAME_OR_ID
 ```
@@ -74,6 +75,7 @@ Docker Desktop use PowerShell:
 
 ```powershell
 $env:TUNLESS_UPSTREAM = '127.0.0.1:7890'
+$env:TUNLESS_DNS_UPSTREAM = '1.1.1.1:53'
 .\scripts\tunless-docker.ps1 CONTAINER_NAME_OR_ID
 ```
 
@@ -82,18 +84,23 @@ because loading cgroup BPF and entering a network namespace require host
 privileges. Docker Desktop puts those privileges in the controller. The target
 container receives no capability and never mounts the host cgroup tree.
 
-Docker's private resolver is part of the container dataplane, not an external
-destination. Tunless reads the target's `/etc/resolv.conf` and automatically
-keeps only loopback, private, and link-local nameserver addresses direct. A
-public resolver remains captured. This was exercised with Docker Desktop's
-`192.168.65.7` resolver and native Docker's `127.0.0.11` resolver.
+With the default trusted-DNS override, Tunless reads the target's
+`/etc/resolv.conf`, captures its loopback/private/link-local resolver addresses,
+and routes their port-53 queries to `TUNLESS_DNS_UPSTREAM` through SOCKS. With
+`TUNLESS_DISABLE_DNS_OVERRIDE=true`, those container-local resolver addresses
+are excluded and remain direct. Earlier direct-resolver validation exercised
+Docker Desktop's `192.168.65.7` and native Docker's `127.0.0.11`; the new
+override path is covered by source, unit, and cross-build gates and still needs
+a repeated privileged container runtime run before release.
 
 SOCKS5 UDP association usually returns a separate UDP relay port. Rewriting
 only `127.0.0.1` to `host.docker.internal` handles TCP but can leave that relay
 unreachable. When the configured upstream is host-loopback, the macOS and
 PowerShell launchers therefore run a temporary loopback Tunless bridge on the
-host. The controller uses the bridge, which forwards TCP and UDP to the original
-authenticated or unauthenticated upstream. Set `TUNLESS_DOCKER_BRIDGE=never`
+host. The controller is the sole DNS-policy owner. The bridge explicitly
+disables its own override and forwards the controller's already-routed TCP and
+UDP destinations to the original authenticated or unauthenticated upstream.
+Set `TUNLESS_DOCKER_BRIDGE=never`
 only when the supplied upstream is already fully reachable from the Desktop VM.
 An installed bridge binary can be selected with
 `TUNLESS_DOCKER_BRIDGE_BINARY`.

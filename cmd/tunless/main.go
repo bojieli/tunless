@@ -45,12 +45,17 @@ func main() {
 
 func run() error {
 	var upstream, listen, logLevel, backendName, cgroupPath, networkNamespace, containerID, dnsListen, dnsUpstream, metadataSocket, statusListen string
-	var showVersion, check bool
+	var showVersion, check, disableDNSOverride bool
 	var metadataUsername bool
 	var containerPID, maxFlows int
+	var flowIdleTimeout, udpIdleTimeout time.Duration
 	var checkTarget string
 	var containerDNS []string
 	var includeProc, excludeProc, includeDst, excludeDst stringsFlag
+	dnsDefault := os.Getenv("TUNLESS_DNS_UPSTREAM")
+	if dnsDefault == "" {
+		dnsDefault = "1.1.1.1:53"
+	}
 	flag.StringVar(&upstream, "upstream", os.Getenv("TUNLESS_UPSTREAM"), "SOCKS5 upstream, e.g. 127.0.0.1:7890 or socks5://user:pass@host:port")
 	flag.StringVar(&listen, "listen", "127.0.0.1:1080", "reference SOCKS5 listener address")
 	flag.StringVar(&backendName, "backend", "auto", "capture backend: auto, linux, or loopback")
@@ -59,7 +64,8 @@ func run() error {
 	flag.IntVar(&containerPID, "container-pid", 0, "optional Linux container init PID; derives its cgroup and network namespace")
 	flag.StringVar(&containerID, "container-id", "", "expected container ID; protects --container-pid from PID reuse")
 	flag.StringVar(&dnsListen, "dns-listen", "", "optional real-answer DNS observer listen address")
-	flag.StringVar(&dnsUpstream, "dns-upstream", "1.1.1.1:53", "resolver used by the optional DNS observer")
+	flag.StringVar(&dnsUpstream, "dns-upstream", dnsDefault, "numeric trusted resolver used for captured port-53 traffic and the optional DNS observer")
+	flag.BoolVar(&disableDNSOverride, "disable-dns-override", false, "preserve each application's original DNS resolver instead of rewriting port-53 traffic")
 	flag.StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error")
 	flag.BoolVar(&showVersion, "version", false, "print version")
 	flag.BoolVar(&check, "check", false, "run machine-readable preflight checks without starting capture")
@@ -68,11 +74,26 @@ func run() error {
 	flag.StringVar(&metadataSocket, "metadata-socket", "", "optional Unix socket exposing process metadata by SOCKS source port")
 	flag.StringVar(&statusListen, "status-listen", "", "optional loopback HTTP health/status address, e.g. 127.0.0.1:6060")
 	flag.IntVar(&maxFlows, "max-flows", 4096, "maximum concurrent captured flows before fail-fast rejection")
+	flag.DurationVar(&flowIdleTimeout, "flow-idle-timeout", 5*time.Minute, "maximum TCP inactivity before completing a stalled flow (zero disables)")
+	flag.DurationVar(&udpIdleTimeout, "udp-idle-timeout", 2*time.Minute, "maximum UDP association inactivity before completion (zero disables)")
 	flag.Var(&includeProc, "include-process", "capture executable path/name glob (repeatable)")
 	flag.Var(&excludeProc, "exclude-process", "exclude executable path/name glob (repeatable)")
 	flag.Var(&includeDst, "include-destination", "capture CIDR prefix (repeatable)")
 	flag.Var(&excludeDst, "exclude-destination", "exclude CIDR prefix (repeatable)")
 	flag.Parse()
+	disableFlagSet := false
+	flag.Visit(func(item *flag.Flag) {
+		if item.Name == "disable-dns-override" {
+			disableFlagSet = true
+		}
+	})
+	if raw := os.Getenv("TUNLESS_DISABLE_DNS_OVERRIDE"); raw != "" && !disableFlagSet {
+		value, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return errors.New("TUNLESS_DISABLE_DNS_OVERRIDE must be a boolean")
+		}
+		disableDNSOverride = value
+	}
 	if showVersion {
 		fmt.Println(version)
 		return nil
@@ -82,6 +103,18 @@ func run() error {
 	}
 	if maxFlows < 1 {
 		return errors.New("--max-flows must be positive")
+	}
+	if flowIdleTimeout < 0 || udpIdleTimeout < 0 {
+		return errors.New("flow idle timeouts cannot be negative")
+	}
+	var dnsTarget netip.AddrPort
+	if !disableDNSOverride || dnsListen != "" {
+		var dnsErr error
+		dnsTarget, dnsErr = netip.ParseAddrPort(dnsUpstream)
+		if dnsErr != nil || dnsTarget.Port() == 0 {
+			return errors.New("--dns-upstream must be a numeric IP:port (IPv6 addresses require brackets)")
+		}
+		dnsTarget = netip.AddrPortFrom(dnsTarget.Addr().Unmap(), dnsTarget.Port())
 	}
 	if statusListen != "" {
 		var statusErr error
@@ -100,7 +133,9 @@ func run() error {
 			return scopeErr
 		}
 		containerDNS = containerDNSPrefixes(containerPID)
-		excludeDst = append(excludeDst, containerDNS...)
+		if disableDNSOverride {
+			excludeDst = append(excludeDst, containerDNS...)
+		}
 	} else if containerID != "" {
 		return errors.New("--container-id requires --container-pid")
 	}
@@ -116,14 +151,21 @@ func run() error {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
-	if len(containerDNS) > 0 {
+	if len(containerDNS) > 0 && disableDNSOverride {
 		logger.Info("preserving container-local DNS", "destinations", containerDNS)
+	} else if len(containerDNS) > 0 {
+		logger.Info("capturing container DNS for trusted-resolver override", "destinations", containerDNS, "dns_upstream", dnsTarget)
 	}
 	client, err := parseUpstream(upstream)
 	if err != nil {
 		return err
 	}
 	client.MetadataUsername = metadataUsername
+	client.FlowIdleTimeout = flowIdleTimeout
+	client.UDPIdleTimeout = udpIdleTimeout
+	if !disableDNSOverride {
+		client.DNSOverride = dnsTarget
+	}
 	filter := tunless.Filter{IncludeProcesses: includeProc, ExcludeProcesses: excludeProc}
 	if filter.IncludeDestinations, err = prefixes(includeDst); err != nil {
 		return err
@@ -193,7 +235,16 @@ func run() error {
 	}
 	var resolver tunless.NameResolver
 	if dnsListen != "" {
-		observer := &dnsobserver.Observer{Listen: dnsListen, Upstream: dnsUpstream}
+		observer := &dnsobserver.Observer{
+			Listen:   dnsListen,
+			Upstream: dnsUpstream,
+			UDPExchange: func(exchangeCtx context.Context, query []byte) ([]byte, error) {
+				return client.ExchangeDNSUDP(exchangeCtx, dnsTarget, query)
+			},
+			TCPExchange: func(exchangeCtx context.Context, query []byte) ([]byte, error) {
+				return client.ExchangeDNSTCP(exchangeCtx, dnsTarget, query)
+			},
+		}
 		resolver = observer
 		go func() {
 			if err := observer.Serve(ctx); err != nil && ctx.Err() == nil {
@@ -206,11 +257,17 @@ func run() error {
 	}
 	stats := &tunless.Stats{}
 	if statusListen != "" {
+		dnsStatus := ""
+		if dnsTarget.IsValid() {
+			dnsStatus = dnsTarget.String()
+		}
 		server := &statusapi.Server{
 			Address:       statusListen,
 			Version:       version,
 			BackendName:   backendName,
 			Upstream:      client.Address,
+			DNSUpstream:   dnsStatus,
+			DNSOverride:   !disableDNSOverride,
 			MaxConcurrent: maxFlows,
 			Stats:         stats,
 			Backend:       backend,
@@ -224,7 +281,7 @@ func run() error {
 		defer server.Close()
 		logger.Info("status API enabled", "listen", statusListen)
 	}
-	logger.Info("starting tunless", "backend", backendName, "listen", listen, "upstream", client.Address)
+	logger.Info("starting tunless", "backend", backendName, "listen", listen, "upstream", client.Address, "dns_override", !disableDNSOverride, "dns_upstream", dnsTarget)
 	return (&tunless.Core{
 		Backend:       backend,
 		Emitter:       client,

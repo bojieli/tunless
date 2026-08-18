@@ -18,7 +18,11 @@ The Windows implementation consists of:
 
 The WFP filters include `IPPROTO_TCP`. UDP is deliberately direct: intercepting
 it without a tested datagram service would turn an incomplete feature into a
-connectivity failure.
+connectivity failure. Captured TCP connections to port 53 use the shared
+numeric trusted-resolver override through SOCKS5, including the
+`--disable-dns-override` switch. Ordinary Windows DNS is normally UDP, so this
+does not qualify as complete Windows DNS protection until the UDP datapath is
+implemented and runtime-tested.
 
 Build on an isolated Windows 11 driver-development VM with Visual Studio and the
 WDK:

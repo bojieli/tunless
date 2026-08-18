@@ -49,6 +49,21 @@ final class SOCKS5Tests:XCTestCase {
 		await fulfillment(of:[served],timeout:2);await client.cancel();listener.cancel()
 	}
 
+	func testHandshakeTimeoutCancelsPendingCallbacks()async throws{
+		let listener=try NWListener(using:.tcp,on:.any);let ready=expectation(description:"listener ready");let accepted=expectation(description:"connection accepted")
+		listener.stateUpdateHandler={state in if case .ready=state{ready.fulfill()}}
+		listener.newConnectionHandler={connection in connection.start(queue:.global());accepted.fulfill()}
+		listener.start(queue:.global());await fulfillment(of:[ready],timeout:2);guard let port=listener.port else{XCTFail("listener has no port");return}
+		let configuration=ProviderConfiguration(upstreamHost:"127.0.0.1",upstreamPort:port.rawValue);let client=SOCKSConnection(configuration:configuration);let started=Date()
+		do{_ = try await client.open(configuration:configuration,command:1,destination:SOCKSAddress(host:"1.2.3.4",port:443),timeoutSeconds:0.02);XCTFail("stalled handshake did not time out")}catch{}
+		XCTAssertLessThan(Date().timeIntervalSince(started),1);await fulfillment(of:[accepted],timeout:2);await client.cancel();listener.cancel()
+	}
+
+	func testAsyncResultGateHandlesCancellationBeforeInstall()async{
+		let gate=AsyncResultGate<Void>();gate.resume(with:.failure(CancellationError()))
+		do{try await withCheckedThrowingContinuation{(continuation:CheckedContinuation<Void,Error>) in _=gate.install(continuation)};XCTFail("gate lost cancellation")}catch is CancellationError{}catch{XCTFail("unexpected gate error: \(error)")}
+	}
+
 	private static func receive(_ connection:NWConnection,count:Int)async throws->Data{try await withCheckedThrowingContinuation{continuation in connection.receive(minimumIncompleteLength:count,maximumLength:count){data,_,_,error in if let error{continuation.resume(throwing:error)}else if let data,data.count==count{continuation.resume(returning:data)}else{continuation.resume(throwing:SOCKSError.closed)}}}}
 	private static func send(_ connection:NWConnection,_ data:Data)async throws{try await withCheckedThrowingContinuation{(continuation:CheckedContinuation<Void,Error>) in connection.send(content:data,completion:.contentProcessed{error in if let error{continuation.resume(throwing:error)}else{continuation.resume()}})}}
 }
@@ -61,6 +76,34 @@ final class CaptureFilterTests:XCTestCase {
 }
 
 final class DNSResponseMapTests:XCTestCase {
-	func testRestoresOriginalResolverEndpoint()async{let map=DNSResponseMap();let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);await map.record(query:Data([0x12,0x34,0x01,0x00]),original:original,routed:routed);let first=await map.original(for:Data([0x12,0x34,0x81,0x80]),receivedFrom:routed);let second=await map.original(for:Data([0x12,0x34,0x81,0x80]),receivedFrom:routed);XCTAssertEqual(first,original);XCTAssertNil(second)}
-	func testDoesNotRewriteResponseFromAnotherSource()async{let map=DNSResponseMap();let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);await map.record(query:Data([0xab,0xcd]),original:original,routed:routed);let other=await map.original(for:Data([0xab,0xcd]),receivedFrom:SOCKSAddress(host:"8.8.8.8",port:53));let expected=await map.original(for:Data([0xab,0xcd]),receivedFrom:routed);XCTAssertNil(other);XCTAssertEqual(expected,original)}
+	func testRestoresOriginalResolverEndpointAndIdentifier()async{
+		let map=DNSResponseMap();let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53)
+		let query=Data([0x12,0x34,0x01,0x00,0,1,0,0,0,0,0,0]);let translated=await map.prepare(query:query,original:original,routed:routed)
+		XCTAssertNotEqual(translated.prefix(2),query.prefix(2))
+		var response=translated;response[2]=0x81;response[3]=0x80
+		let restored=await map.restore(response:response,receivedFrom:routed)
+		let count=await map.outstandingCount();XCTAssertEqual(restored.source,original);XCTAssertEqual(restored.payload.prefix(2),query.prefix(2));XCTAssertEqual(count,0)
+	}
+	func testConcurrentReusedIdentifiersAreUnambiguous()async{
+		let map=DNSResponseMap();let firstOriginal=SOCKSAddress(host:"223.6.6.6",port:53);let secondOriginal=SOCKSAddress(host:"8.8.8.8",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);let query=Data([0xab,0xcd,1,0,0,1,0,0,0,0,0,0])
+		let first=await map.prepare(query:query,original:firstOriginal,routed:routed);let second=await map.prepare(query:query,original:secondOriginal,routed:routed);XCTAssertNotEqual(first.prefix(2),second.prefix(2))
+		let secondResponse=await map.restore(response:second,receivedFrom:routed);let firstResponse=await map.restore(response:first,receivedFrom:routed);XCTAssertEqual(secondResponse.source,secondOriginal);XCTAssertEqual(firstResponse.source,firstOriginal);XCTAssertEqual(secondResponse.payload.prefix(2),query.prefix(2));XCTAssertEqual(firstResponse.payload.prefix(2),query.prefix(2))
+	}
+	func testDoesNotRewriteResponseFromAnotherSource()async{
+		let map=DNSResponseMap();let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);let query=Data([0xab,0xcd,1,0,0,1,0,0,0,0,0,0]);let translated=await map.prepare(query:query,original:original,routed:routed)
+		let other=await map.restore(response:translated,receivedFrom:SOCKSAddress(host:"8.8.8.8",port:53));let expected=await map.restore(response:translated,receivedFrom:routed);XCTAssertEqual(other.source,SOCKSAddress(host:"8.8.8.8",port:53));XCTAssertEqual(expected.source,original)
+	}
+	func testMapIsBoundedAndExpiresEntries()async throws{
+		let map=DNSResponseMap(maxEntries:2,ttlSeconds:0.01);let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53)
+		for id:UInt8 in 1...3{_ = await map.prepare(query:Data([0,id,1,0,0,1,0,0,0,0,0,0]),original:original,routed:routed)};let bounded=await map.outstandingCount();XCTAssertEqual(bounded,2);try await Task.sleep(nanoseconds:20_000_000);_ = await map.prepare(query:Data([0,4,1,0,0,1,0,0,0,0,0,0]),original:original,routed:routed);let pruned=await map.outstandingCount();XCTAssertEqual(pruned,1)
+	}
+}
+
+final class InactivityDeadlineTests:XCTestCase {
+	func testDeadlineExpires()async{
+		let deadline=InactivityDeadline(timeoutSeconds:0.01);let started=Date();let expired=await deadline.waitForExpiry();XCTAssertTrue(expired);XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started),0.008)
+	}
+	func testActivityPostponesDeadline()async throws{
+		let deadline=InactivityDeadline(timeoutSeconds:0.03);let waiter=Task{await deadline.waitForExpiry()};try await Task.sleep(nanoseconds:20_000_000);await deadline.touch();let started=Date();let expired=await waiter.value;XCTAssertTrue(expired);XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started),0.02)
+	}
 }

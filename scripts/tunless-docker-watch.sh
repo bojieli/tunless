@@ -10,8 +10,8 @@ every running application container. Set TUNLESS_DOCKER_LABEL to a label name
 (for example devcontainer.local_folder) to limit automatic attachment.
 
 Set TUNLESS_CONTAINER_ENGINE=podman on native Linux. Controller containers are
-excluded automatically. TUNLESS_UPSTREAM,
-TUNLESS_BINARY, TUNLESS_DOCKER_IMAGE, TUNLESS_DOCKER_BUILD, and
+excluded automatically. TUNLESS_UPSTREAM, TUNLESS_DNS_UPSTREAM,
+TUNLESS_DISABLE_DNS_OVERRIDE, TUNLESS_BINARY, TUNLESS_DOCKER_IMAGE, TUNLESS_DOCKER_BUILD, and
 TUNLESS_DOCKER_MODE have the same meaning as in tunless-docker.sh.
 EOF
 	exit 2

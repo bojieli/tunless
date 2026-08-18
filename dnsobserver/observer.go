@@ -16,6 +16,8 @@ import (
 type Observer struct {
 	Listen, Upstream string
 	MaxConcurrent    int
+	UDPExchange      func(context.Context, []byte) ([]byte, error)
+	TCPExchange      func(context.Context, []byte) ([]byte, error)
 	mu               sync.Mutex
 	records          map[netip.Addr]map[string]time.Time
 	udp              *net.UDPConn
@@ -151,6 +153,11 @@ func (o *Observer) serveUDP(ctx context.Context) {
 	}
 }
 func (o *Observer) exchangeUDP(ctx context.Context, query []byte) ([]byte, error) {
+	if o.UDPExchange != nil {
+		exchangeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return o.UDPExchange(exchangeCtx, query)
+	}
 	d := net.Dialer{}
 	conn, err := d.DialContext(ctx, "udp", o.Upstream)
 	if err != nil {
@@ -192,6 +199,11 @@ func (o *Observer) serveTCP(ctx context.Context, client net.Conn) {
 }
 
 func (o *Observer) exchangeTCP(ctx context.Context, query []byte) ([]byte, error) {
+	if o.TCPExchange != nil {
+		exchangeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return o.TCPExchange(exchangeCtx, query)
+	}
 	d := net.Dialer{}
 	upstream, err := d.DialContext(ctx, "tcp", o.Upstream)
 	if err != nil {

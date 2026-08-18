@@ -8,6 +8,8 @@ Wants=network-online.target
 Type=simple
 Environment=TUNLESS_UPSTREAM=127.0.0.1:7890
 Environment=TUNLESS_CGROUP=/sys/fs/cgroup/user.slice
+Environment=TUNLESS_DNS_UPSTREAM=1.1.1.1:53
+Environment=TUNLESS_DISABLE_DNS_OVERRIDE=false
 EnvironmentFile=-/etc/tunless.env
 ExecStart=/usr/local/bin/tunless --backend=linux --cgroup=${TUNLESS_CGROUP} --upstream=${TUNLESS_UPSTREAM}
 Restart=on-failure

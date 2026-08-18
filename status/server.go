@@ -18,6 +18,8 @@ type Server struct {
 	Version       string
 	BackendName   string
 	Upstream      string
+	DNSUpstream   string
+	DNSOverride   bool
 	MaxConcurrent int
 	Stats         *tunless.Stats
 	Backend       tunless.Backend
@@ -36,6 +38,8 @@ type response struct {
 	Version       string                     `json:"version"`
 	Backend       string                     `json:"backend"`
 	Upstream      string                     `json:"upstream"`
+	DNSUpstream   string                     `json:"dns_upstream"`
+	DNSOverride   bool                       `json:"dns_override"`
 	MaxConcurrent int                        `json:"max_concurrent_flows"`
 	Flows         tunless.StatsSnapshot      `json:"flows"`
 	Capture       tunless.BackendDiagnostics `json:"capture"`
@@ -125,6 +129,8 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		Version:       s.Version,
 		Backend:       s.BackendName,
 		Upstream:      s.Upstream,
+		DNSUpstream:   s.DNSUpstream,
+		DNSOverride:   s.DNSOverride,
 		MaxConcurrent: s.MaxConcurrent,
 		Flows:         flows,
 		Capture:       capture,

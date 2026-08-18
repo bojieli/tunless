@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/bojieli/tunless"
@@ -21,7 +22,12 @@ type Client struct {
 	Registry         MetadataRegistry
 	Dialer           net.Dialer
 	HandshakeTimeout time.Duration
+	DNSOverride      netip.AddrPort
+	FlowIdleTimeout  time.Duration
+	UDPIdleTimeout   time.Duration
 }
+
+var ErrUDPIdleTimeout = errors.New("SOCKS5 UDP association idle timeout")
 
 type MetadataRegistry interface {
 	Register(uint16, tunless.ProcessInfo) func()
@@ -133,7 +139,7 @@ func (c *Client) connect(ctx context.Context, command byte, dst netip.AddrPort, 
 		// identity attached to this flow.
 		methods = []byte{2}
 	}
-	if _, err = conn.Write(append([]byte{5, byte(len(methods))}, methods...)); err != nil {
+	if err = writeAll(conn, append([]byte{5, byte(len(methods))}, methods...)); err != nil {
 		return fail(err)
 	}
 	var choice [2]byte
@@ -154,7 +160,7 @@ func (c *Client) connect(ctx context.Context, command byte, dst netip.AddrPort, 
 		auth = append(auth, username...)
 		auth = append(auth, byte(len(password)))
 		auth = append(auth, password...)
-		if _, err = conn.Write(auth); err != nil {
+		if err = writeAll(conn, auth); err != nil {
 			return fail(err)
 		}
 		if _, err = io.ReadFull(conn, choice[:]); err != nil {
@@ -181,7 +187,7 @@ func (c *Client) connect(ctx context.Context, command byte, dst netip.AddrPort, 
 	} else {
 		req = append(req, encodeAddr(dst)...)
 	}
-	if _, err = conn.Write(req); err != nil {
+	if err = writeAll(conn, req); err != nil {
 		return fail(err)
 	}
 	var header [3]byte
@@ -208,7 +214,8 @@ func (c *Client) connect(ctx context.Context, command byte, dst netip.AddrPort, 
 
 func (c *Client) emitTCP(ctx context.Context, flow tunless.Flow) error {
 	username, password := c.credentials(flow)
-	conn, _, cleanup, err := c.connect(ctx, 1, flow.OrigDst, flow.Hostname, username, password, flow.Process, flow.RedirectRecords)
+	destination, hostname := c.routedTCPDestination(flow)
+	conn, _, cleanup, err := c.connect(ctx, 1, destination, hostname, username, password, flow.Process, flow.RedirectRecords)
 	if err != nil {
 		return err
 	}
@@ -216,7 +223,15 @@ func (c *Client) emitTCP(ctx context.Context, flow tunless.Flow) error {
 	defer cleanup()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close(); _ = flow.Conn.Close() })
 	defer stop()
-	return tunless.Relay(flow.Conn, conn)
+	idleTimeout := c.FlowIdleTimeout
+	return tunless.RelayContext(ctx, flow.Conn, conn, idleTimeout)
+}
+
+func (c *Client) routedTCPDestination(flow tunless.Flow) (netip.AddrPort, string) {
+	if c.DNSOverride.IsValid() && flow.OrigDst.Port() == 53 {
+		return c.DNSOverride, ""
+	}
+	return flow.OrigDst, flow.Hostname
 }
 
 func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
@@ -241,11 +256,31 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 	if err != nil {
 		return err
 	}
-	defer udp.Close()
-	stop := context.AfterFunc(ctx, func() { _ = udp.Close(); _ = flow.Packets.Close() })
-	defer stop()
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
+	var closeOnce sync.Once
+	closeAll := func() {
+		closeOnce.Do(func() {
+			cancelWorkers()
+			_ = control.Close()
+			_ = udp.Close()
+			_ = flow.Packets.Close()
+		})
+	}
+	defer closeAll()
 	errCh := make(chan error, 3)
+	activity := make(chan struct{}, 1)
+	touch := func() {
+		select {
+		case activity <- struct{}{}:
+		default:
+		}
+	}
+	translations := newDNSTransactionMap(4096, 30*time.Second)
+	var workers sync.WaitGroup
+	workers.Add(3)
 	go func() {
+		defer workers.Done()
 		var unexpected [1]byte
 		_, err := control.Read(unexpected[:])
 		if err == nil {
@@ -254,22 +289,26 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 		errCh <- err
 	}()
 	go func() {
+		defer workers.Done()
 		for {
-			packet, err := flow.Packets.ReadPacket(ctx)
+			packet, err := flow.Packets.ReadPacket(workerCtx)
 			if err != nil {
 				errCh <- err
 				return
 			}
+			payload, destination := translations.prepare(packet.Payload, packet.Dst, c.DNSOverride)
 			buf := []byte{0, 0, 0}
-			buf = append(buf, encodeAddr(packet.Dst)...)
-			buf = append(buf, packet.Payload...)
+			buf = append(buf, encodeAddr(destination)...)
+			buf = append(buf, payload...)
 			if _, err = udp.WriteToUDPAddrPort(buf, relay); err != nil {
 				errCh <- err
 				return
 			}
+			touch()
 		}
 	}()
 	go func() {
+		defer workers.Done()
 		buf := make([]byte, 65535)
 		for {
 			n, peer, err := udp.ReadFromUDPAddrPort(buf)
@@ -288,21 +327,155 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 				continue
 			}
 			payload := append([]byte(nil), buf[3+used:n]...)
-			if err = flow.Packets.WritePacket(ctx, tunless.Packet{Payload: payload, Dst: dst}); err != nil {
+			payload, dst = translations.restore(payload, dst)
+			if err = flow.Packets.WritePacket(workerCtx, tunless.Packet{Payload: payload, Dst: dst}); err != nil {
 				errCh <- err
 				return
 			}
+			touch()
 		}
 	}()
-	err = <-errCh
+
+	idleTimeout := c.UDPIdleTimeout
+	var timer *time.Timer
+	var idle <-chan time.Time
+	if idleTimeout > 0 {
+		timer = time.NewTimer(idleTimeout)
+		idle = timer.C
+		defer timer.Stop()
+	}
+	selecting := true
+	for selecting {
+		select {
+		case err = <-errCh:
+			selecting = false
+		case <-ctx.Done():
+			err = ctx.Err()
+			selecting = false
+		case <-activity:
+			if timer != nil {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(idleTimeout)
+			}
+		case <-idle:
+			err = ErrUDPIdleTimeout
+			selecting = false
+		}
+	}
+	closeAll()
+	workers.Wait()
 	if ctx.Err() != nil {
 		return nil
 	}
 	return err
 }
 
+// ExchangeDNSUDP sends one DNS datagram through a dedicated SOCKS5 UDP
+// association. It is used by the optional DNS observer so the observer itself
+// never opens a direct resolver socket outside the captured cgroup.
+func (c *Client) ExchangeDNSUDP(ctx context.Context, destination netip.AddrPort, query []byte) ([]byte, error) {
+	if !destination.IsValid() || destination.Port() == 0 {
+		return nil, errors.New("DNS destination is invalid")
+	}
+	control, relay, cleanup, err := c.connect(ctx, 3, netip.AddrPortFrom(netip.IPv4Unspecified(), 0), "", c.Username, c.Password, tunless.ProcessInfo{}, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer control.Close()
+	defer cleanup()
+	if remote, ok := control.RemoteAddr().(*net.TCPAddr); ok {
+		relay = reachableRelayAddress(relay, remote.AddrPort())
+	}
+	if !relay.IsValid() || relay.Port() == 0 {
+		return nil, errors.New("SOCKS5 server returned an invalid UDP relay address")
+	}
+	network := "udp6"
+	if relay.Addr().Unmap().Is4() {
+		network = "udp4"
+	}
+	udp, err := net.ListenUDP(network, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer udp.Close()
+	stop := context.AfterFunc(ctx, func() { _ = udp.Close(); _ = control.Close() })
+	defer stop()
+	frame := []byte{0, 0, 0}
+	frame = append(frame, encodeAddr(destination)...)
+	frame = append(frame, query...)
+	if _, err = udp.WriteToUDPAddrPort(frame, relay); err != nil {
+		return nil, err
+	}
+	buffer := make([]byte, 65535)
+	for {
+		n, peer, readErr := udp.ReadFromUDPAddrPort(buffer)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if !sameAddrPort(peer, relay) || n < 4 || buffer[0] != 0 || buffer[1] != 0 || buffer[2] != 0 {
+			continue
+		}
+		source, used, parseErr := parseAddr(ctx, buffer[3:n])
+		if parseErr != nil || !sameAddrPort(source, destination) {
+			continue
+		}
+		return append([]byte(nil), buffer[3+used:n]...), nil
+	}
+}
+
+// ExchangeDNSTCP sends one length-prefixed DNS query through SOCKS5 CONNECT.
+func (c *Client) ExchangeDNSTCP(ctx context.Context, destination netip.AddrPort, query []byte) ([]byte, error) {
+	if !destination.IsValid() || destination.Port() == 0 || len(query) > 65535 {
+		return nil, errors.New("DNS query or destination is invalid")
+	}
+	connection, _, cleanup, err := c.connect(ctx, 1, destination, "", c.Username, c.Password, tunless.ProcessInfo{}, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	defer cleanup()
+	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stop()
+	frame := make([]byte, 2, len(query)+2)
+	binary.BigEndian.PutUint16(frame, uint16(len(query)))
+	frame = append(frame, query...)
+	if err = writeAll(connection, frame); err != nil {
+		return nil, err
+	}
+	var size [2]byte
+	if _, err = io.ReadFull(connection, size[:]); err != nil {
+		return nil, err
+	}
+	reply := make([]byte, binary.BigEndian.Uint16(size[:]))
+	if _, err = io.ReadFull(connection, reply); err != nil {
+		return nil, err
+	}
+	return reply, nil
+}
+
 func sameAddrPort(a, b netip.AddrPort) bool {
 	return a.Port() == b.Port() && a.Addr().Unmap() == b.Addr().Unmap()
+}
+
+func writeAll(writer io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		written, err := writer.Write(payload)
+		if written > 0 {
+			payload = payload[written:]
+		}
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrNoProgress
+		}
+	}
+	return nil
 }
 
 func reachableRelayAddress(relay, server netip.AddrPort) netip.AddrPort {
@@ -357,14 +530,10 @@ func readAddr(ctx context.Context, r io.Reader) (netip.AddrPort, error) {
 		return netip.AddrPort{}, err
 	}
 	if atyp[0] == 3 {
-		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", string(b[:n]))
-		if err != nil {
-			return netip.AddrPort{}, err
-		}
-		if len(ips) == 0 {
-			return netip.AddrPort{}, errors.New("SOCKS5 domain address resolved without results")
-		}
-		return netip.AddrPortFrom(ips[0], binary.BigEndian.Uint16(b[n:])), nil
+		// BND.ADDR is informational for CONNECT. For UDP ASSOCIATE, an
+		// unspecified result is safely replaced with the already-numeric SOCKS
+		// peer address. Never invoke the host resolver for a server-supplied name.
+		return netip.AddrPortFrom(netip.IPv4Unspecified(), binary.BigEndian.Uint16(b[n:])), nil
 	}
 	addr, ok := netip.AddrFromSlice(b[:n])
 	if !ok {
@@ -373,7 +542,7 @@ func readAddr(ctx context.Context, r io.Reader) (netip.AddrPort, error) {
 	return netip.AddrPortFrom(addr, binary.BigEndian.Uint16(b[n:])), nil
 }
 
-func parseAddr(ctx context.Context, b []byte) (netip.AddrPort, int, error) {
+func parseAddr(_ context.Context, b []byte) (netip.AddrPort, int, error) {
 	if len(b) < 1 {
 		return netip.AddrPort{}, 0, io.ErrUnexpectedEOF
 	}
@@ -391,14 +560,7 @@ func parseAddr(ctx context.Context, b []byte) (netip.AddrPort, int, error) {
 		if n == 0 || len(b) < 2+n+2 {
 			return netip.AddrPort{}, 0, errors.New("invalid SOCKS5 UDP domain address")
 		}
-		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", string(b[2:2+n]))
-		if err != nil {
-			return netip.AddrPort{}, 0, err
-		}
-		if len(ips) == 0 {
-			return netip.AddrPort{}, 0, errors.New("SOCKS5 UDP domain address resolved without results")
-		}
-		return netip.AddrPortFrom(ips[0], binary.BigEndian.Uint16(b[2+n:])), 2 + n + 2, nil
+		return netip.AddrPort{}, 0, errors.New("SOCKS5 UDP domain address requires forbidden local DNS resolution")
 	default:
 		return netip.AddrPort{}, 0, errors.New("unsupported address")
 	}

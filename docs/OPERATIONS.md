@@ -33,6 +33,7 @@ curl --fail http://127.0.0.1:6060/v1/status
 ```
 
 Status contains version/backend, the upstream address without credentials,
+trusted DNS address and whether override is enabled,
 configured concurrency limit, accepted/completed/error/overload and active
 TCP/UDP counters, open redirect listeners/sockets/BPF links, UDP associations,
 and Linux map entry/capacity/memlock data. It intentionally omits destination,
@@ -54,6 +55,12 @@ the host file-descriptor and upstream capacity, then alert on:
 - BPF map entries approaching `max_entries`;
 - fewer than seven Linux BPF links while capture is meant to be running; and
 - a stopped health endpoint or unexpected process restart.
+
+TCP inactivity defaults to five minutes and UDP association inactivity to two
+minutes. Any transferred byte or datagram refreshes the relevant deadline.
+`--flow-idle-timeout=0` and `--udp-idle-timeout=0` disable them for protocols
+that intentionally remain silent indefinitely; doing so also removes the
+automatic completion bound for a peer that never closes.
 
 The three large Linux LRU maps reserve kernel memory at load time. Consult the
 measured memlock footprint in `MEASUREMENTS.md` before dense multi-container

@@ -26,15 +26,21 @@ private struct LauncherConfiguration: Codable {
 		username = components.user
 		password = components.password
 		guard (username?.utf8.count ?? 0)<=255,(password?.utf8.count ?? 0)<=255 else{throw ConfigurationError.credentialsTooLong}
-		let dns = Self.option("--dns-upstream") ?? ProcessInfo.processInfo.environment["TUNLESS_DNS_UPSTREAM"] ?? "1.1.1.1:53"
-		let dnsComponents = URLComponents(string: dns.contains("://") ? dns : "dns://\(dns)")
-		guard let dnsComponents, dnsComponents.scheme == "dns", let dnsHost = dnsComponents.host, !dnsHost.isEmpty,
-			IPv4Address(dnsHost) != nil || IPv6Address(dnsHost) != nil,
-			let dnsPort = dnsComponents.port, dnsPort > 0, dnsPort <= 65535,
-			dnsComponents.user == nil, dnsComponents.password == nil, dnsComponents.path.isEmpty,
-			dnsComponents.query == nil, dnsComponents.fragment == nil else { throw ConfigurationError.invalidDNSUpstream }
-		self.dnsHost = dnsHost
-		self.dnsPort = UInt16(dnsPort)
+        let disableDNSOverride = try Self.booleanOption("--disable-dns-override", environment: "TUNLESS_DISABLE_DNS_OVERRIDE")
+        if disableDNSOverride {
+            self.dnsHost = nil
+            self.dnsPort = nil
+        } else {
+            let dns = Self.option("--dns-upstream") ?? ProcessInfo.processInfo.environment["TUNLESS_DNS_UPSTREAM"] ?? "1.1.1.1:53"
+            let dnsComponents = URLComponents(string: dns.contains("://") ? dns : "dns://\(dns)")
+            guard let dnsComponents, dnsComponents.scheme == "dns", let dnsHost = dnsComponents.host, !dnsHost.isEmpty,
+                IPv4Address(dnsHost) != nil || IPv6Address(dnsHost) != nil,
+                let dnsPort = dnsComponents.port, dnsPort > 0, dnsPort <= 65535,
+                dnsComponents.user == nil, dnsComponents.password == nil, dnsComponents.path.isEmpty,
+                dnsComponents.query == nil, dnsComponents.fragment == nil else { throw ConfigurationError.invalidDNSUpstream }
+            self.dnsHost = dnsHost
+            self.dnsPort = UInt16(dnsPort)
+        }
         includeProcesses = Self.list("--include-process", environment: "TUNLESS_INCLUDE_PROCESS")
         excludeProcesses = Self.list("--exclude-process", environment: "TUNLESS_EXCLUDE_PROCESS")
         includeDestinations = Self.list("--include-destination", environment: "TUNLESS_INCLUDE_DESTINATION")
@@ -47,6 +53,21 @@ private struct LauncherConfiguration: Codable {
             if argument == name, index + 1 < CommandLine.arguments.count { return CommandLine.arguments[index + 1] }
         }
         return nil
+    }
+
+    private static func booleanOption(_ name: String, environment: String) throws -> Bool {
+        var raw: String?
+        for argument in CommandLine.arguments {
+            if argument == name { raw = "true" }
+            else if argument.hasPrefix("\(name)=") { raw = String(argument.dropFirst(name.count + 1)) }
+        }
+        if raw == nil { raw = ProcessInfo.processInfo.environment[environment] }
+        guard let raw else { return false }
+        switch raw.lowercased() {
+        case "1", "true", "yes", "on": return true
+        case "0", "false", "no", "off": return false
+        default: throw ConfigurationError.invalidDNSUpstream
+        }
     }
 
     private static func list(_ option: String, environment: String) -> [String]? {

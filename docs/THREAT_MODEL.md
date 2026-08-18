@@ -33,7 +33,7 @@ host-root access.
 | Resource exhaustion | Fixed BPF map capacities, maximum concurrent flow admission, bounded DNS/telemetry state, HTTP timeouts, and stress tests | The OS/upstream can still be exhausted below Tunless |
 | Status or metadata exposure | Status is numeric loopback-only; metadata socket is mode 0600; upstream credentials are omitted | Local privileged users can observe process/network state |
 | Malformed network input | Strict SOCKS/DNS/address parsing, length bounds, race tests, and fuzz targets | Kernel and platform-specific parsers remain trusted dependencies |
-| Container DNS outage | Private, loopback, and link-local container resolvers are excluded automatically | A private resolver is intentionally not proxied |
+| DNS pollution or response misassociation | Captured port-53 traffic uses a numeric trusted resolver through SOCKS; UDP IDs and source endpoints are translated and restored with bounded expiry | Encrypted DNS and Windows UDP remain outside the override; disabling override intentionally retains the original resolver |
 | Supply-chain compromise | Pinned toolchains/actions, dependency review, CodeQL, secret scanning, SBOMs, checksums, and provenance for candidate artifacts | Maintainer/account or upstream dependency compromise remains possible |
 
 ## Explicit non-goals

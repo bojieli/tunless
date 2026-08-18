@@ -15,9 +15,9 @@ rules.
 
 | Platform | Capture mechanism | Implementation status |
 | --- | --- | --- |
-| Linux | eBPF cgroup connect/sendmsg/recvmsg and sockops | Host and Docker namespace TCP plus connected/unconnected UDP4/UDP6 pass on kernels 5.10 and 6.8, ARM64 and x86-64 |
+| Linux | eBPF cgroup connect/sendmsg/recvmsg and sockops | Host and Docker namespace TCP plus connected/unconnected UDP4/UDP6; trusted DNS override is implemented in the shared SOCKS emitter |
 | macOS | `NETransparentProxyProvider` system extension | Notarized universal build passes live trusted-DNS redirection, SOCKS TCP/UDP, HTTP/1.x, HTTP/2, TLS, and concurrency tests |
-| Windows | WFP ALE connect-redirect callout | TCP source and userspace service implemented; WDK, signing, fuzzing, runtime, and UDP gates are unmet |
+| Windows | WFP ALE connect-redirect callout | TCP and TCP DNS override source are implemented; WDK, signing, fuzzing, runtime, and UDP DNS gates are unmet |
 
 The portable core includes SOCKS5 TCP/UDP emission, HTTP CONNECT and SOCKS5
 reference inbounds, destination/process capture filters, a real-answer DNS
@@ -48,6 +48,7 @@ The installed unit reads `/etc/tunless.env` if present and defaults to:
 ```ini
 TUNLESS_UPSTREAM=127.0.0.1:7890
 TUNLESS_CGROUP=/sys/fs/cgroup/user.slice
+TUNLESS_DNS_UPSTREAM=1.1.1.1:53
 ```
 
 Run mihomo/sing-box as a system service outside `user.slice`. The `tunless`
@@ -78,6 +79,15 @@ On Linux the cgroup is the process filter. Process glob flags are rejected
 because a userspace decision after `connect()` would be too late to let a flow
 continue direct.
 
+Captured TCP and UDP queries whose original destination port is 53 are sent to
+the numeric `--dns-upstream` through SOCKS5 by default. UDP query IDs are
+translated per outstanding request and restored with the original resolver
+source on reply, so reused IDs and out-of-order responses are unambiguous. Use
+`--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to retain each
+application's original resolver. `--flow-idle-timeout` and
+`--udp-idle-timeout` bound abandoned flows; zero disables the corresponding
+timeout.
+
 ### Containers and virtual machines
 
 Normal bridge-network containers use namespace-local mode. Tunless opens the
@@ -89,6 +99,7 @@ variables, capabilities, proxy configuration, route changes, or TUN device:
 ```console
 make
 TUNLESS_UPSTREAM=127.0.0.1:7890 \
+  TUNLESS_DNS_UPSTREAM=1.1.1.1:53 \
   TUNLESS_BINARY="$PWD/tunless" \
   ./scripts/tunless-docker.sh my-dev-container
 ```
@@ -226,6 +237,8 @@ place `Tunless.app` in `/Applications` and run:
 ```console
 /Applications/Tunless.app/Contents/MacOS/Tunless \
   --upstream 127.0.0.1:7890 --dns-upstream 1.1.1.1:53
+/Applications/Tunless.app/Contents/MacOS/Tunless \
+  --upstream 127.0.0.1:7890 --disable-dns-override
 /Applications/Tunless.app/Contents/MacOS/Tunless --telemetry
 /Applications/Tunless.app/Contents/MacOS/Tunless --stop
 ```
@@ -242,7 +255,8 @@ Detailed signing, Clash loop exclusions, and runtime validation are in
 The WFP driver and Go redirect service are under `windows/driver` and
 `backend/windows`. TCP is filtered at ALE connect-redirect; UDP is deliberately
 left direct until a Windows UDP datapath passes its own gate. The userspace
-service queries the accepted socket's redirect context and records, then sets
+service applies the same trusted-resolver rewrite to captured TCP port 53,
+unless `--disable-dns-override` is set. It queries the accepted socket's redirect context and records, then sets
 those records on the outbound socket before `connect()`, as required for
 cooperation with other WFP redirectors. Do not deploy this driver from an
 unvalidated build. See [the Windows notes](docs/WINDOWS.md).
@@ -259,8 +273,8 @@ tunless --upstream 127.0.0.1:7890 \
 ```
 
 Point selected clients at that listener yourself. It is opt-in and never edits
-system DNS. If another installed VPN intercepts the observer's upstream DNS,
-that VPN can still alter the answer; remove the old TUN/VPN when migrating.
+system DNS. Both UDP and TCP observer exchanges use the configured SOCKS5
+upstream rather than opening a direct resolver socket.
 
 ## Diagnostics and health
 

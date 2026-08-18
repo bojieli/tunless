@@ -3,9 +3,11 @@ package socks5
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,16 +91,25 @@ func TestReadAddrRejectsEmptyDomain(t *testing.T) {
 	}
 }
 
-func TestParseUDPDomainAddress(t *testing.T) {
+func TestParseUDPDomainAddressDoesNotUseSystemResolver(t *testing.T) {
 	frame := []byte{3, 9}
 	frame = append(frame, "localhost"...)
 	frame = append(frame, 0, 53)
-	address, used, err := parseAddr(context.Background(), frame)
+	if _, _, err := parseAddr(context.Background(), frame); err == nil {
+		t.Fatal("accepted a UDP domain address that would require system DNS")
+	}
+}
+
+func TestReadDomainBoundAddressUsesNumericPeerFallback(t *testing.T) {
+	frame := []byte{3, 10}
+	frame = append(frame, "relay.test"...)
+	frame = append(frame, 0x12, 0x34)
+	address, err := readAddr(context.Background(), bytes.NewReader(frame))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if used != len(frame) || address.Port() != 53 || !address.Addr().IsLoopback() {
-		t.Fatalf("address = %s, used = %d", address, used)
+	if !address.Addr().IsUnspecified() || address.Port() != 0x1234 {
+		t.Fatalf("bound address = %s", address)
 	}
 }
 
@@ -107,6 +118,26 @@ func TestSameAddrPortUnmapsIPv4(t *testing.T) {
 	mapped := netip.MustParseAddrPort("[::ffff:127.0.0.1]:53")
 	if !sameAddrPort(v4, mapped) {
 		t.Fatal("IPv4 and IPv4-mapped relay endpoints should compare equal")
+	}
+}
+
+func TestTCPDNSOverrideAndDisableSemantics(t *testing.T) {
+	flow := tunless.Flow{OrigDst: netip.MustParseAddrPort("223.6.6.6:53"), Hostname: "polluted.example"}
+	client := &Client{DNSOverride: netip.MustParseAddrPort("1.1.1.1:53")}
+	destination, hostname := client.routedTCPDestination(flow)
+	if destination != client.DNSOverride || hostname != "" {
+		t.Fatalf("routed DNS destination = %s, %q", destination, hostname)
+	}
+	client.DNSOverride = netip.AddrPort{}
+	destination, hostname = client.routedTCPDestination(flow)
+	if destination != flow.OrigDst || hostname != flow.Hostname {
+		t.Fatalf("disabled override destination = %s, %q", destination, hostname)
+	}
+	flow.OrigDst = netip.MustParseAddrPort("203.0.113.1:853")
+	client.DNSOverride = netip.MustParseAddrPort("1.1.1.1:53")
+	destination, _ = client.routedTCPDestination(flow)
+	if destination != flow.OrigDst {
+		t.Fatalf("non-port-53 traffic was rewritten to %s", destination)
 	}
 }
 
@@ -119,6 +150,62 @@ func (contextPacketPort) ReadPacket(ctx context.Context) (tunless.Packet, error)
 
 func (contextPacketPort) WritePacket(context.Context, tunless.Packet) error { return nil }
 func (contextPacketPort) Close() error                                      { return nil }
+
+type scriptedPacketPort struct {
+	reads  chan tunless.Packet
+	writes chan tunless.Packet
+	done   chan struct{}
+	once   sync.Once
+}
+
+type shortWriter struct {
+	bytes.Buffer
+	limit int
+}
+
+func (w *shortWriter) Write(payload []byte) (int, error) {
+	if len(payload) > w.limit {
+		payload = payload[:w.limit]
+	}
+	return w.Buffer.Write(payload)
+}
+
+func TestWriteAllHandlesShortWrites(t *testing.T) {
+	writer := &shortWriter{limit: 2}
+	if err := writeAll(writer, []byte("complete")); err != nil {
+		t.Fatal(err)
+	}
+	if writer.String() != "complete" {
+		t.Fatalf("written payload = %q", writer.String())
+	}
+}
+
+func (p *scriptedPacketPort) ReadPacket(ctx context.Context) (tunless.Packet, error) {
+	select {
+	case packet := <-p.reads:
+		return packet, nil
+	case <-p.done:
+		return tunless.Packet{}, net.ErrClosed
+	case <-ctx.Done():
+		return tunless.Packet{}, ctx.Err()
+	}
+}
+
+func (p *scriptedPacketPort) WritePacket(ctx context.Context, packet tunless.Packet) error {
+	select {
+	case p.writes <- packet:
+		return nil
+	case <-p.done:
+		return net.ErrClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *scriptedPacketPort) Close() error {
+	p.once.Do(func() { close(p.done) })
+	return nil
+}
 
 func TestUDPAssociationEndsWithControlConnection(t *testing.T) {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -163,6 +250,169 @@ func TestUDPAssociationEndsWithControlConnection(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("UDP association ignored its closed control connection")
+	}
+}
+
+func TestUDPAssociationIdleTimeoutCompletesWorkers(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	relay, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		var greeting [3]byte
+		_, _ = io.ReadFull(conn, greeting[:])
+		_, _ = conn.Write([]byte{5, 0})
+		var request [10]byte
+		_, _ = io.ReadFull(conn, request[:])
+		bound := relay.LocalAddr().(*net.UDPAddr).AddrPort()
+		reply := []byte{5, 0, 0, 1}
+		reply = append(reply, bound.Addr().AsSlice()...)
+		reply = append(reply, byte(bound.Port()>>8), byte(bound.Port()))
+		_, _ = conn.Write(reply)
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+	err = (&Client{Address: listener.Addr().String(), UDPIdleTimeout: 20 * time.Millisecond}).Emit(context.Background(), tunless.Flow{
+		Proto:   tunless.UDP,
+		OrigDst: netip.MustParseAddrPort("1.1.1.1:53"),
+		Packets: contextPacketPort{},
+	})
+	if !errors.Is(err, ErrUDPIdleTimeout) {
+		t.Fatalf("UDP association error = %v, want idle timeout", err)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("SOCKS control worker did not finish after idle timeout")
+	}
+}
+
+func TestUDPTrustedDNSOverrideRestoresOutOfOrderResponses(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	relay, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	override := netip.MustParseAddrPort("1.1.1.1:53")
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		control, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer control.Close()
+		var greeting [3]byte
+		_, _ = io.ReadFull(control, greeting[:])
+		_, _ = control.Write([]byte{5, 0})
+		var request [10]byte
+		_, _ = io.ReadFull(control, request[:])
+		bound := relay.LocalAddr().(*net.UDPAddr).AddrPort()
+		reply := []byte{5, 0, 0, 1}
+		reply = append(reply, bound.Addr().AsSlice()...)
+		reply = append(reply, byte(bound.Port()>>8), byte(bound.Port()))
+		_, _ = control.Write(reply)
+		_, _ = io.Copy(io.Discard, control)
+	}()
+	relayErr := make(chan error, 1)
+	go func() {
+		buffer := make([]byte, 65535)
+		type received struct {
+			frame []byte
+			peer  netip.AddrPort
+		}
+		packets := make([]received, 0, 2)
+		for len(packets) < 2 {
+			n, peer, readErr := relay.ReadFromUDPAddrPort(buffer)
+			if readErr != nil {
+				relayErr <- readErr
+				return
+			}
+			if n < 4 {
+				relayErr <- errors.New("truncated SOCKS UDP frame")
+				return
+			}
+			destination, _, parseErr := parseAddr(context.Background(), buffer[3:n])
+			if parseErr != nil || destination != override {
+				relayErr <- errors.New("DNS query did not use trusted resolver override")
+				return
+			}
+			packets = append(packets, received{frame: append([]byte(nil), buffer[:n]...), peer: peer})
+		}
+		for index := len(packets) - 1; index >= 0; index-- {
+			if _, writeErr := relay.WriteToUDPAddrPort(packets[index].frame, packets[index].peer); writeErr != nil {
+				relayErr <- writeErr
+				return
+			}
+		}
+		relayErr <- nil
+	}()
+
+	port := &scriptedPacketPort{reads: make(chan tunless.Packet, 2), writes: make(chan tunless.Packet, 2), done: make(chan struct{})}
+	firstOriginal := netip.MustParseAddrPort("223.6.6.6:53")
+	secondOriginal := netip.MustParseAddrPort("8.8.8.8:53")
+	query := dnsMessage(0x1234)
+	port.reads <- tunless.Packet{Payload: query, Dst: firstOriginal}
+	port.reads <- tunless.Packet{Payload: query, Dst: secondOriginal}
+	ctx, cancel := context.WithCancel(context.Background())
+	emitDone := make(chan error, 1)
+	go func() {
+		emitDone <- (&Client{Address: listener.Addr().String(), DNSOverride: override}).Emit(ctx, tunless.Flow{
+			Proto:   tunless.UDP,
+			OrigDst: firstOriginal,
+			Packets: port,
+		})
+	}()
+	var responses []tunless.Packet
+	for len(responses) < 2 {
+		select {
+		case response := <-port.writes:
+			responses = append(responses, response)
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for restored DNS responses")
+		}
+	}
+	if responses[0].Dst != secondOriginal || responses[1].Dst != firstOriginal {
+		t.Fatalf("restored response order/sources = %s, %s", responses[0].Dst, responses[1].Dst)
+	}
+	for _, response := range responses {
+		if !bytes.Equal(response.Payload[:2], query[:2]) {
+			t.Fatalf("response transaction ID = %x, want %x", response.Payload[:2], query[:2])
+		}
+	}
+	if err = <-relayErr; err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case err = <-emitDone:
+		if err != nil {
+			t.Fatalf("cancelled UDP emitter returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("UDP emitter did not join workers after cancellation")
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("SOCKS control connection remained open")
 	}
 }
 

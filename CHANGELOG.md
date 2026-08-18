@@ -7,6 +7,13 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Added
 
+- Default-on, numeric trusted-DNS override for the portable/Linux emitter and
+  macOS provider, a cross-platform disable switch, SOCKS-routed DNS observation,
+  and bounded transaction-ID translation for unambiguous UDP response restore.
+- Bounded TCP/UDP inactivity, hard-error and pending-callback cancellation,
+  joined UDP worker teardown, short-write-safe SOCKS control messages, macOS
+  active-flow cancellation, SOCKS half-close draining, and TCP plus UDP
+  completion telemetry.
 - An optional macOS user LaunchAgent that persists bounded, private flow
   telemetry under `~/.tunless`, with size-based rotation.
 - Linux cgroup eBPF capture for TCP and connected/unconnected UDP over IPv4 and

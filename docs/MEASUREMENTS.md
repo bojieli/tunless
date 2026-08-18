@@ -319,6 +319,14 @@ path.
   dialer sets them before outbound connect. Both PowerShell Docker launchers
   pass the PowerShell parser; this is source validation, not Windows runtime
   evidence.
+- Cross-platform DNS/lifecycle source gate on 2026-08-18: all Go packages and
+  the race suite passed; vet and Linux/Windows amd64 cross-builds passed; the
+  macOS Swift suite increased to 18 passing tests; and an unsigned build of the
+  containing app plus embedded extension succeeded. This covers disable-policy
+  routing, TCP/UDP inactivity, hard-error and pending-callback cancellation,
+  joined UDP teardown, short TCP writes, and bounded UDP DNS-ID translation.
+  The build-9 app was not installed over
+  the active notarized build, and Windows UDP remains runtime-gated.
 
 ## Gates not demonstrated
 

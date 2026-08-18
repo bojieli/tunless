@@ -3,108 +3,788 @@ import Network
 import NetworkExtension
 
 public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppProxyUDPFlowHandling {
-	private enum PumpResult { case applicationEOF(String), networkEOF, failed(String) }
-    private var configuration = ProviderConfiguration(upstreamHost:"127.0.0.1",upstreamPort:7890)
-    private var telemetry:[FlowTelemetry]=[]
-    private let lock=NSLock()
-
-    public override func startProxy(options:[String:Any]? = nil, completionHandler:@escaping(Error?)->Void) {
-		guard let dictionary=(protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,let raw=dictionary["configuration"] as? Data,let parsed=try? JSONDecoder().decode(ProviderConfiguration.self,from:raw),let validated=try? parsed.validated() else { completionHandler(ConfigurationError.invalidUpstream);return }
-        configuration=validated
-        let settings=NETransparentProxyNetworkSettings(tunnelRemoteAddress:"127.0.0.1")
-        let anyPort=NWEndpoint.Port(rawValue:0)!
-        // A transparent-proxy rule cannot combine an any-port endpoint with a
-        // wildcard address. Non-zero hosts masked to /1 cover both IP families.
-        settings.includedNetworkRules=[
-            NENetworkRule(destinationNetworkEndpoint:.hostPort(host:"0.0.0.1",port:anyPort),prefix:1,protocol:.any),
-            NENetworkRule(destinationNetworkEndpoint:.hostPort(host:"128.0.0.1",port:anyPort),prefix:1,protocol:.any),
-            NENetworkRule(destinationNetworkEndpoint:.hostPort(host:"::2",port:anyPort),prefix:1,protocol:.any),
-            NENetworkRule(destinationNetworkEndpoint:.hostPort(host:"8000::1",port:anyPort),prefix:1,protocol:.any),
-        ]
-        setTunnelNetworkSettings(settings,completionHandler:completionHandler)
+    private enum PumpResult {
+        case applicationEOF(String)
+        case networkEOF
+        case failed(String)
+        case idleTimeout
+        case halfCloseTimeout
+        case cancelled
     }
 
-    public override func stopProxy(with reason:NEProviderStopReason,completionHandler:@escaping()->Void){completionHandler()}
+    private enum UDPPumpResult {
+        case applicationEOF(String)
+        case networkEOF(String)
+        case controlEOF
+        case failed(String)
+        case idleTimeout
+        case cancelled
+    }
 
-    public override func handleNewFlow(_ flow:NEAppProxyFlow)->Bool {
-		if let tcp=flow as? NEAppProxyTCPFlow,let destination=Self.address(tcp.remoteFlowEndpoint) {
-			let selected=configurationSnapshot();guard selected.captures(host:destination.host,signingIdentifier:flow.metaData.sourceAppSigningIdentifier) else{return false}
-			let routeHost=(tcp.remoteHostname?.isEmpty == false ? tcp.remoteHostname : nil) ?? destination.host
-			let requestedDestination=SOCKSAddress(host:routeHost,port:destination.port)
-			let routeDestination=selected.routedDestination(for:requestedDestination)
-			record(flow:flow,destination:destination,routedDestination:routeDestination);Task{await handleTCP(tcp,destination:routeDestination,configuration:selected)};return true
-		}
+    private final class ActiveFlow {
+        let flow: NEAppProxyFlow
+        let task: Task<Void, Never>
+
+        init(flow: NEAppProxyFlow, task: Task<Void, Never>) {
+            self.flow = flow
+            self.task = task
+        }
+    }
+
+    private var configuration = ProviderConfiguration(upstreamHost: "127.0.0.1", upstreamPort: 7890)
+    private var telemetry: [FlowTelemetry] = []
+    private var activeFlows: [UUID: ActiveFlow] = [:]
+    private var stopping = false
+    private let lock = NSLock()
+
+    public override func startProxy(options: [String: Any]? = nil, completionHandler: @escaping (Error?) -> Void) {
+        guard
+            let dictionary = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,
+            let raw = dictionary["configuration"] as? Data,
+            let parsed = try? JSONDecoder().decode(ProviderConfiguration.self, from: raw),
+            let validated = try? parsed.validated()
+        else {
+            completionHandler(ConfigurationError.invalidUpstream)
+            return
+        }
+        lock.lock()
+        configuration = validated
+        stopping = false
+        lock.unlock()
+
+        let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
+        let anyPort = NWEndpoint.Port(rawValue: 0)!
+        // A transparent-proxy rule cannot combine an any-port endpoint with a
+        // wildcard address. Non-zero hosts masked to /1 cover both IP families.
+        settings.includedNetworkRules = [
+            NENetworkRule(destinationNetworkEndpoint: .hostPort(host: "0.0.0.1", port: anyPort), prefix: 1, protocol: .any),
+            NENetworkRule(destinationNetworkEndpoint: .hostPort(host: "128.0.0.1", port: anyPort), prefix: 1, protocol: .any),
+            NENetworkRule(destinationNetworkEndpoint: .hostPort(host: "::2", port: anyPort), prefix: 1, protocol: .any),
+            NENetworkRule(destinationNetworkEndpoint: .hostPort(host: "8000::1", port: anyPort), prefix: 1, protocol: .any),
+        ]
+        setTunnelNetworkSettings(settings, completionHandler: completionHandler)
+    }
+
+    public override func stopProxy(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        lock.lock()
+        stopping = true
+        let records = Array(activeFlows.values)
+        lock.unlock()
+        for record in records {
+            record.flow.closeReadWithError(SOCKSError.closed)
+            record.flow.closeWriteWithError(SOCKSError.closed)
+            record.task.cancel()
+        }
+        Task {
+            for record in records { await record.task.value }
+            completionHandler()
+        }
+    }
+
+    public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
+        guard
+            let tcp = flow as? NEAppProxyTCPFlow,
+            let originalDestination = Self.address(tcp.remoteFlowEndpoint)
+        else { return false }
+        let selected = configurationSnapshot()
+        guard selected.captures(
+            host: originalDestination.host,
+            signingIdentifier: flow.metaData.sourceAppSigningIdentifier)
+        else { return false }
+        let routeHost = (tcp.remoteHostname?.isEmpty == false ? tcp.remoteHostname : nil) ?? originalDestination.host
+        let requestedDestination = SOCKSAddress(host: routeHost, port: originalDestination.port)
+        let routedDestination = selected.routedDestination(for: requestedDestination)
+        guard launch(flow: flow, operation: { [weak self] in
+            await self?.handleTCP(
+                tcp,
+                originalDestination: originalDestination,
+                routedDestination: routedDestination,
+                configuration: selected)
+        }) else { return false }
+        record(flow: flow, destination: originalDestination, routedDestination: routedDestination)
+        return true
+    }
+
+    public func handleNewUDPFlow(
+        _ flow: NEAppProxyUDPFlow,
+        initialRemoteFlowEndpoint remoteEndpoint: Network.NWEndpoint
+    ) -> Bool {
+        guard let destination = Self.address(remoteEndpoint) else { return false }
+        let selected = configurationSnapshot()
+        guard selected.captures(
+            host: destination.host,
+            signingIdentifier: flow.metaData.sourceAppSigningIdentifier)
+        else { return false }
+        return launch(flow: flow, operation: { [weak self] in
+            await self?.handleUDP(flow, initialDestination: destination, configuration: selected)
+        })
+    }
+
+    public override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
+        if messageData.isEmpty {
+            lock.lock()
+            let snapshot = telemetry
+            telemetry.removeAll(keepingCapacity: true)
+            lock.unlock()
+            completionHandler?(try? JSONEncoder().encode(snapshot))
+            return
+        }
+        guard
+            let updated = try? JSONDecoder().decode(ProviderConfiguration.self, from: messageData),
+            let validated = try? updated.validated()
+        else {
+            completionHandler?(nil)
+            return
+        }
+        lock.lock()
+        configuration = validated
+        lock.unlock()
+        completionHandler?(Data([1]))
+    }
+
+    private func launch(flow: NEAppProxyFlow, operation: @escaping @Sendable () async -> Void) -> Bool {
+        lock.lock()
+        guard !stopping else {
+            lock.unlock()
+            return false
+        }
+        let identifier = UUID()
+        let task = Task { [weak self] in
+            await operation()
+            self?.finishFlow(identifier)
+        }
+        activeFlows[identifier] = ActiveFlow(flow: flow, task: task)
+        lock.unlock()
+        return true
+    }
+
+    private func finishFlow(_ identifier: UUID) {
+        lock.lock()
+        activeFlows.removeValue(forKey: identifier)
+        lock.unlock()
+    }
+
+    private func handleTCP(
+        _ flow: NEAppProxyTCPFlow,
+        originalDestination: SOCKSAddress,
+        routedDestination: SOCKSAddress,
+        configuration: ProviderConfiguration
+    ) async {
+        var socks: SOCKSConnection?
+        var event: String
+        do {
+            try Task.checkCancellation()
+            try await open(flow)
+            try Task.checkCancellation()
+            let connection = SOCKSConnection(configuration: configuration)
+            socks = connection
+            _ = try await connection.open(
+                configuration: configuration,
+                command: 1,
+                destination: routedDestination,
+                timeoutSeconds: 10)
+            let deadline = InactivityDeadline(timeoutSeconds: 300)
+            event = await withTaskGroup(of: PumpResult.self) { group -> String in
+                group.addTask { await Self.appToNetwork(flow, socks: connection, deadline: deadline) }
+                group.addTask { await Self.networkToApp(socks: connection, flow: flow, deadline: deadline) }
+                group.addTask { await deadline.waitForExpiry() ? .idleTimeout : .cancelled }
+                var applicationEnded = false
+                while let result = await group.next() {
+                    switch result {
+                    case .applicationEOF(let detail):
+                        guard !applicationEnded else { continue }
+                        applicationEnded = true
+                        do {
+                            try await connection.finishSending()
+                            await deadline.touch()
+                            group.addTask {
+                                do {
+                                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                                    return .halfCloseTimeout
+                                } catch {
+                                    return .cancelled
+                                }
+                            }
+                        } catch {
+                            flow.closeReadWithError(error)
+                            flow.closeWriteWithError(error)
+                            await connection.cancel()
+                            group.cancelAll()
+                            return "half-close-error:\(detail):\(error)"
+                        }
+                    case .networkEOF:
+                        flow.closeWriteWithError(nil)
+                        flow.closeReadWithError(nil)
+                        await connection.cancel()
+                        group.cancelAll()
+                        return applicationEnded ? "application-half-close-then-network-eof" : "network-eof-first"
+                    case .failed(let detail):
+                        flow.closeWriteWithError(SOCKSError.closed)
+                        flow.closeReadWithError(SOCKSError.closed)
+                        await connection.cancel()
+                        group.cancelAll()
+                        return "failed:\(detail)"
+                    case .idleTimeout:
+                        let error = SOCKSError.timeout("TCP flow idle")
+                        flow.closeWriteWithError(error)
+                        flow.closeReadWithError(error)
+                        await connection.cancel()
+                        group.cancelAll()
+                        return "idle-timeout"
+                    case .halfCloseTimeout:
+                        let error = SOCKSError.timeout("TCP half-close drain")
+                        flow.closeWriteWithError(error)
+                        flow.closeReadWithError(error)
+                        await connection.cancel()
+                        group.cancelAll()
+                        return "half-close-timeout"
+                    case .cancelled:
+                        flow.closeWriteWithError(SOCKSError.closed)
+                        flow.closeReadWithError(SOCKSError.closed)
+                        await connection.cancel()
+                        group.cancelAll()
+                        return "cancelled"
+                    }
+                }
+                return "no-pump-result"
+            }
+        } catch is CancellationError {
+            event = "cancelled-during-setup"
+            flow.closeReadWithError(SOCKSError.closed)
+            flow.closeWriteWithError(SOCKSError.closed)
+        } catch {
+            event = "setup-error:\(error)"
+            flow.closeReadWithError(error)
+            flow.closeWriteWithError(error)
+        }
+        if let socks { await socks.cancel() }
+        recordCompletion(
+            flow: flow,
+            protocolName: "tcp-completion",
+            destination: originalDestination,
+            routedDestination: routedDestination,
+            event: event)
+    }
+
+    private func handleUDP(
+        _ flow: NEAppProxyUDPFlow,
+        initialDestination: SOCKSAddress,
+        configuration: ProviderConfiguration
+    ) async {
+        var control: SOCKSConnection?
+        var event: String
+        let routedForTelemetry = configuration.routedDestination(for: initialDestination)
+        do {
+            try Task.checkCancellation()
+            try await open(flow)
+            let controlConnection = SOCKSConnection(configuration: configuration)
+            control = controlConnection
+            var relay = try await controlConnection.open(
+                configuration: configuration,
+                command: 3,
+                destination: SOCKSAddress(host: "0.0.0.0", port: 0),
+                timeoutSeconds: 10)
+            if Self.unspecified(relay.host) || (Self.loopback(relay.host) && !Self.loopback(configuration.upstreamHost)) {
+                relay = SOCKSAddress(host: configuration.upstreamHost, port: relay.port)
+            }
+            guard relay.port > 0, IPv4Address(relay.host) != nil || IPv6Address(relay.host) != nil else {
+                throw SOCKSError.invalidAddress
+            }
+            let datagrams = NWConnection(
+                host: NWEndpoint.Host(relay.host),
+                port: NWEndpoint.Port(rawValue: relay.port)!,
+                using: .udp)
+            let dnsResponses = DNSResponseMap(maxEntries: 4096, ttlSeconds: 30)
+            let deadline = InactivityDeadline(timeoutSeconds: 120)
+            datagrams.start(queue: .global(qos: .userInitiated))
+            event = await withTaskGroup(of: UDPPumpResult.self) { group -> String in
+                group.addTask {
+                    await self.appToUDP(
+                        flow,
+                        connection: datagrams,
+                        configuration: configuration,
+                        dnsResponses: dnsResponses,
+                        deadline: deadline)
+                }
+                group.addTask {
+                    await self.udpToApp(
+                        datagrams,
+                        flow: flow,
+                        dnsResponses: dnsResponses,
+                        deadline: deadline)
+                }
+                group.addTask {
+                    do {
+                        _ = try await controlConnection.receiveSome()
+                        return .failed("unexpected-control-data")
+                    } catch SOCKSError.closed {
+                        return Task.isCancelled ? .cancelled : .controlEOF
+                    } catch {
+                        return Task.isCancelled ? .cancelled : .failed("control:\(error)")
+                    }
+                }
+                group.addTask { await deadline.waitForExpiry() ? .idleTimeout : .cancelled }
+                guard let result = await group.next() else { return "no-pump-result" }
+                datagrams.cancel()
+                await controlConnection.cancel()
+                group.cancelAll()
+                switch result {
+                case .applicationEOF(let detail):
+                    flow.closeReadWithError(nil)
+                    flow.closeWriteWithError(nil)
+                    return "application-eof:\(detail)"
+                case .networkEOF(let detail):
+                    flow.closeReadWithError(nil)
+                    flow.closeWriteWithError(nil)
+                    return "network-eof:\(detail)"
+                case .controlEOF:
+                    flow.closeReadWithError(nil)
+                    flow.closeWriteWithError(nil)
+                    return "control-eof"
+                case .failed(let detail):
+                    flow.closeReadWithError(SOCKSError.closed)
+                    flow.closeWriteWithError(SOCKSError.closed)
+                    return "failed:\(detail)"
+                case .idleTimeout:
+                    let error = SOCKSError.timeout("UDP flow idle")
+                    flow.closeReadWithError(error)
+                    flow.closeWriteWithError(error)
+                    return "idle-timeout"
+                case .cancelled:
+                    flow.closeReadWithError(SOCKSError.closed)
+                    flow.closeWriteWithError(SOCKSError.closed)
+                    return "cancelled"
+                }
+            }
+        } catch is CancellationError {
+            event = "cancelled-during-setup"
+            flow.closeReadWithError(SOCKSError.closed)
+            flow.closeWriteWithError(SOCKSError.closed)
+        } catch {
+            event = "setup-error:\(error)"
+            flow.closeReadWithError(error)
+            flow.closeWriteWithError(error)
+        }
+        if let control { await control.cancel() }
+        recordCompletion(
+            flow: flow,
+            protocolName: "udp-completion",
+            destination: initialDestination,
+            routedDestination: routedForTelemetry,
+            event: event)
+    }
+
+    private func record(flow: NEAppProxyFlow, destination: SOCKSAddress, routedDestination: SOCKSAddress) {
+        let routed = routedDestination == destination ? nil : "\(routedDestination.host):\(routedDestination.port)"
+        appendTelemetry(FlowTelemetry(
+            protocolName: flow is NEAppProxyTCPFlow ? "tcp" : "udp",
+            destination: "\(destination.host):\(destination.port)",
+            routedDestination: routed,
+            hostname: flow.remoteHostname,
+            signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
+            timestamp: Date(),
+            event: nil))
+    }
+
+    private func recordCompletion(
+        flow: NEAppProxyFlow,
+        protocolName: String,
+        destination: SOCKSAddress,
+        routedDestination: SOCKSAddress,
+        event: String
+    ) {
+        let routed = routedDestination == destination ? nil : "\(routedDestination.host):\(routedDestination.port)"
+        appendTelemetry(FlowTelemetry(
+            protocolName: protocolName,
+            destination: "\(destination.host):\(destination.port)",
+            routedDestination: routed,
+            hostname: flow.remoteHostname,
+            signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
+            timestamp: Date(),
+            event: event))
+    }
+
+    private func appendTelemetry(_ item: FlowTelemetry) {
+        lock.lock()
+        if telemetry.count >= 4096 { telemetry.removeFirst(1024) }
+        telemetry.append(item)
+        lock.unlock()
+    }
+
+    private func configurationSnapshot() -> ProviderConfiguration {
+        lock.lock()
+        defer { lock.unlock() }
+        return configuration
+    }
+
+    private static func address(_ endpoint: Network.NWEndpoint) -> SOCKSAddress? {
+        if case let .hostPort(host, port) = endpoint {
+            return SOCKSAddress(host: host.debugDescription, port: port.rawValue)
+        }
+        return nil
+    }
+
+    private static func unspecified(_ host: String) -> Bool { host == "0.0.0.0" || host == "::" }
+
+    private static func loopback(_ host: String) -> Bool {
+        if host.lowercased() == "localhost" { return true }
+        if let address = IPv4Address(host) { return address.rawValue.first == 127 }
+        if let address = IPv6Address(host) { return address.rawValue == IPv6Address("::1")!.rawValue }
         return false
     }
 
-    public func handleNewUDPFlow(_ flow:NEAppProxyUDPFlow,initialRemoteFlowEndpoint remoteEndpoint:Network.NWEndpoint)->Bool{let destination=Self.address(remoteEndpoint) ?? SOCKSAddress(host:"0.0.0.0",port:0);let selected=configurationSnapshot();guard selected.captures(host:destination.host,signingIdentifier:flow.metaData.sourceAppSigningIdentifier)else{return false};Task{await handleUDP(flow,configuration:selected)};return true}
-
-    public override func handleAppMessage(_ messageData:Data,completionHandler:((Data?)->Void)?=nil){
-        if let updated=try? JSONDecoder().decode(ProviderConfiguration.self,from:messageData),let validated=try? updated.validated(){lock.lock();configuration=validated;lock.unlock();completionHandler?(Data());return}
-        lock.lock();let snapshot=telemetry;telemetry.removeAll(keepingCapacity:true);lock.unlock();completionHandler?(try? JSONEncoder().encode(snapshot))
+    private func open(_ flow: NEAppProxyFlow) async throws {
+        try Task.checkCancellation()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                let gate = AsyncResultGate<Void>()
+                try await withTaskCancellationHandler(operation: {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        guard gate.install(continuation) else { return }
+                        flow.open(withLocalFlowEndpoint: nil) { error in
+                            if let error { gate.resume(with: .failure(error)) }
+                            else { gate.resume(with: .success(())) }
+                        }
+                    }
+                }, onCancel: {
+                    gate.resume(with: .failure(CancellationError()))
+                })
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+                let error = SOCKSError.timeout("application flow open")
+                flow.closeReadWithError(error)
+                flow.closeWriteWithError(error)
+                throw error
+            }
+            defer { group.cancelAll() }
+            _ = try await group.next()
+        }
     }
 
-    private func handleTCP(_ flow:NEAppProxyTCPFlow,destination:SOCKSAddress,configuration:ProviderConfiguration) async {
-        do { try await open(flow);let socks=SOCKSConnection(configuration:configuration);_ = try await socks.open(configuration:configuration,command:1,destination:destination)
-			let outcome=await withTaskGroup(of:PumpResult.self){group->String in
-				group.addTask{await Self.appToNetwork(flow,socks:socks)}
-				group.addTask{await Self.networkToApp(socks:socks,flow:flow)}
-				guard let first=await group.next() else{return "no-pump-result"}
-				switch first {
-				case .networkEOF:
-					flow.closeWriteWithError(nil);flow.closeReadWithError(nil);await socks.cancel();group.cancelAll();return "network-eof-first"
-				case .failed(let detail):
-					flow.closeWriteWithError(SOCKSError.closed);flow.closeReadWithError(SOCKSError.closed);await socks.cancel();group.cancelAll();return "failed-first:\(detail)"
-				case .applicationEOF(let detail):
-					flow.closeWriteWithError(nil);flow.closeReadWithError(nil);await socks.cancel();group.cancelAll();return "application-eof:\(detail)"
-				}
-			}
-			recordCompletion(flow:flow,destination:destination,event:outcome)
-        } catch { recordCompletion(flow:flow,destination:destination,event:"setup-error:\(error)");flow.closeReadWithError(error);flow.closeWriteWithError(error) }
+    private func readDatagrams(_ flow: NEAppProxyUDPFlow) async throws -> [(Data, Network.NWEndpoint)] {
+        try Task.checkCancellation()
+        let gate = AsyncResultGate<[(Data, Network.NWEndpoint)]>()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                guard gate.install(continuation) else { return }
+                flow.readDatagrams { packets, error in
+                    if let error { gate.resume(with: .failure(error)) }
+                    else { gate.resume(with: .success(packets ?? [])) }
+                }
+            }
+        }, onCancel: {
+            gate.resume(with: .failure(CancellationError()))
+        })
     }
 
-    private func handleUDP(_ flow:NEAppProxyUDPFlow,configuration:ProviderConfiguration) async {
-		do { try await open(flow);let control=SOCKSConnection(configuration:configuration);var relay=try await control.open(configuration:configuration,command:3,destination:SOCKSAddress(host:"0.0.0.0",port:0));if Self.unspecified(relay.host) || (Self.loopback(relay.host) && !Self.loopback(configuration.upstreamHost)){relay=SOCKSAddress(host:configuration.upstreamHost,port:relay.port)};guard relay.port > 0 else{throw SOCKSError.invalidAddress};let datagrams=NWConnection(host:NWEndpoint.Host(relay.host),port:NWEndpoint.Port(rawValue:relay.port)!,using:.udp);let dnsResponses=DNSResponseMap();datagrams.start(queue:.global(qos:.userInitiated))
-			await withTaskGroup(of:Void.self){group in group.addTask{await self.appToUDP(flow,connection:datagrams,configuration:configuration,dnsResponses:dnsResponses)};group.addTask{await self.udpToApp(datagrams,flow:flow,dnsResponses:dnsResponses)};group.addTask{_ = try? await control.receiveSome()};await group.next();datagrams.cancel();await control.cancel();flow.closeReadWithError(nil);flow.closeWriteWithError(nil);group.cancelAll()}
-        } catch { flow.closeReadWithError(error);flow.closeWriteWithError(error) }
+    private static func appToNetwork(
+        _ flow: NEAppProxyTCPFlow,
+        socks: SOCKSConnection,
+        deadline: InactivityDeadline
+    ) async -> PumpResult {
+        while !Task.isCancelled {
+            let data: Data
+            do {
+                data = try await readData(flow)
+            } catch {
+                let flowError = error as NSError
+                if flowError.domain == "NEAppProxyFlowErrorDomain", flowError.code == 1 {
+                    return .applicationEOF("flow-disconnected")
+                }
+                return Task.isCancelled ? .cancelled : .failed("application-read:\(error)")
+            }
+            if data.isEmpty { return .applicationEOF("empty-read") }
+            do {
+                try await socks.send(data)
+                await deadline.touch()
+            } catch {
+                return Task.isCancelled ? .cancelled : .failed("upstream-send:\(error)")
+            }
+        }
+        return .cancelled
     }
 
-    private func record(flow:NEAppProxyFlow,destination:SOCKSAddress,routedDestination:SOCKSAddress){let routed=routedDestination == destination ? nil : "\(routedDestination.host):\(routedDestination.port)";let item=FlowTelemetry(protocolName:flow is NEAppProxyTCPFlow ? "tcp":"udp",destination:"\(destination.host):\(destination.port)",routedDestination:routed,hostname:flow.remoteHostname,signingIdentifier:flow.metaData.sourceAppSigningIdentifier,timestamp:Date(),event:nil);appendTelemetry(item)}
-	private func recordCompletion(flow:NEAppProxyFlow,destination:SOCKSAddress,event:String){let item=FlowTelemetry(protocolName:"tcp-completion",destination:"\(destination.host):\(destination.port)",routedDestination:nil,hostname:flow.remoteHostname,signingIdentifier:flow.metaData.sourceAppSigningIdentifier,timestamp:Date(),event:event);appendTelemetry(item)}
-	private func appendTelemetry(_ item:FlowTelemetry){lock.lock();if telemetry.count>=4096{telemetry.removeFirst(1024)};telemetry.append(item);lock.unlock()}
-	private func configurationSnapshot()->ProviderConfiguration{lock.lock();defer{lock.unlock()};return configuration}
-    private static func address(_ endpoint:Network.NWEndpoint)->SOCKSAddress?{if case let .hostPort(host,port)=endpoint{return SOCKSAddress(host:host.debugDescription,port:port.rawValue)};return nil}
-	private static func unspecified(_ host:String)->Bool{host=="0.0.0.0" || host=="::"}
-	private static func loopback(_ host:String)->Bool{if host.lowercased()=="localhost"{return true};if let address=IPv4Address(host){return address.rawValue.first==127};if let address=IPv6Address(host){return address.rawValue==IPv6Address("::1")!.rawValue};return false}
-    private func open(_ flow:NEAppProxyFlow)async throws{try await withCheckedThrowingContinuation{(continuation:CheckedContinuation<Void,Error>) in flow.open(withLocalFlowEndpoint:nil){error in if let error{continuation.resume(throwing:error)}else{continuation.resume()}}}}
-    private func readDatagrams(_ flow:NEAppProxyUDPFlow)async throws->[(Data,Network.NWEndpoint)]{try await withCheckedThrowingContinuation{continuation in flow.readDatagrams{packets,error in if let error{continuation.resume(throwing:error)}else{continuation.resume(returning:packets ?? [])}}}}
-    private static func appToNetwork(_ flow:NEAppProxyTCPFlow,socks:SOCKSConnection)async->PumpResult{while !Task.isCancelled{let data:Data;do{data=try await withCheckedThrowingContinuation{(c:CheckedContinuation<Data,Error>) in flow.readData{data,error in if let error{c.resume(throwing:error)}else{c.resume(returning:data ?? Data())}}}}catch{return .applicationEOF("read-error:\(error)")};if data.isEmpty{return .applicationEOF("empty-read")};do{try await socks.send(data)}catch{return .failed("upstream-send:\(error)")}};return .failed("application-pump-cancelled")}
-    private static func networkToApp(socks:SOCKSConnection,flow:NEAppProxyTCPFlow)async->PumpResult{while !Task.isCancelled{do{let data=try await socks.receiveSome();try await withCheckedThrowingContinuation{(c:CheckedContinuation<Void,Error>) in flow.write(data){error in if let error{c.resume(throwing:error)}else{c.resume()}}}}catch SOCKSError.closed{return .networkEOF}catch{return .failed("network-pump:\(error)")}};return .failed("network-pump-cancelled")}
-	private func appToUDP(_ flow:NEAppProxyUDPFlow,connection:NWConnection,configuration:ProviderConfiguration,dnsResponses:DNSResponseMap)async{while !Task.isCancelled{do{let packets=try await readDatagrams(flow);if packets.isEmpty{return};for(payload,endpoint) in packets{guard let address=Self.address(endpoint)else{continue};let routed=configuration.routedDestination(for:address);if routed != address{await dnsResponses.record(query:payload,original:address,routed:routed)};record(flow:flow,destination:address,routedDestination:routed);var frame=Data([0,0,0]);frame.append(try routed.encoded());frame.append(payload);try await sendDatagram(frame,on:connection)}}catch{return}}}
-	private func sendDatagram(_ data:Data,on connection:NWConnection)async throws{try await withCheckedThrowingContinuation{(continuation:CheckedContinuation<Void,Error>) in connection.send(content:data,completion:.contentProcessed{error in if let error{continuation.resume(throwing:error)}else{continuation.resume()}})}}
-    private func udpToApp(_ connection:NWConnection,flow:NEAppProxyUDPFlow,dnsResponses:DNSResponseMap)async{while !Task.isCancelled{do{let frame=try await withCheckedThrowingContinuation{(c:CheckedContinuation<Data,Error>) in connection.receiveMessage{data,_,_,error in if let error{c.resume(throwing:error)}else if let data{c.resume(returning:data)}else{c.resume(throwing:SOCKSError.closed)}}};guard frame.count>3,frame[0]==0,frame[1]==0,frame[2]==0 else{continue};var offset=3;let source=try SOCKSAddress.decode(frame,offset:&offset);let payload=Data(frame[offset...]);let responseSource=await dnsResponses.original(for:payload,receivedFrom:source) ?? source;let endpoint=Network.NWEndpoint.hostPort(host:NWEndpoint.Host(responseSource.host),port:NWEndpoint.Port(rawValue:responseSource.port)!);try await flow.writeDatagrams([(payload,endpoint)])}catch{return}}}
+    private static func networkToApp(
+        socks: SOCKSConnection,
+        flow: NEAppProxyTCPFlow,
+        deadline: InactivityDeadline
+    ) async -> PumpResult {
+        while !Task.isCancelled {
+            do {
+                let data = try await socks.receiveSome()
+                try await write(data, to: flow)
+                await deadline.touch()
+            } catch SOCKSError.closed {
+                return Task.isCancelled ? .cancelled : .networkEOF
+            } catch {
+                return Task.isCancelled ? .cancelled : .failed("network-pump:\(error)")
+            }
+        }
+        return .cancelled
+    }
+
+    private func appToUDP(
+        _ flow: NEAppProxyUDPFlow,
+        connection: NWConnection,
+        configuration: ProviderConfiguration,
+        dnsResponses: DNSResponseMap,
+        deadline: InactivityDeadline
+    ) async -> UDPPumpResult {
+        while !Task.isCancelled {
+            do {
+                let packets = try await readDatagrams(flow)
+                if packets.isEmpty { return .applicationEOF("empty-read") }
+                for (originalPayload, endpoint) in packets {
+                    guard let originalAddress = Self.address(endpoint) else { continue }
+                    let routedAddress = originalPayload.count >= 12
+                        ? configuration.routedDestination(for: originalAddress)
+                        : originalAddress
+                    let payload = await dnsResponses.prepare(
+                        query: originalPayload,
+                        original: originalAddress,
+                        routed: routedAddress)
+                    record(flow: flow, destination: originalAddress, routedDestination: routedAddress)
+                    var frame = Data([0, 0, 0])
+                    frame.append(try routedAddress.encoded())
+                    frame.append(payload)
+                    try await sendDatagram(frame, on: connection)
+                    await deadline.touch()
+                }
+            } catch {
+                return Task.isCancelled ? .cancelled : .failed("application-pump:\(error)")
+            }
+        }
+        return .cancelled
+    }
+
+    private func sendDatagram(_ data: Data, on connection: NWConnection) async throws {
+        try Task.checkCancellation()
+        let gate = AsyncResultGate<Void>()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard gate.install(continuation) else { return }
+                connection.send(content: data, completion: .contentProcessed { error in
+                    if let error { gate.resume(with: .failure(error)) }
+                    else { gate.resume(with: .success(())) }
+                })
+            }
+        }, onCancel: {
+            gate.resume(with: .failure(CancellationError()))
+        })
+    }
+
+    private func udpToApp(
+        _ connection: NWConnection,
+        flow: NEAppProxyUDPFlow,
+        dnsResponses: DNSResponseMap,
+        deadline: InactivityDeadline
+    ) async -> UDPPumpResult {
+        while !Task.isCancelled {
+            do {
+                let frame = try await receiveDatagram(connection)
+                guard frame.count > 3, frame[0] == 0, frame[1] == 0, frame[2] == 0 else { continue }
+                var offset = 3
+                let source = try SOCKSAddress.decode(frame, offset: &offset)
+                let payload = Data(frame[offset...])
+                let restored = await dnsResponses.restore(response: payload, receivedFrom: source)
+                guard let port = NWEndpoint.Port(rawValue: restored.source.port) else { throw SOCKSError.invalidAddress }
+                let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(restored.source.host), port: port)
+                try await writeDatagrams([(restored.payload, endpoint)], to: flow)
+                await deadline.touch()
+            } catch SOCKSError.closed {
+                return Task.isCancelled ? .cancelled : .networkEOF("closed")
+            } catch {
+                return Task.isCancelled ? .cancelled : .failed("network-pump:\(error)")
+            }
+        }
+        return .cancelled
+    }
+
+    private static func readData(_ flow: NEAppProxyTCPFlow) async throws -> Data {
+        try Task.checkCancellation()
+        let gate = AsyncResultGate<Data>()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                guard gate.install(continuation) else { return }
+                flow.readData { data, error in
+                    if let error { gate.resume(with: .failure(error)) }
+                    else { gate.resume(with: .success(data ?? Data())) }
+                }
+            }
+        }, onCancel: {
+            gate.resume(with: .failure(CancellationError()))
+        })
+    }
+
+    private static func write(_ data: Data, to flow: NEAppProxyTCPFlow) async throws {
+        try Task.checkCancellation()
+        let gate = AsyncResultGate<Void>()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard gate.install(continuation) else { return }
+                flow.write(data) { error in
+                    if let error { gate.resume(with: .failure(error)) }
+                    else { gate.resume(with: .success(())) }
+                }
+            }
+        }, onCancel: {
+            gate.resume(with: .failure(CancellationError()))
+        })
+    }
+
+    private func receiveDatagram(_ connection: NWConnection) async throws -> Data {
+        try Task.checkCancellation()
+        let gate = AsyncResultGate<Data>()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                guard gate.install(continuation) else { return }
+                connection.receiveMessage { data, _, _, error in
+                    if let error { gate.resume(with: .failure(error)) }
+                    else if let data { gate.resume(with: .success(data)) }
+                    else { gate.resume(with: .failure(SOCKSError.closed)) }
+                }
+            }
+        }, onCancel: {
+            gate.resume(with: .failure(CancellationError()))
+        })
+    }
+
+    private func writeDatagrams(
+        _ datagrams: [(Data, Network.NWEndpoint)],
+        to flow: NEAppProxyUDPFlow
+    ) async throws {
+        try Task.checkCancellation()
+        let gate = AsyncResultGate<Void>()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard gate.install(continuation) else { return }
+                flow.writeDatagrams(datagrams) { error in
+                    if let error { gate.resume(with: .failure(error)) }
+                    else { gate.resume(with: .success(())) }
+                }
+            }
+        }, onCancel: {
+            gate.resume(with: .failure(CancellationError()))
+        })
+    }
+}
+
+actor InactivityDeadline {
+    private let timeoutSeconds: TimeInterval
+    private var lastActivity = Date()
+
+    init(timeoutSeconds: TimeInterval) {
+        self.timeoutSeconds = timeoutSeconds
+    }
+
+    func touch() {
+        lastActivity = Date()
+    }
+
+    func waitForExpiry() async -> Bool {
+        guard timeoutSeconds > 0 else {
+            do {
+                try await Task.sleep(nanoseconds: UInt64.max)
+            } catch {}
+            return false
+        }
+        while !Task.isCancelled {
+            let remaining = timeoutSeconds - Date().timeIntervalSince(lastActivity)
+            if remaining <= 0 { return true }
+            do {
+                let nanoseconds = UInt64(min(remaining, Double(UInt64.max) / 1_000_000_000) * 1_000_000_000)
+                try await Task.sleep(nanoseconds: nanoseconds)
+            } catch {
+                return false
+            }
+        }
+        return false
+    }
 }
 
 actor DNSResponseMap {
-	private struct Entry { let original: SOCKSAddress; let routed: SOCKSAddress }
-	private var entries: [UInt16: [Entry]] = [:]
-	private var count = 0
+    struct RestoredResponse {
+        let payload: Data
+        let source: SOCKSAddress
+    }
 
-	func record(query: Data, original: SOCKSAddress, routed: SOCKSAddress) {
-		guard let identifier=Self.identifier(in:query) else{return}
-		if count >= 4096 { entries.removeAll(keepingCapacity:true);count=0 }
-		entries[identifier,default:[]].append(Entry(original:original,routed:routed));count += 1
-	}
+    private struct Entry {
+        let originalID: UInt16
+        let original: SOCKSAddress
+        let routed: SOCKSAddress
+        let expires: Date
+    }
 
-	func original(for response: Data, receivedFrom source: SOCKSAddress) -> SOCKSAddress? {
-		guard let identifier=Self.identifier(in:response),var candidates=entries[identifier],let index=candidates.firstIndex(where:{$0.routed == source}) else{return nil}
-		let original=candidates.remove(at:index).original;count -= 1
-		if candidates.isEmpty{entries.removeValue(forKey:identifier)}else{entries[identifier]=candidates}
-		return original
-	}
+    private var entries: [UInt16: Entry] = [:]
+    private var nextID: UInt16 = 0
+    private let maxEntries: Int
+    private let ttlSeconds: TimeInterval
 
-	private static func identifier(in message: Data) -> UInt16? {
-		guard message.count >= 2 else{return nil}
-		return UInt16(message[message.startIndex]) << 8 | UInt16(message[message.index(after:message.startIndex)])
-	}
+    init(maxEntries: Int = 4096, ttlSeconds: TimeInterval = 30) {
+        self.maxEntries = maxEntries
+        self.ttlSeconds = ttlSeconds
+    }
+
+    func prepare(query: Data, original: SOCKSAddress, routed: SOCKSAddress) -> Data {
+        guard maxEntries > 0, routed != original, query.count >= 12 else { return query }
+        let now = Date()
+        prune(now: now)
+        if entries.count >= maxEntries { evictOldest() }
+        guard let translatedID = allocateID() else { return query }
+        let originalID = Self.identifier(in: query)!
+        entries[translatedID] = Entry(
+            originalID: originalID,
+            original: original,
+            routed: routed,
+            expires: now.addingTimeInterval(ttlSeconds))
+        return Self.replacingIdentifier(in: query, with: translatedID)
+    }
+
+    func restore(response: Data, receivedFrom source: SOCKSAddress) -> RestoredResponse {
+        guard response.count >= 12, let translatedID = Self.identifier(in: response) else {
+            return RestoredResponse(payload: response, source: source)
+        }
+        prune(now: Date())
+        guard let entry = entries[translatedID], entry.routed == source else {
+            return RestoredResponse(payload: response, source: source)
+        }
+        entries.removeValue(forKey: translatedID)
+        return RestoredResponse(
+            payload: Self.replacingIdentifier(in: response, with: entry.originalID),
+            source: entry.original)
+    }
+
+    func outstandingCount() -> Int { entries.count }
+
+    private func allocateID() -> UInt16? {
+        for _ in 0 ... UInt16.max {
+            let candidate = nextID
+            nextID &+= 1
+            if entries[candidate] == nil { return candidate }
+        }
+        return nil
+    }
+
+    private func prune(now: Date) {
+        entries = entries.filter { now < $0.value.expires }
+    }
+
+    private func evictOldest() {
+        guard let oldest = entries.min(by: { $0.value.expires < $1.value.expires }) else { return }
+        entries.removeValue(forKey: oldest.key)
+    }
+
+    private static func identifier(in message: Data) -> UInt16? {
+        guard message.count >= 2 else { return nil }
+        return UInt16(message[message.startIndex]) << 8 |
+            UInt16(message[message.index(after: message.startIndex)])
+    }
+
+    private static func replacingIdentifier(in message: Data, with identifier: UInt16) -> Data {
+        var copy = message
+        copy[copy.startIndex] = UInt8(identifier >> 8)
+        copy[copy.index(after: copy.startIndex)] = UInt8(identifier & 0xff)
+        return copy
+    }
 }

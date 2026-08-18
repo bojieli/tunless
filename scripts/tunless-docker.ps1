@@ -26,6 +26,19 @@ if ($running -ne 'true') { throw "Container is not running: $Container" }
 $containerID = & docker inspect --format '{{.Id}}' $Container
 $engineOS = & docker info --format '{{.OSType}}'
 $upstream = Get-TunlessUpstream
+$controllerDNSArguments = @()
+$hasDNSUpstream = $false
+$hasDNSOverridePolicy = $false
+foreach ($argument in $TunlessArguments) {
+    if ($argument -eq '--dns-upstream' -or $argument -like '--dns-upstream=*') { $hasDNSUpstream = $true }
+    if ($argument -eq '--disable-dns-override' -or $argument -like '--disable-dns-override=*') { $hasDNSOverridePolicy = $true }
+}
+if (-not $hasDNSUpstream -and $env:TUNLESS_DNS_UPSTREAM) {
+    $controllerDNSArguments += @('--dns-upstream', $env:TUNLESS_DNS_UPSTREAM)
+}
+if (-not $hasDNSOverridePolicy -and $env:TUNLESS_DISABLE_DNS_OVERRIDE) {
+    $controllerDNSArguments += "--disable-dns-override=$($env:TUNLESS_DISABLE_DNS_OVERRIDE)"
+}
 
 if ($engineOS -eq 'windows') {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -86,7 +99,7 @@ if ($env:TUNLESS_DOCKER_BRIDGE -ne 'never' -and $upstream -match '^(socks5h?://(
     $reservation.Stop()
     $bridgeProcess = Start-Process -FilePath $bridgeBinary -ArgumentList @(
         '--backend', 'loopback', '--listen', "127.0.0.1:$bridgePort",
-        '--upstream', $upstream, '--log-level', 'warn'
+        '--upstream', $upstream, '--disable-dns-override', '--log-level', 'warn'
     ) -NoNewWindow -PassThru
 	$bridgeReady = $false
 	for ($attempt = 0; $attempt -lt 20; $attempt++) {
@@ -131,7 +144,7 @@ $dockerArguments = @(
     '--mount', 'type=bind,source=/sys/fs/cgroup,target=/sys/fs/cgroup',
     '--add-host', 'host.docker.internal:host-gateway',
     $image
-) + $TunlessArguments + @(
+) + $TunlessArguments + $controllerDNSArguments + @(
     '--upstream', $desktopUpstream,
     '--backend', 'linux',
     '--container-pid', $pidInDesktopVM,

@@ -45,7 +45,7 @@ func TestCaptureDiagnosticsAreRateLimited(t *testing.T) {
 
 func TestStatusEndpoints(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Server{Address: "127.0.0.1:0", Version: "test", BackendName: "fake", Upstream: "127.0.0.1:7890", MaxConcurrent: 7, Stats: &tunless.Stats{}}
+	s := &Server{Address: "127.0.0.1:0", Version: "test", BackendName: "fake", Upstream: "127.0.0.1:7890", DNSUpstream: "1.1.1.1:53", DNSOverride: true, MaxConcurrent: 7, Stats: &tunless.Stats{}}
 	done := make(chan error, 1)
 	go func() { done <- s.Serve(ctx) }()
 	deadline := time.Now().Add(time.Second)
@@ -66,6 +66,9 @@ func TestStatusEndpoints(t *testing.T) {
 	}
 	if body["version"] != "test" || body["backend"] != "fake" {
 		t.Fatalf("unexpected status: %+v", body)
+	}
+	if body["dns_upstream"] != "1.1.1.1:53" || body["dns_override"] != true {
+		t.Fatalf("unexpected DNS status: %+v", body)
 	}
 	cancel()
 	if err = <-done; err != nil {
