@@ -232,21 +232,37 @@ xcodebuild -project macos/Tunless.xcodeproj -scheme Tunless \
 ```
 
 After signing with the Network Extension and System Extension entitlements,
-place `Tunless.app` in `/Applications` and run:
+place `Tunless.app` in `/Applications`. When Clash Verge is the existing proxy
+client, keep its mixed/SOCKS listener and rules, disable its TUN mode, and use
+the focused companion preset:
 
 ```console
 /Applications/Tunless.app/Contents/MacOS/Tunless \
-  --upstream 127.0.0.1:7890 --dns-upstream 1.1.1.1:53
+  check --preset clash-verge --upstream 127.0.0.1:7897
 /Applications/Tunless.app/Contents/MacOS/Tunless \
-  --upstream 127.0.0.1:7890 --disable-dns-override
-/Applications/Tunless.app/Contents/MacOS/Tunless --telemetry
-/Applications/Tunless.app/Contents/MacOS/Tunless --stop
+  start --preset clash-verge --upstream 127.0.0.1:7897
+/Applications/Tunless.app/Contents/MacOS/Tunless status
+/Applications/Tunless.app/Contents/MacOS/Tunless stop
+/Applications/Tunless.app/Contents/MacOS/Tunless cleanup
 ```
 
-The launcher accepts the same repeated process/destination filter names as the
-Go CLI. macOS process patterns match signing identifiers. Re-running the
-launcher updates a running provider, while `--telemetry` prints and drains its
-bounded JSON flow buffer. First activation requires normal macOS user approval.
+The preset adds only the known Clash Verge process exclusions and defaults to
+port 7897; an explicit `--upstream` always wins. It does not import or replace
+Clash rules, nodes, subscriptions, or UI. `check` verifies SOCKS5 negotiation
+before capture is enabled, and preset-based `start` performs the same preflight
+automatically. The launcher also accepts the same repeated process/destination
+filter names as the Go CLI. macOS process patterns match signing identifiers.
+Re-running `start` updates a running provider, while `telemetry` prints and
+drains its bounded JSON flow buffer. `status` is non-destructive and reports
+the active state, credential-free upstream, DNS upstream, and recognized
+preset. `stop` disables capture but retains its configuration; `cleanup` stops
+capture, removes every Tunless transparent-proxy configuration, and requests
+Network Extension deactivation. A bounded recovery script is bundled at
+`Tunless.app/Contents/Resources/tunless-cleanup`. If Tunless cannot respond at
+all, the Network Extension can always be disabled manually under **System
+Settings > General > Login Items & Extensions > Network Extensions**. First
+activation requires normal macOS user approval. Legacy `--stop`, `--cleanup`,
+and `--telemetry` spellings remain supported.
 Detailed signing, Clash loop exclusions, and runtime validation are in
 [the macOS notes](docs/MACOS.md).
 

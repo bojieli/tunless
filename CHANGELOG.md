@@ -7,6 +7,11 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Added
 
+- Idempotent macOS `stop` and `cleanup` recovery commands, a bounded cleanup
+  script bundled in the app, stale-manager removal, Network Extension
+  deactivation, and a documented manual disable path for fail-safe recovery.
+- A focused macOS Clash Verge companion preset with automatic loop exclusions,
+  SOCKS5 preflight, strict launcher commands, and non-destructive status output.
 - Default-on, numeric trusted-DNS override for the portable/Linux emitter and
   macOS provider, a cross-platform disable switch, SOCKS-routed DNS observation,
   and bounded transaction-ID translation for unambiguous UDP response restore.

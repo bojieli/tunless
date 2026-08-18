@@ -11,7 +11,15 @@ targets:
   Tunless:
     type: application
     platform: macOS
-    sources: [App]
+    sources:
+      - path: App
+      - path: Sources/TunlessLauncher
+      - path: Resources
+        buildPhase: resources
+    settings:
+      configs:
+        Release:
+          ENABLE_HARDENED_RUNTIME: YES
     info:
       path: App/Info.plist
       properties:
@@ -51,6 +59,9 @@ targets:
         EXECUTABLE_NAME: TunlessProxy
         PRODUCT_MODULE_NAME: TunlessProxy
         PRODUCT_NAME: com.bojieli.tunless.TunlessProxy
+      configs:
+        Release:
+          ENABLE_HARDENED_RUNTIME: YES
     entitlements:
       path: Extension/TunlessProxy.entitlements
       properties:

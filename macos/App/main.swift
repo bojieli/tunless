@@ -1,116 +1,241 @@
 import AppKit
+import Darwin
+import Foundation
 import Network
 import NetworkExtension
 import SystemExtensions
 
-private struct LauncherConfiguration: Codable {
-    let upstreamHost: String
-    let upstreamPort: UInt16
-    let username: String?
-    let password: String?
-    let dnsHost: String?
-    let dnsPort: UInt16?
-    let includeProcesses: [String]?
-    let excludeProcesses: [String]?
-    let includeDestinations: [String]?
-    let excludeDestinations: [String]?
+private let usage = """
+Usage:
+  Tunless start [options]
+  Tunless check [options]
+  Tunless status
+  Tunless stop
+  Tunless cleanup
+  Tunless telemetry
 
-	private enum ConfigurationError: Error { case invalidUpstream, invalidDNSUpstream, credentialsTooLong }
+Tunless replaces only transparent capture. A SOCKS5 application such as
+Clash Verge, mihomo, or sing-box continues to own rules, nodes, and transport.
 
-	init() throws {
-        let upstream = Self.option("--upstream") ?? ProcessInfo.processInfo.environment["TUNLESS_UPSTREAM"] ?? "127.0.0.1:7890"
-        let components = URLComponents(string: upstream.contains("://") ? upstream : "socks5://\(upstream)")
-		guard let components,let scheme=components.scheme,["socks5","socks5h"].contains(scheme),let host=components.host,!host.isEmpty,let port=components.port,port>0,port<=65535,components.path.isEmpty,components.query==nil,components.fragment==nil else{throw ConfigurationError.invalidUpstream}
-		upstreamHost = host
-		upstreamPort = UInt16(port)
-		username = components.user
-		password = components.password
-		guard (username?.utf8.count ?? 0)<=255,(password?.utf8.count ?? 0)<=255 else{throw ConfigurationError.credentialsTooLong}
-        let disableDNSOverride = try Self.booleanOption("--disable-dns-override", environment: "TUNLESS_DISABLE_DNS_OVERRIDE")
-        if disableDNSOverride {
-            self.dnsHost = nil
-            self.dnsPort = nil
-        } else {
-            let dns = Self.option("--dns-upstream") ?? ProcessInfo.processInfo.environment["TUNLESS_DNS_UPSTREAM"] ?? "1.1.1.1:53"
-            let dnsComponents = URLComponents(string: dns.contains("://") ? dns : "dns://\(dns)")
-            guard let dnsComponents, dnsComponents.scheme == "dns", let dnsHost = dnsComponents.host, !dnsHost.isEmpty,
-                IPv4Address(dnsHost) != nil || IPv6Address(dnsHost) != nil,
-                let dnsPort = dnsComponents.port, dnsPort > 0, dnsPort <= 65535,
-                dnsComponents.user == nil, dnsComponents.password == nil, dnsComponents.path.isEmpty,
-                dnsComponents.query == nil, dnsComponents.fragment == nil else { throw ConfigurationError.invalidDNSUpstream }
-            self.dnsHost = dnsHost
-            self.dnsPort = UInt16(dnsPort)
-        }
-        includeProcesses = Self.list("--include-process", environment: "TUNLESS_INCLUDE_PROCESS")
-        excludeProcesses = Self.list("--exclude-process", environment: "TUNLESS_EXCLUDE_PROCESS")
-        includeDestinations = Self.list("--include-destination", environment: "TUNLESS_INCLUDE_DESTINATION")
-        excludeDestinations = Self.list("--exclude-destination", environment: "TUNLESS_EXCLUDE_DESTINATION")
-    }
+Options:
+  --preset clash-verge       Add the Clash Verge loop-prevention exclusions.
+                             Defaults its upstream to 127.0.0.1:7897.
+  --upstream HOST:PORT       SOCKS5 or mixed listener used as the upstream.
+  --dns-upstream IP:PORT     Trusted resolver for captured port-53 traffic.
+  --disable-dns-override     Preserve each application's original resolver.
+  --include-process GLOB     Capture a signing identifier (repeatable).
+  --exclude-process GLOB     Exclude a signing identifier (repeatable).
+  --include-destination CIDR Capture a destination prefix (repeatable).
+  --exclude-destination CIDR Exclude a destination prefix (repeatable).
+  --cleanup                  Legacy spelling of the cleanup command.
+  -h, --help                 Show this help.
+  --version                  Show app and build version.
 
-    private static func option(_ name: String) -> String? {
-        for (index, argument) in CommandLine.arguments.enumerated() {
-            if argument.hasPrefix("\(name)=") { return String(argument.dropFirst(name.count + 1)) }
-            if argument == name, index + 1 < CommandLine.arguments.count { return CommandLine.arguments[index + 1] }
-        }
-        return nil
-    }
+Examples:
+  Tunless check --preset clash-verge --upstream 127.0.0.1:7897
+  Tunless start --preset clash-verge --upstream 127.0.0.1:7897
+  Tunless status
+  Tunless cleanup
 
-    private static func booleanOption(_ name: String, environment: String) throws -> Bool {
-        var raw: String?
-        for argument in CommandLine.arguments {
-            if argument == name { raw = "true" }
-            else if argument.hasPrefix("\(name)=") { raw = String(argument.dropFirst(name.count + 1)) }
-        }
-        if raw == nil { raw = ProcessInfo.processInfo.environment[environment] }
-        guard let raw else { return false }
-        switch raw.lowercased() {
-        case "1", "true", "yes", "on": return true
-        case "0", "false", "no", "off": return false
-        default: throw ConfigurationError.invalidDNSUpstream
-        }
-    }
+Use stop for an ordinary shutdown. Cleanup is the fail-safe recovery command:
+it stops capture, removes every Tunless proxy configuration, and deactivates
+the Tunless Network Extension.
+If recovery commands cannot respond, disable Tunless under System Settings >
+General > Login Items & Extensions > Network Extensions.
 
-    private static func list(_ option: String, environment: String) -> [String]? {
-        var values: [String] = []
-        for (index, argument) in CommandLine.arguments.enumerated() {
-            if argument.hasPrefix("\(option)=") { values.append(String(argument.dropFirst(option.count + 1))) }
-            else if argument == option, index + 1 < CommandLine.arguments.count { values.append(CommandLine.arguments[index + 1]) }
-        }
-        if let value = ProcessInfo.processInfo.environment[environment], !value.isEmpty {
-            values.append(contentsOf: value.split(separator: ",").map(String.init))
-        }
-        return values.isEmpty ? nil : values
+Legacy --stop, --cleanup, --check, --status, and --telemetry flags remain supported.
+"""
+
+private func write(_ text: String, to handle: FileHandle) {
+    handle.write(Data(text.utf8))
+}
+
+private func terminate(_ code: Int32) -> Never {
+    fflush(stdout)
+    fflush(stderr)
+    Darwin.exit(code)
+}
+
+private func versionFields() -> (version: String, build: String) {
+    let info = Bundle.main.infoDictionary ?? [:]
+    return (
+        info["CFBundleShortVersionString"] as? String ?? "dev",
+        info["CFBundleVersion"] as? String ?? "dev")
+}
+
+private let launcherArguments: LauncherArguments
+do {
+    launcherArguments = try LauncherArguments()
+} catch {
+    write("Tunless: \(error.localizedDescription)\n\n\(usage)\n", to: .standardError)
+    terminate(2)
+}
+
+switch launcherArguments.action {
+case .help:
+    write("\(usage)\n", to: .standardOutput)
+    terminate(0)
+case .version:
+    let fields = versionFields()
+    write("Tunless \(fields.version) (\(fields.build))\n", to: .standardOutput)
+    terminate(0)
+default: break
+}
+
+private struct CheckReport: Codable {
+    let ok: Bool
+    let preset: String?
+    let upstream: String
+    let detail: String
+}
+
+private struct StatusReport: Codable {
+    let status: String
+    let enabled: Bool
+    let launcherVersion: String
+    let launcherBuild: String
+    let upstream: String?
+    let dnsUpstream: String?
+    let preset: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case enabled
+        case upstream
+        case preset
+        case launcherVersion = "launcher_version"
+        case launcherBuild = "launcher_build"
+        case dnsUpstream = "dns_upstream"
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionRequestDelegate {
+    private static let providerBundleIdentifier = "com.bojieli.tunless.TunlessProxy"
+    private let arguments: LauncherArguments
+    private var preflight: SOCKSPreflight?
+    private var operationDeadline: DispatchSourceTimer?
+    private var cleanupPreferenceErrors: [String] = []
+
+    init(arguments: LauncherArguments) {
+        self.arguments = arguments
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if CommandLine.arguments.contains("--stop") {
-            stopProxy()
-            return
+        switch arguments.action {
+        case .start:
+            if arguments.preset != nil { performPreflight(startAfterSuccess: true) }
+            else { activateExtension() }
+        case .check: performPreflight(startAfterSuccess: false)
+        case .status: fetchStatus()
+        case .stop:
+            armOperationDeadline(for: "stop")
+            stopProxy(removeConfiguration: false)
+        case .cleanup:
+            armOperationDeadline(for: "cleanup")
+            stopProxy(removeConfiguration: true)
+        case .telemetry: fetchTelemetry()
+        case .help, .version: terminate(0)
         }
-        if CommandLine.arguments.contains("--telemetry") {
-            fetchTelemetry()
-            return
+    }
+
+    private func performPreflight(startAfterSuccess: Bool) {
+        guard let configuration = arguments.configuration else {
+            write("Tunless: missing start configuration\n", to: .standardError)
+            terminate(2)
         }
+        let checker = SOCKSPreflight(configuration: configuration)
+        preflight = checker
+        checker.run { [weak self] result in
+            guard let self else { return }
+            self.preflight = nil
+            switch result {
+            case .success:
+                if startAfterSuccess {
+                    self.activateExtension()
+                } else {
+                    self.writeJSON(CheckReport(
+                        ok: true,
+                        preset: self.arguments.preset?.rawValue,
+                        upstream: configuration.upstreamAddress,
+                        detail: "SOCKS5 negotiation passed"))
+                    terminate(0)
+                }
+            case let .failure(error):
+                if startAfterSuccess {
+                    let hint = self.arguments.preset == .clashVerge
+                        ? " Start Clash Verge and confirm its mixed/SOCKS port, then retry."
+                        : ""
+                    write("Tunless: \(error.localizedDescription).\(hint)\n", to: .standardError)
+                } else {
+                    self.writeJSON(CheckReport(
+                        ok: false,
+                        preset: self.arguments.preset?.rawValue,
+                        upstream: configuration.upstreamAddress,
+                        detail: error.localizedDescription))
+                }
+                terminate(1)
+            }
+        }
+    }
+
+    private func activateExtension() {
         let request = OSSystemExtensionRequest.activationRequest(
-            forExtensionWithIdentifier: "com.bojieli.tunless.TunlessProxy",
+            forExtensionWithIdentifier: Self.providerBundleIdentifier,
             queue: .main)
         request.delegate = self
         OSSystemExtensionManager.shared.submitRequest(request)
     }
 
     func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
-        configureProxy()
+        if arguments.action == .cleanup {
+            switch result {
+            case .completed:
+                reportCleanup(deactivation: "the Network Extension was deactivated")
+            case .willCompleteAfterReboot:
+                reportCleanup(deactivation: "Network Extension deactivation will complete after restart")
+            @unknown default:
+                reportCleanup(extensionError: "system extension returned an unknown deactivation result")
+            }
+            return
+        }
+        switch result {
+        case .completed: configureProxy()
+        case .willCompleteAfterReboot:
+            write(
+                "Tunless system extension will finish installing after the next restart; then run the same start command again.\n",
+                to: .standardOutput)
+            terminate(0)
+        @unknown default:
+            write("Tunless: system extension returned an unknown activation result\n", to: .standardError)
+            terminate(1)
+        }
     }
 
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
-        NSLog("tunless extension activation failed: \(error)")
-        NSApp.terminate(nil)
+        if arguments.action == .cleanup {
+            let nsError = error as NSError
+            if nsError.domain == OSSystemExtensionErrorDomain
+                && nsError.code == OSSystemExtensionError.Code.extensionNotFound.rawValue {
+                reportCleanup(deactivation: "the Network Extension was not installed")
+            } else {
+                reportCleanup(extensionError: "deactivate Network Extension: \(error.localizedDescription)")
+            }
+            return
+        }
+        write("Tunless: extension activation failed: \(error.localizedDescription)\n", to: .standardError)
+        terminate(1)
     }
 
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
-        NSLog("Approve the tunless system extension in System Settings")
+        if arguments.action == .cleanup {
+            write(
+                "Tunless capture is already off. Approve Network Extension removal in System Settings if prompted.\n",
+                to: .standardError)
+            return
+        }
+        write(
+            "Approve Tunless in System Settings > General > Login Items & Extensions > Network Extensions.\n",
+            to: .standardError)
     }
 
     func request(
@@ -120,69 +245,287 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
     ) -> OSSystemExtensionRequest.ReplacementAction { .replace }
 
     private func configureProxy() {
+        guard let configuration = arguments.configuration else {
+            write("Tunless: missing start configuration\n", to: .standardError)
+            terminate(2)
+        }
         NETransparentProxyManager.loadAllFromPreferences { managers, error in
-            if let error { NSLog("load proxy preferences: \(error)"); NSApp.terminate(nil); return }
-            let manager = managers?.first(where: { $0.localizedDescription == "tunless" }) ?? NETransparentProxyManager()
-			let configuration:LauncherConfiguration
-			do{configuration=try LauncherConfiguration()}catch{NSLog("invalid proxy configuration: \(error)");NSApp.terminate(nil);return}
-            guard let encoded = try? JSONEncoder().encode(configuration) else { NSLog("encode proxy configuration failed"); NSApp.terminate(nil); return }
+            if let error { self.fail("load proxy preferences", error: error) }
+            let manager = managers?.first(where: Self.isTunlessManager) ?? NETransparentProxyManager()
+            guard let encoded = try? JSONEncoder().encode(configuration) else {
+                write("Tunless: could not encode proxy configuration\n", to: .standardError)
+                terminate(1)
+            }
             let proto = NETunnelProviderProtocol()
-            proto.providerBundleIdentifier = "com.bojieli.tunless.TunlessProxy"
+            proto.providerBundleIdentifier = Self.providerBundleIdentifier
             proto.serverAddress = "tunless"
             proto.providerConfiguration = ["configuration": encoded]
             manager.protocolConfiguration = proto
             manager.localizedDescription = "tunless"
             manager.isEnabled = true
             manager.saveToPreferences { error in
-                if let error { NSLog("save proxy preferences: \(error)"); NSApp.terminate(nil); return }
+                if let error { self.fail("save proxy preferences", error: error) }
                 manager.loadFromPreferences { error in
-                    if let error { NSLog("reload proxy preferences: \(error)"); NSApp.terminate(nil); return }
-                    if manager.connection.status == .connected, let session = manager.connection as? NETunnelProviderSession {
-                        do { try session.sendProviderMessage(encoded) { _ in NSApp.terminate(nil) } }
-                        catch { NSLog("update transparent proxy: \(error)"); NSApp.terminate(nil) }
+                    if let error { self.fail("reload proxy preferences", error: error) }
+                    if manager.connection.status == .connected,
+                       let session = manager.connection as? NETunnelProviderSession {
+                        do {
+                            try session.sendProviderMessage(encoded) { _ in
+                                self.reportStarted(configuration)
+                            }
+                        } catch {
+                            self.fail("update transparent proxy", error: error)
+                        }
                     } else {
-                        do { try manager.connection.startVPNTunnel() }
-                        catch { NSLog("start transparent proxy: \(error)") }
-                        NSApp.terminate(nil)
+                        do {
+                            try manager.connection.startVPNTunnel()
+                            self.reportStarted(configuration)
+                        } catch {
+                            self.fail("start transparent proxy", error: error)
+                        }
                     }
                 }
             }
+        }
+    }
+
+    private func reportStarted(_ configuration: LauncherConfiguration) {
+        let preset = arguments.preset.map { " using \($0.rawValue) preset" } ?? ""
+        write("Tunless configured\(preset); SOCKS5 upstream \(configuration.upstreamAddress).\n", to: .standardOutput)
+        terminate(0)
+    }
+
+    private func fetchStatus() {
+        NETransparentProxyManager.loadAllFromPreferences { managers, error in
+            if let error { self.fail("load proxy preferences", error: error) }
+            let fields = versionFields()
+            guard let manager = managers?.first(where: Self.isTunlessManager) else {
+                self.writeJSON(StatusReport(
+                    status: "not-configured",
+                    enabled: false,
+                    launcherVersion: fields.version,
+                    launcherBuild: fields.build,
+                    upstream: nil,
+                    dnsUpstream: nil,
+                    preset: nil))
+                terminate(0)
+            }
+            let configuration = self.savedConfiguration(manager)
+            self.writeJSON(StatusReport(
+                status: Self.statusName(manager.connection.status),
+                enabled: manager.isEnabled,
+                launcherVersion: fields.version,
+                launcherBuild: fields.build,
+                upstream: configuration?.upstreamAddress,
+                dnsUpstream: Self.dnsAddress(configuration),
+                preset: Self.presetName(configuration)))
+            terminate(0)
+        }
+    }
+
+    private func savedConfiguration(_ manager: NETransparentProxyManager) -> LauncherConfiguration? {
+        guard let proto = manager.protocolConfiguration as? NETunnelProviderProtocol,
+              let encoded = proto.providerConfiguration?["configuration"] as? Data else { return nil }
+        return try? JSONDecoder().decode(LauncherConfiguration.self, from: encoded)
+    }
+
+    private static func dnsAddress(_ configuration: LauncherConfiguration?) -> String? {
+        guard let host = configuration?.dnsHost, let port = configuration?.dnsPort else { return nil }
+        return IPv6Address(host) == nil ? "\(host):\(port)" : "[\(host)]:\(port)"
+    }
+
+    private static func presetName(_ configuration: LauncherConfiguration?) -> String? {
+        guard let excluded = configuration?.excludeProcesses,
+              LauncherPreset.clashVerge.excludedProcesses.allSatisfy(excluded.contains) else { return nil }
+        return LauncherPreset.clashVerge.rawValue
+    }
+
+    private static func statusName(_ status: NEVPNStatus) -> String {
+        switch status {
+        case .invalid: return "invalid"
+        case .disconnected: return "disconnected"
+        case .connecting: return "connecting"
+        case .connected: return "connected"
+        case .reasserting: return "reasserting"
+        case .disconnecting: return "disconnecting"
+        @unknown default: return "unknown"
         }
     }
 
     private func fetchTelemetry() {
         NETransparentProxyManager.loadAllFromPreferences { managers, error in
-            if let error { NSLog("load proxy preferences: \(error)"); NSApp.terminate(nil); return }
-            guard let manager = managers?.first(where: { $0.localizedDescription == "tunless" }), manager.connection.status == .connected, let session = manager.connection as? NETunnelProviderSession else {
-                NSLog("tunless transparent proxy is not running"); NSApp.terminate(nil); return
+            if let error { self.fail("load proxy preferences", error: error) }
+            guard let manager = managers?.first(where: Self.isTunlessManager),
+                  manager.connection.status == .connected,
+                  let session = manager.connection as? NETunnelProviderSession else {
+                write("Tunless: transparent proxy is not running\n", to: .standardError)
+                terminate(1)
             }
             do {
                 try session.sendProviderMessage(Data()) { response in
-                    if let response {
-                        FileHandle.standardOutput.write(response)
-                        FileHandle.standardOutput.write(Data("\n".utf8))
-                    }
-                    NSApp.terminate(nil)
+                    if let response { FileHandle.standardOutput.write(response) }
+                    write("\n", to: .standardOutput)
+                    terminate(0)
                 }
-            } catch { NSLog("read transparent proxy telemetry: \(error)"); NSApp.terminate(nil) }
+            } catch {
+                self.fail("read transparent proxy telemetry", error: error)
+            }
         }
     }
 
-    private func stopProxy() {
+    private static func isTunlessManager(_ manager: NETransparentProxyManager) -> Bool {
+        if let proto = manager.protocolConfiguration as? NETunnelProviderProtocol {
+            return proto.providerBundleIdentifier == providerBundleIdentifier
+        }
+        // Retain an exact-label fallback only for a damaged legacy Tunless
+        // manager that has already lost its protocol configuration.
+        return manager.localizedDescription == "tunless"
+    }
+
+    private func stopProxy(removeConfiguration: Bool) {
         NETransparentProxyManager.loadAllFromPreferences { managers, error in
-            if let error { NSLog("load proxy preferences: \(error)"); NSApp.terminate(nil); return }
-            guard let manager = managers?.first(where: { $0.localizedDescription == "tunless" }) else { NSApp.terminate(nil); return }
-            manager.connection.stopVPNTunnel()
-            manager.isEnabled = false
-            manager.saveToPreferences { error in
-                if let error { NSLog("disable transparent proxy: \(error)") }
-                NSApp.terminate(nil)
+            if let error { self.fail("load proxy preferences", error: error) }
+            let ownedManagers = (managers ?? []).filter(Self.isTunlessManager)
+            guard !ownedManagers.isEmpty else {
+                if removeConfiguration {
+                    self.deactivateExtension()
+                } else {
+                    self.cancelOperationDeadline()
+                    write("Tunless is not configured.\n", to: .standardOutput)
+                    terminate(0)
+                }
+                return
+            }
+
+            // Stop every owned session before waiting on preference I/O. This is
+            // deliberately broader than the normal single-manager happy path so
+            // stale duplicate configurations cannot continue capturing traffic.
+            for manager in ownedManagers {
+                manager.connection.stopVPNTunnel()
+                manager.isEnabled = false
+            }
+            self.persistStoppedManagers(
+                ownedManagers,
+                at: 0,
+                removeConfiguration: removeConfiguration,
+                errors: [])
+        }
+    }
+
+    private func persistStoppedManagers(
+        _ managers: [NETransparentProxyManager],
+        at index: Int,
+        removeConfiguration: Bool,
+        errors: [String]
+    ) {
+        guard index < managers.count else {
+            if removeConfiguration {
+                cleanupPreferenceErrors = errors
+                deactivateExtension()
+                return
+            }
+            cancelOperationDeadline()
+            if !errors.isEmpty {
+                write(
+                    "Tunless: capture was stopped, but disable was not persisted: \(errors.joined(separator: "; "))\n",
+                    to: .standardError)
+                terminate(1)
+            }
+            write("Tunless stopped; capture is off.\n", to: .standardOutput)
+            terminate(0)
+        }
+
+        let manager = managers[index]
+        manager.saveToPreferences { saveError in
+            var nextErrors = errors
+            if let saveError, !removeConfiguration {
+                nextErrors.append("disable configuration \(index + 1): \(saveError.localizedDescription)")
+            }
+            guard removeConfiguration else {
+                self.persistStoppedManagers(
+                    managers,
+                    at: index + 1,
+                    removeConfiguration: false,
+                    errors: nextErrors)
+                return
+            }
+            manager.removeFromPreferences { removeError in
+                if let removeError {
+                    if let saveError {
+                        nextErrors.append("disable configuration \(index + 1): \(saveError.localizedDescription)")
+                    }
+                    nextErrors.append("remove configuration \(index + 1): \(removeError.localizedDescription)")
+                }
+                self.persistStoppedManagers(
+                    managers,
+                    at: index + 1,
+                    removeConfiguration: true,
+                    errors: nextErrors)
             }
         }
+    }
+
+    private func deactivateExtension() {
+        let request = OSSystemExtensionRequest.deactivationRequest(
+            forExtensionWithIdentifier: Self.providerBundleIdentifier,
+            queue: .main)
+        request.delegate = self
+        OSSystemExtensionManager.shared.submitRequest(request)
+    }
+
+    private func reportCleanup(deactivation: String? = nil, extensionError: String? = nil) {
+        cancelOperationDeadline()
+        var errors = cleanupPreferenceErrors
+        if let extensionError { errors.append(extensionError) }
+        if !errors.isEmpty {
+            write(
+                "Tunless: capture is off, but cleanup was incomplete: \(errors.joined(separator: "; "))\n",
+                to: .standardError)
+            terminate(1)
+        }
+        let detail = deactivation.map { "; \($0)" } ?? ""
+        write(
+            "Tunless cleanup complete; capture is off, proxy configurations were removed\(detail).\n",
+            to: .standardOutput)
+        terminate(0)
+    }
+
+    private func armOperationDeadline(for operation: String, seconds: TimeInterval = 15) {
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + seconds)
+        timer.setEventHandler {
+            write(
+                "Tunless: \(operation) timed out after \(Int(seconds)) seconds; run the bundled tunless-cleanup recovery script.\n",
+                to: .standardError)
+            terminate(1)
+        }
+        timer.resume()
+        operationDeadline = timer
+    }
+
+    private func cancelOperationDeadline() {
+        operationDeadline?.cancel()
+        operationDeadline = nil
+    }
+
+    private func writeJSON<T: Encodable>(_ value: T) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(value) else {
+            write("Tunless: could not encode command output\n", to: .standardError)
+            terminate(1)
+        }
+        FileHandle.standardOutput.write(data)
+        write("\n", to: .standardOutput)
+    }
+
+    private func fail(_ operation: String, error: Error) -> Never {
+        write("Tunless: \(operation): \(error.localizedDescription)\n", to: .standardError)
+        terminate(1)
     }
 }
 
 let app = NSApplication.shared
-let delegate = AppDelegate()
+let delegate = AppDelegate(arguments: launcherArguments)
 app.delegate = delegate
 app.run()

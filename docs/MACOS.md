@@ -32,16 +32,33 @@ xcodebuild -project macos/Tunless.xcodeproj -scheme Tunless \
 ```
 
 For a provisioned team, build Release normally, put `Tunless.app` in
-`/Applications`, and invoke its executable with `--upstream`. First activation
-opens the standard macOS approval path. `--stop` disables only the manager whose
-localized description is exactly `tunless`; the launcher never edits the first
-unrelated transparent-proxy manager it finds.
+`/Applications`, and invoke its executable with `start --upstream`. First
+activation opens the standard macOS approval path. `stop` disables every
+manager owned by the Tunless provider bundle; the launcher does not edit
+unrelated transparent-proxy managers.
 
 When Clash Verge is the upstream, exclude its outbound processes so their
 connections are not handed back to Clash through Tunless:
 
 ```console
 /Applications/Tunless.app/Contents/MacOS/Tunless \
+  check --preset clash-verge --upstream 127.0.0.1:7897
+/Applications/Tunless.app/Contents/MacOS/Tunless \
+  start --preset clash-verge --upstream 127.0.0.1:7897 \
+  --dns-upstream 1.1.1.1:53 \
+  --exclude-destination 10.0.0.0/8 \
+  --exclude-destination 172.16.0.0/12 \
+  --exclude-destination 192.168.0.0/16 \
+  --exclude-destination fc00::/7 \
+  --exclude-destination fe80::/10
+```
+
+The preset is shorthand only for the two known process exclusions below and a
+default upstream of `127.0.0.1:7897`. It performs a SOCKS5 negotiation before
+enabling capture. The equivalent fully manual command is:
+
+```console
+/Applications/Tunless.app/Contents/MacOS/Tunless start \
   --upstream 127.0.0.1:7897 \
   --dns-upstream 1.1.1.1:53 \
   --exclude-process verge-mihomo \
@@ -51,6 +68,48 @@ connections are not handed back to Clash through Tunless:
   --exclude-destination 192.168.0.0/16 \
   --exclude-destination fc00::/7 \
   --exclude-destination fe80::/10
+```
+
+## Emergency disable and cleanup
+
+Tunless capture is never intended to be irreversible. If the SOCKS5 upstream
+stops, the provider gets stuck, or networking fails while Tunless is enabled,
+disable capture immediately with:
+
+```console
+/Applications/Tunless.app/Contents/MacOS/Tunless stop
+```
+
+`stop` stops all running Tunless proxy sessions and persists them as disabled.
+For a stronger reset, `cleanup` also removes every transparent-proxy
+configuration owned by Tunless, including stale duplicates left by an
+interrupted update, and asks macOS to deactivate the Tunless Network Extension:
+
+```console
+/Applications/Tunless.app/Contents/MacOS/Tunless cleanup
+```
+
+Capture is stopped before the deactivation request, so connectivity does not
+wait for approval or a restart if macOS requires either to remove the extension.
+The app bundle includes a bounded recovery script. It runs the legacy-safe stop
+command first, times out a wedged launcher, and performs the full cleanup when
+paired with the launcher bundled beside it:
+
+```console
+/Applications/Tunless.app/Contents/Resources/tunless-cleanup
+```
+
+You can always disable the Tunless Network Extension without using Tunless.
+Open **System Settings > General > Login Items & Extensions > Network
+Extensions**, find Tunless, and turn it off. This is the final recovery path if
+the launcher and cleanup script cannot respond. Disabling or removing Tunless
+does not change Clash Verge rules, nodes, subscriptions, or system proxy
+settings.
+
+After recovery, `status` should report `enabled: false` or `not-configured`:
+
+```console
+/Applications/Tunless.app/Contents/MacOS/Tunless status
 ```
 
 `--dns-upstream` defaults to `1.1.1.1:53`. Tunless redirects captured UDP and
@@ -134,7 +193,7 @@ the response. Normal full-duplex TCP, HTTP/1.x, HTTP/2, TLS, and remote-first EO
 supported. Protocols that require a client FIN as an application-level message
 delimiter need a packet-layer implementation rather than an app-proxy flow.
 
-Current source is build 9 (`1.0.8`). On 2026-08-18 its 18-test Swift suite and
+Current source is build 9 (`1.0.8`). On 2026-08-18 its 25-test Swift suite and
 unsigned containing-app/system-extension Debug build passed. It has not yet
 replaced the installed notarized build or been represented as a new live
 network validation.

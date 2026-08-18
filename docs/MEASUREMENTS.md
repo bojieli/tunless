@@ -321,10 +321,13 @@ path.
   evidence.
 - Cross-platform DNS/lifecycle source gate on 2026-08-18: all Go packages and
   the race suite passed; vet and Linux/Windows amd64 cross-builds passed; the
-  macOS Swift suite increased to 18 passing tests; and an unsigned build of the
+  macOS Swift suite increased to 25 passing tests; and an unsigned build of the
   containing app plus embedded extension succeeded. This covers disable-policy
   routing, TCP/UDP inactivity, hard-error and pending-callback cancellation,
-  joined UDP teardown, short TCP writes, and bounded UDP DNS-ID translation.
+  joined UDP teardown, short TCP writes, bounded UDP DNS-ID translation, and
+  Clash Verge preset argument validation. Live local SOCKS5 preflight also
+  passed against the active Clash listener, while a refused port returned a
+  nonzero result without enabling capture.
   The build-9 app was not installed over
   the active notarized build, and Windows UDP remains runtime-gated.
 

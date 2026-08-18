@@ -1,0 +1,100 @@
+#!/bin/sh
+
+set -u
+
+# Emergency recovery for a Tunless transparent proxy that is still capturing
+# traffic after its normal launcher or SOCKS5 upstream becomes unresponsive.
+# It always uses the legacy-safe stop spelling first. It invokes the newer
+# cleanup command only when running beside the launcher bundled with this
+# script; older launchers treated unknown arguments as start configuration.
+
+tunless_script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+tunless_bundled_launcher="${tunless_script_directory}/../MacOS/Tunless"
+tunless_launcher=${TUNLESS_APP_PATH:-}
+tunless_timeout=${TUNLESS_CLEANUP_TIMEOUT:-15}
+tunless_can_remove_configuration=false
+
+if [ -z "${tunless_launcher}" ]; then
+    if [ -x "${tunless_bundled_launcher}" ]; then
+        tunless_launcher=${tunless_bundled_launcher}
+        tunless_can_remove_configuration=true
+    else
+        tunless_launcher=/Applications/Tunless.app/Contents/MacOS/Tunless
+    fi
+fi
+
+case ${tunless_timeout} in
+    ''|*[!0-9]*)
+        echo "TUNLESS_CLEANUP_TIMEOUT must be an integer from 1 to 120" >&2
+        exit 2
+        ;;
+esac
+if [ "${tunless_timeout}" -lt 1 ] || [ "${tunless_timeout}" -gt 120 ]; then
+    echo "TUNLESS_CLEANUP_TIMEOUT must be an integer from 1 to 120" >&2
+    exit 2
+fi
+if [ ! -x "${tunless_launcher}" ]; then
+    echo "Tunless launcher is not executable: ${tunless_launcher}" >&2
+    exit 1
+fi
+
+tunless_child_pid=
+tunless_watchdog_pid=
+cleanup_children() {
+    if [ -n "${tunless_watchdog_pid}" ]; then
+        kill "${tunless_watchdog_pid}" 2>/dev/null || :
+    fi
+    if [ -n "${tunless_child_pid}" ]; then
+        kill "${tunless_child_pid}" 2>/dev/null || :
+    fi
+}
+trap cleanup_children HUP INT TERM EXIT
+
+run_bounded() {
+    "$@" &
+    tunless_child_pid=$!
+    (
+        sleep "${tunless_timeout}"
+        if kill -0 "${tunless_child_pid}" 2>/dev/null; then
+            echo "Tunless recovery command timed out after ${tunless_timeout} seconds" >&2
+            kill -TERM "${tunless_child_pid}" 2>/dev/null || :
+            sleep 2
+            kill -KILL "${tunless_child_pid}" 2>/dev/null || :
+        fi
+    ) &
+    tunless_watchdog_pid=$!
+
+    wait "${tunless_child_pid}"
+    tunless_status=$?
+    tunless_child_pid=
+    kill "${tunless_watchdog_pid}" 2>/dev/null || :
+    wait "${tunless_watchdog_pid}" 2>/dev/null || :
+    tunless_watchdog_pid=
+    return "${tunless_status}"
+}
+
+if run_bounded "${tunless_launcher}" --stop; then
+    tunless_stopped=true
+else
+    tunless_stopped=false
+fi
+
+if [ "${tunless_can_remove_configuration}" = true ]; then
+    if run_bounded "${tunless_launcher}" cleanup; then
+        echo "Tunless emergency cleanup succeeded."
+        exit 0
+    fi
+    echo "Full Tunless cleanup did not finish; capture remains disabled." >&2
+    if [ "${tunless_stopped}" = true ]; then
+        exit 0
+    fi
+fi
+
+if [ "${tunless_stopped}" = true ]; then
+    echo "Tunless capture is disabled. Its saved configuration may still be present."
+    exit 0
+fi
+
+echo "Tunless could not be disabled automatically." >&2
+echo "Disable Tunless under System Settings > General > Login Items & Extensions > Network Extensions." >&2
+exit 1

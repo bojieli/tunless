@@ -7,7 +7,9 @@ let package = Package(
     products: [.library(name: "TunlessExtension", targets: ["TunlessExtension"])],
     targets: [
         .target(name: "TunlessExtension"),
+        .target(name: "TunlessLauncher"),
         .testTarget(name: "TunlessExtensionTests", dependencies: ["TunlessExtension"]),
+        .testTarget(name: "TunlessLauncherTests", dependencies: ["TunlessLauncher"]),
     ],
     swiftLanguageModes: [.v5]
 )
