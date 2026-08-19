@@ -61,8 +61,9 @@ qualified. Link each completed item to a run, commit, or measurement.
 
 ## Evidence snapshot
 
-The checked items above were revalidated on 2026-08-17. Exact host versions,
-test counts, WAN results, resource measurements, BPF object hash, OCI digest,
+The checked items above were revalidated through 2026-08-19. Exact host
+versions, test counts, WAN results, resource measurements, BPF object hash,
+OCI digest,
 and deliberately unqualified platforms are recorded in
 [Measurements and release gates](MEASUREMENTS.md). The remaining unchecked
 items are release blockers, not waived requirements. In particular, Windows
@@ -76,15 +77,23 @@ items are ordered visibility-transition gates: make the repository public,
 enable them, obtain passing results, and only then consider a tag. The
 unpublished private candidate does not satisfy those public gates.
 
-The 2026-08-19 hosted run for base commit `24c6cde` passed embedded-BPF
-verification, WAN/recovery, and Docker lifecycle stages, but hit its 30-minute
-job limit during the subsequent Podman stage; the workflow now allows 60
-minutes and must pass on the exact reviewed candidate. The same commit's CI
-jobs were never assigned hosted runners and the run was ultimately marked
-failed without executing a step. Local substitution is useful diagnostic
-evidence, but it does not satisfy the exact-commit hosted gate.
+The initial 2026-08-19 hosted run for base commit `24c6cde` passed embedded-BPF
+verification, WAN/recovery, and Docker lifecycle stages before its old
+30-minute job limit stopped it during Podman. A subsequent exact-head failure
+isolated a concurrent rootful-Podman metadata-query hang. Commit `5fadb80`
+bounded those queries and serialized them with a private lock; exact run
+[`32239472690`](https://github.com/bojieli/tunless/actions/runs/32239472690)
+then passed BPF verification, WAN/recovery, Docker, Podman, containerd/CRI, and
+teardown. Exact commit `d0ed79c` subsequently passed hosted
+CI [`32240014731`](https://github.com/bojieli/tunless/actions/runs/32240014731),
+Security
+[`32240014758`](https://github.com/bojieli/tunless/actions/runs/32240014758),
+and the full privileged workflow
+[`32240014706`](https://github.com/bojieli/tunless/actions/runs/32240014706).
+The exact-candidate aggregate gate remains open because hosted fuzz and the
+manual candidate review have not run.
 
-The clean local two-build pipeline for source commit `f7056af` produced
+The clean local two-build pipeline for source commit `5fadb80` produced
 byte-identical binaries, archives, packages, OCI output, SBOMs, and notices;
 all package and OCI smoke tests passed. Its exact hashes are recorded in the
 measurements document. This refreshes local artifact evidence but does not

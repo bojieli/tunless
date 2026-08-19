@@ -203,28 +203,53 @@ post-idle destination turnover, connected UDP, TCP/UDP WAN routing,
 immutable-ID attachment, and same-name container recreation (`attachments=3`,
 `tcp_flows=6`, `udp_flows=39`).
 
-A clean local non-publishing candidate pipeline for source commit `f7056af`
-then rebuilt `0.1.0-rc.1` twice with `SOURCE_DATE_EPOCH=1787131500`.
+A clean local non-publishing candidate pipeline for source commit `5fadb80`
+then rebuilt `0.1.0-rc.1` twice with `SOURCE_DATE_EPOCH=1787132889`.
 Binaries, archives, DEB/RPM packages, the multi-platform OCI archive,
 per-platform SPDX SBOMs, and third-party notices were byte-identical. Package
 symlink rejection, root-owned mode-`0600` config preservation, systemd unit
 verification, archive contents, and amd64/arm64 OCI runtime tests passed. The
 final manifest is SHA-256
-`8a85b77fd86605b257da5cee48e74f0382704aa1369900b8607b764c9bfe58d3`;
+`04ddaba1dedc349b836b6492219756f4e8e789a31b4b046263ead7bccefe6558`;
 the OCI archive is
-`7eb16b6101452c3a03c19e2b70c914a910ffe449f1a3979adccf5ca01fa08655`
+`970f71f8bb96c86351271f048ceceb9e98eac3f1dbd18d547aa1a99a7ba8cb71`
 and its index digest is
-`e451188b0c4a0b9f88c37f8d96f9f99019918684c0156cb31d2a6e50e9433005`.
+`63af8dc50364969d4f77febc938a14ddd54b58ece523466fb355692e5f04a37a`.
+The Linux amd64 and arm64 binaries are SHA-256
+`cda407a79a94cd011e1c87d3beaca780b5deee392e2cba2d29d1e5ff7e8d1ff1`
+and
+`5f57e206a8ff689312a5886b5fb95690979d529ff510a56d09f6db5f5ff2a847`,
+respectively.
 These ignored local artifacts are validation evidence, not a manual hosted
 candidate or a published release.
 
-The hosted current-kernel run for base commit `24c6cde` independently passed
-the exact embedded-BPF rebuild/verifier check, WAN/recovery suite, and Docker
-lifecycle suite. GitHub then stopped the job at its configured 30-minute limit
-during Podman, before the CRI stage. The workflow limit was raised to 60
-minutes; a passing rerun on the exact reviewed candidate remains required.
-The same commit's CI jobs remained unassigned to runners and were marked
-failed without executing a step, so that hosted gate is also explicitly open.
+The original hosted current-kernel run for base commit `24c6cde` passed the
+embedded-BPF rebuild/verifier, WAN/recovery, and Docker lifecycle stages before
+GitHub stopped it at its then-configured 30-minute limit during Podman. A later
+exact-head run exposed a separate rootful-Podman startup hang: two concurrent
+controllers could block in engine metadata queries before logging `starting
+tunless`. Commit `5fadb80` bounds those queries to ten seconds by default,
+serializes concurrent rootful-Podman queries with a private lock, and retains
+unbounded waits only for the long-lived controller and lifecycle operations.
+Its regression test proves a fake 30-second query is terminated in one second
+with an actionable error.
+
+Hosted privileged run
+[`32239472690`](https://github.com/bojieli/tunless/actions/runs/32239472690)
+on exact commit `5fadb80` then passed the embedded-BPF rebuild/verifier,
+WAN/recovery, native Docker, rootful Podman, containerd/kind CRI, and BPF-link
+teardown stages. After the macOS deadline test was made deterministic without
+changing production code, exact commit `d0ed79c` passed hosted
+CI [`32240014731`](https://github.com/bojieli/tunless/actions/runs/32240014731),
+Security
+[`32240014758`](https://github.com/bojieli/tunless/actions/runs/32240014758),
+and the full privileged current-kernel workflow
+[`32240014706`](https://github.com/bojieli/tunless/actions/runs/32240014706).
+The CI run includes the Go race/stress/vet/static-analysis, license/notices,
+cross-build, shell, Docker build, Govulncheck, Windows source, PowerShell
+parser, and 25-test macOS Swift jobs. These runs do not close the separately
+required hosted fuzz, manual non-publishing candidate, public-only security,
+provenance, or maintainer-approval gates.
 
 After the initial measurements, the build toolchain was pinned to Go 1.26.6
 and the direct dependencies were updated to cilium/ebpf 0.22.0, x/net 0.58.0,
