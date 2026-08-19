@@ -84,6 +84,13 @@ jobs were never assigned hosted runners and the run was ultimately marked
 failed without executing a step. Local substitution is useful diagnostic
 evidence, but it does not satisfy the exact-commit hosted gate.
 
+The clean local two-build pipeline for source commit `f7056af` produced
+byte-identical binaries, archives, packages, OCI output, SBOMs, and notices;
+all package and OCI smoke tests passed. Its exact hashes are recorded in the
+measurements document. This refreshes local artifact evidence but does not
+satisfy the unchecked manual hosted workflow, provenance, or maintainer-review
+gates.
+
 ## Approval
 
 - [ ] Maintainer explicitly approves the exact commit and candidate checksums

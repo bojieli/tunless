@@ -203,6 +203,21 @@ post-idle destination turnover, connected UDP, TCP/UDP WAN routing,
 immutable-ID attachment, and same-name container recreation (`attachments=3`,
 `tcp_flows=6`, `udp_flows=39`).
 
+A clean local non-publishing candidate pipeline for source commit `f7056af`
+then rebuilt `0.1.0-rc.1` twice with `SOURCE_DATE_EPOCH=1787131500`.
+Binaries, archives, DEB/RPM packages, the multi-platform OCI archive,
+per-platform SPDX SBOMs, and third-party notices were byte-identical. Package
+symlink rejection, root-owned mode-`0600` config preservation, systemd unit
+verification, archive contents, and amd64/arm64 OCI runtime tests passed. The
+final manifest is SHA-256
+`8a85b77fd86605b257da5cee48e74f0382704aa1369900b8607b764c9bfe58d3`;
+the OCI archive is
+`7eb16b6101452c3a03c19e2b70c914a910ffe449f1a3979adccf5ca01fa08655`
+and its index digest is
+`e451188b0c4a0b9f88c37f8d96f9f99019918684c0156cb31d2a6e50e9433005`.
+These ignored local artifacts are validation evidence, not a manual hosted
+candidate or a published release.
+
 The hosted current-kernel run for base commit `24c6cde` independently passed
 the exact embedded-BPF rebuild/verifier check, WAN/recovery suite, and Docker
 lifecycle suite. GitHub then stopped the job at its configured 30-minute limit
