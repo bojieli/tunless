@@ -1,12 +1,18 @@
 # Threat model
 
-## Assets and goals
-
 Tunless should deliver selected local socket flows to the configured SOCKS5
 upstream without changing application configuration, fabricating DNS answers,
 or routing unrelated traffic. It should not leak upstream credentials through
-logs/status, capture outside the configured process/cgroup/destination scope, or
-leave traffic blocked after the controller exits.
+logs/status, capture outside the configured process/cgroup/destination scope,
+or leave traffic blocked after the controller exits.
+
+*Audience: security reviewers and adopters evaluating risk.*
+
+## Assets and goals
+
+The goals above define what the system is built to guarantee. Everything below
+describes what is trusted, what can go wrong, and which risks are deliberately
+left outside scope.
 
 ## Trust boundaries
 
@@ -20,8 +26,8 @@ Applications and application containers are untrusted. Their socket arguments,
 DNS messages, connection rates, protocol behavior, process metadata, and
 lifecycle timing may be adversarial. Container images do not receive Tunless
 credentials or privileges. Docker/Podman/CRI control access is privileged and
-must be limited to trusted operators; control of an engine socket is effectively
-host-root access.
+must be limited to trusted operators; control of an engine socket is
+effectively host-root access.
 
 ## Principal risks and controls
 
@@ -50,3 +56,5 @@ driver are not release-supported security boundaries.
 Report vulnerabilities privately through GitHub Security Advisories. Changes to
 privilege, capture scope, parsing, release provenance, or fail-open behavior
 require threat-model review and a regression test on the affected platform.
+
+See also: [../README.md](../README.md) · [../SECURITY.md](../SECURITY.md)

@@ -1,5 +1,10 @@
 # Operations
 
+How to validate, monitor, and safely run tunless in production, including the
+opt-in DNS, metadata, and status surfaces.
+
+*Audience: operators running tunless in production.*
+
 ## Preflight
 
 Run the active diagnostic with the same backend, cgroup, namespace, filters,
@@ -32,7 +37,10 @@ curl --fail http://127.0.0.1:6060/healthz
 curl --fail http://127.0.0.1:6060/v1/status
 ```
 
-Status contains version/backend, the upstream address without credentials,
+`GET /healthz` is a liveness response. `GET /v1/status` reports bounded flow
+counters, backend resources, BPF map occupancy, and the credential-free
+upstream address. In detail, the status body contains version/backend, the
+upstream address without credentials,
 trusted DNS address and whether override is enabled,
 configured concurrency limit, accepted/completed/error/overload and active
 TCP/UDP counters, open redirect listeners/sockets/BPF links, UDP associations,
@@ -44,10 +52,50 @@ long iteration does not hold the backend lock used by live flow correlation.
 Capture diagnostics are cached for one second; polling faster only refreshes
 the lock-free flow counters.
 
+## DNS override
+
+Captured TCP and UDP queries whose original destination port is 53 are sent to
+the numeric `--dns-upstream` through SOCKS5 by default. UDP query IDs are
+translated per outstanding request and restored with the original resolver
+source on reply, so reused IDs and out-of-order responses are unambiguous. Use
+`--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to retain each
+application's original resolver. `--flow-idle-timeout` and
+`--udp-idle-timeout` bound abandoned flows; zero disables the corresponding
+timeout.
+
+## DNS observation (opt-in)
+
+The observer forwards UDP and TCP DNS without changing answers, records A/AAAA
+TTL mappings, and supplies a hostname only when exactly one unexpired name maps
+to the address. Ambiguous CDN addresses remain IP-only.
+
+```console
+tunless --upstream 127.0.0.1:7890 \
+  --dns-listen 127.0.0.1:5353 --dns-upstream 1.1.1.1:53
+```
+
+Point selected clients at that listener yourself. It is opt-in and never edits
+system DNS. Both UDP and TCP observer exchanges use the configured SOCKS5
+upstream rather than opening a direct resolver socket.
+
+## Process metadata (opt-in)
+
+`--metadata-socket /run/tunless/metadata.sock` exposes:
+
+```text
+GET /v1/flow?source_port=54321
+```
+
+over a mode-`0600` Unix socket. Entries exist only for the lifetime of the
+SOCKS control connection. `--metadata-username` instead encodes
+`pid=...;path=...;signing-id=...` as the SOCKS5 username and requires the
+upstream to accept username/password negotiation.
+
 ## Capacity and alerts
 
-`--max-flows` defaults to 4096. New flows above the limit are closed and
-`overloaded_flows` increases; no queue grows without bound. Choose a value below
+`--max-flows` defaults to 4096. New flows above the limit are failed
+immediately and counted: the flow is closed, `overloaded_flows` increases, and
+no queue grows without bound. Choose a value below
 the host file-descriptor and upstream capacity, then alert on:
 
 - nonzero or increasing `overloaded_flows`;
@@ -99,3 +147,6 @@ The optional `tunless-container-watch.service` attaches only containers with
 the configured `TUNLESS_CONTAINER_LABEL` (default `com.bojieli.tunless`). It is
 packaged but never enabled automatically. Run it alongside `tunless.service`
 when both host applications and labelled dev containers need the same upstream.
+
+See also: [README](../README.md), [macOS notes](MACOS.md),
+[container notes](CONTAINERS.md).

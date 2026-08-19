@@ -1,4 +1,9 @@
-# Public-release review checklist
+# Release checklist
+
+The pre-public-release review record: checked and unchecked gates a maintainer
+must resolve before tagging.
+
+*Audience: maintainers preparing a public release.*
 
 This checklist is a review record, not an assertion that every platform is
 qualified. Link each completed item to a run, commit, or measurement.
@@ -71,3 +76,6 @@ unpublished private candidate does not satisfy those public gates.
 
 - [ ] Maintainer explicitly approves the exact commit and candidate checksums
 - [ ] Only after approval, signed tag and public release are created manually
+
+See also: [Releasing](RELEASING.md) and
+[Measurements and release gates](MEASUREMENTS.md).

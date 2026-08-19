@@ -1,4 +1,23 @@
-# Windows WFP backend
+# Windows
+
+The Windows backend is a WFP ALE connect-redirect callout with a Go service
+behind it — the architecture is implemented, but it has never run on a Windows
+machine. **Nothing on this page is runtime-qualified: treat it as
+implementation source, not a shippable driver.**
+
+*Audience: developers; nothing here is release-qualified.*
+
+## Status
+
+The WFP filters include `IPPROTO_TCP`. UDP is deliberately direct:
+intercepting it without a tested datagram service would turn an incomplete
+feature into a connectivity failure. Captured TCP connections to port 53 use
+the shared numeric trusted-resolver override through SOCKS5, including the
+`--disable-dns-override` switch. Ordinary Windows DNS is normally UDP, so this
+does not qualify as complete Windows DNS protection until the UDP datapath is
+implemented and runtime-tested.
+
+## Architecture
 
 The Windows implementation consists of:
 
@@ -12,20 +31,20 @@ The Windows implementation consists of:
 - `backend/windows`: TCP listeners that query both the redirect context and the
   opaque connection redirect records, then emit the portable Go `Flow`;
 - the SOCKS emitter installs those records with
-  `SIO_SET_WFP_CONNECTION_REDIRECT_RECORDS` through `net.Dialer.Control`, before
-  the outbound socket connects. This preserves WFP redirect history and avoids
-  loops with another redirecting product.
+  `SIO_SET_WFP_CONNECTION_REDIRECT_RECORDS` through `net.Dialer.Control`,
+  before the outbound socket connects. This preserves WFP redirect history and
+  avoids loops with another redirecting product.
 
-The WFP filters include `IPPROTO_TCP`. UDP is deliberately direct: intercepting
-it without a tested datagram service would turn an incomplete feature into a
-connectivity failure. Captured TCP connections to port 53 use the shared
-numeric trusted-resolver override through SOCKS5, including the
-`--disable-dns-override` switch. Ordinary Windows DNS is normally UDP, so this
-does not qualify as complete Windows DNS protection until the UDP datapath is
-implemented and runtime-tested.
+The Go service opens `\\.\Tunless`, sends its PID and listener port, starts the
+dynamic filters, and keeps the handle open. Process death closes the handle;
+the driver's cleanup path closes the dynamic engine session, removing every
+filter. Driver unload also unregisters both callouts and destroys the redirect
+handle.
 
-Build on an isolated Windows 11 driver-development VM with Visual Studio and the
-WDK:
+## Building and signing
+
+Build on an isolated Windows 11 driver-development VM with Visual Studio and
+the WDK:
 
 ```powershell
 msbuild windows\driver\tunless.vcxproj /p:Configuration=Release /p:Platform=x64
@@ -37,12 +56,6 @@ with Secure Boot. Development tests should use a snapshot-capable VM, install
 the test certificate only in that VM, enable Driver Verifier for `tunless.sys`,
 and run the redirect-context fuzz/conformance suite before any physical-machine
 trial.
-
-The Go service opens `\\.\Tunless`, sends its PID and listener port, starts the
-dynamic filters, and keeps the handle open. Process death closes the handle;
-the driver's cleanup path closes the dynamic engine session, removing every
-filter. Driver unload also unregisters both callouts and destroys the redirect
-handle.
 
 ## Docker on Windows
 
@@ -67,7 +80,11 @@ network-compartment condition, so the intended scope is host and container TCP
 through the same service. This exact path still requires the Windows runtime
 gate below and is not represented as tested.
 
+## Release gates
+
 Current gate: the Go service cross-compiles, but this environment has no
-Windows/WDK host. The driver has not been compiled, loaded, fuzzed, verifier-run,
-attestation-signed, or tested with Secure Boot. Treat it as implementation
-source, not a shippable driver.
+Windows/WDK host. The driver has not been compiled, loaded, fuzzed,
+verifier-run, attestation-signed, or tested with Secure Boot. Treat it as
+implementation source, not a shippable driver.
+
+See also: [../README.md](../README.md) · [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)

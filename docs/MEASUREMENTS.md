@@ -1,7 +1,29 @@
 # Measurements and release gates
 
-Measured 2026-08-17. These results distinguish implementation from release
-qualification; an untested gate is not called complete.
+*Audience:* prospective adopters evaluating the evidence behind this project's
+claims, and release reviewers checking gate status before a tag.
+
+This file is the project's evidence log. Every performance and compatibility
+claim in the [README](../README.md) is backed here by a dated entry naming the
+host it ran on. Results distinguish implementation from release qualification:
+an untested gate is not called complete, and anything that has not been
+demonstrated is listed explicitly in
+[Gates not demonstrated](#gates-not-demonstrated).
+
+Measured 2026-08-17.
+
+## Headline results
+
+- WAN throughput: the transparent eBPF path (captured process → tunless →
+  mihomo) finished within ~0.4% of direct throughput — median 25.83 MB/s
+  versus 25.93 MB/s across five 100 MiB downloads, 0.4% longer by total
+  time — well inside the run-to-run WAN spread. Raw runs and method:
+  [WAN download results](#wan-download-results).
+- Footprint: during those transfers `tunless` used about 2.8% of one core
+  (0.57 CPU seconds over 20.48 s aggregate wall time), process RSS moved from
+  8,996 KiB to 9,012 KiB (~9 MB), and the three preallocated 65,536-entry LRU
+  BPF maps report 17.5 MiB of kernel memlock. Details:
+  [WAN download results](#wan-download-results).
 
 ## Hosts
 
@@ -18,6 +40,111 @@ qualification; an untested gate is not called complete.
   namespace tests used sing-box 1.13.18 as a loopback direct-mode SOCKS server.
 - WAN object: OVH VIN 100 MiB static test file over IPv4 and HTTP/1.1. Five
   runs per mode, with mode order rotated each run.
+
+## Functional gates demonstrated
+
+- Portable Go: race-enabled TCP/UDP, IPv4/IPv6, 2 MiB bidirectional/half-close,
+  cancellation, destination, process metadata, SOCKS5 and HTTP CONNECT tests.
+- Reference backend: its SOCKS5 and HTTP CONNECT inbounds both completed through
+  a real mihomo v1.19.30 downstream on RTX-PRO; the HTTPS checks returned the
+  server's `155.103.252.95` exit address and HTTP 200 respectively.
+- SOCKS metadata: authenticated username negotiation and Unix-socket
+  source-port registration/lookup/lifecycle integration. Go and Swift clients
+  also reject a server-selected authentication method they did not offer.
+- Linux TCP: `curl` and headless Chromium loaded through mihomo with no proxy
+  configuration in either application. The final browser check used an unpacked
+  Google Chrome build and asserted that the flow count increased; Ubuntu's Snap
+  Chromium moved to a sibling cgroup and was correctly treated as out of scope
+  for the deliberately narrow test cgroup.
+- Linux UDP: connected and unconnected UDP4 and UDP6 round-tripped. UDP6 used a
+  temporary `2001:db8::1/128` loopback echo target that was removed afterward.
+  The final relay allocator was verifier-loaded and runtime-tested after adding
+  fail-open handling for its 24-bit relay-address collision case.
+- BPF filters: `0.0.0.0/0` exclusion emitted no flow; a `1.1.1.0/24` inclusion
+  captured DNS while unrelated HTTPS stayed direct.
+- DNS observer: returned real `example.com` answers and attributed a later
+  IP-only flow to `example.com.`; ambiguous mappings are unit-tested as unknown.
+- Fail-open: during a 1 GiB transfer, `SIGKILL` caused the in-flight TLS stream
+  to end (curl 56). A fresh connection succeeded direct in 263 ms, and bpftool
+  reported zero links without manual network repair.
+- systemd topology: a transient service ran in
+  `/system.slice/tunless-integration.service`, captured the test cgroup, and
+  left zero links after `systemctl stop`.
+- Kernel floor: the seven programs were compiled and verifier-loaded natively
+  in the ARM64 5.10 VM. The release binary, using the shipped embedded BPF
+  object, then passed HTTPS, headless Chromium, UDP4, connected/unconnected
+  UDP6, include/exclude policy, DNS attribution, graceful teardown, and
+  SIGKILL fail-open. The final binary additionally passed a live HTTPS capture
+  with redirect sockets created through `--network-namespace` on that exact
+  5.10 kernel. This is independent of the x86-64 6.8 run.
+- Native Linux Docker namespace mode: a stock Python container with no proxy
+  environment completed hostname-based HTTPS, connected/unconnected UDP4, TCP6,
+  and connected/unconnected UDP6. IPv6 used an isolated dual-stack Docker
+  network and a second echo container. Docker's `127.0.0.11` name service stayed
+  direct while the resolved connection was captured. All seven Tunless links
+  were visible on the target cgroup. After `SIGKILL`, only Docker's device hook
+  remained and fresh TCP/UDP succeeded direct. Stopping the target also stopped
+  the controller automatically.
+- macOS Docker Desktop namespace mode: a stock Python bridge container with an
+  empty proxy environment and unchanged routes completed hostname-based HTTPS
+  plus connected/unconnected UDP4 through the automatically created host SOCKS
+  bridge. Docker Desktop's `192.168.65.7` resolver stayed direct. Stopping the
+  controller immediately restored direct TCP/UDP; stopping the target removed
+  the controller in the next 250 ms poll. Label-scoped watch mode attached only
+  the Dev Container-labelled target and followed its lifecycle.
+- Container boundary negative control: the earlier host-loopback implementation
+  still produced `ECONNREFUSED` for a bridge container because its private
+  loopback had no listener. Namespace-local sockets are the implemented fix,
+  not an environment-variable or route workaround.
+- macOS build 9 upgrade smoke: on 2026-08-18 the 25-test Swift suite, Go suite,
+  and unsigned Debug containing-app/system-extension build passed. The
+  universal Release bundle was signed with direct Developer ID profiles,
+  notarized, stapled, accepted by Gatekeeper, and installed over build 8. The
+  build 9 (`1.0.8`) extension was the single `activated enabled` entry, status
+  reported `connected` through the Clash Verge preset at `127.0.0.1:7897`, and
+  SOCKS5 preflight plus live HTTPS passed. Provider telemetry confirmed live
+  DNS rewriting to `1.1.1.1:53`.
+- macOS build 8 full validation: on 2026-08-17, build 8 (`1.0.7`) was signed with
+  matching direct Developer ID profiles, notarized, stapled, accepted by
+  Gatekeeper, installed, activated, and enabled. Captured UDP and TCP queries
+  addressed to the configured `223.6.6.6` system resolver were rewritten to
+  `1.1.1.1:53` through Clash; Google, YouTube, Google Video, GitHub, and
+  Cloudflare returned public answers. Repeated DNS checks passed 20/20 UDP and
+  10/10 TCP, and Cloudflare DNS-over-HTTPS agreed. HTTP/1.0 close-delimited
+  responses passed 5/5 after the provider began propagating remote EOF as soon
+  as Clash closed. HTTP/1.1, HTTP/2, redirects, streaming, a POST upload, raw
+  TLS 1.3, SSH over TCP/443, Cloudflare and Google STUN, and 32 concurrent HTTPS
+  requests passed. A loopback packet capture measured 0.865 ms from Clash FIN
+  to Tunless FIN in the fixed path. A 2 MiB Cloudflare speed probe was slow in
+  both Tunless and explicit-SOCKS controls, identifying the selected Clash path
+  rather than Tunless as the bottleneck. Both paths reported the same public
+  egress IP. Private destination exclusions kept the LAN gateway reachable over
+  ICMP and HTTP with zero captured gateway records. Clash remained at the same
+  PIDs and its original HTTP/HTTPS proxy settings were restored and rechecked.
+- macOS negative boundary: when a client calls `shutdown(SHUT_WR)`, macOS marks
+  its `NEAppProxyTCPFlow` disconnected. Packet capture showed Clash returning
+  the response after FIN, but the provider's later write failed with
+  `NEAppProxyFlowErrorDomain` code 1. The SOCKS transport's delayed response-
+  after-FIN unit test passes, isolating this behavior to the Network Extension
+  flow API. Client-FIN-delimited protocols therefore require a packet-layer
+  backend. The installed Apple curl has HTTP/2 but no HTTP/3 feature, so QUIC
+  HTTP/3 was not claimed; non-DNS UDP was covered independently with STUN.
+- Windows userspace: Go cross-compiles to a PE32+ amd64 executable. The accepted
+  WFP socket now carries queried redirect records into the flow, and the SOCKS
+  dialer sets them before outbound connect. Both PowerShell Docker launchers
+  pass the PowerShell parser; this is source validation, not Windows runtime
+  evidence.
+- Cross-platform DNS/lifecycle source gate on 2026-08-18: all Go packages and
+  the race suite passed; vet and Linux/Windows amd64 cross-builds passed; the
+  macOS Swift suite increased to 25 passing tests; and an unsigned build of the
+  containing app plus embedded extension succeeded. This covers disable-policy
+  routing, TCP/UDP inactivity, hard-error and pending-callback cancellation,
+  joined UDP teardown, short TCP writes, bounded UDP DNS-ID translation, and
+  Clash Verge preset argument validation. Live local SOCKS5 preflight also
+  passed against the active Clash listener, while a refused port returned a
+  nonzero result without enabling capture.
+  The build-9 app was not installed over
+  the active notarized build, and Windows UDP remains runtime-gated.
 
 ## Follow-up hardening validation
 
@@ -233,111 +360,6 @@ object completed in 41.50 s at 2.53 MB/s with 4.35 s TTFB. This validates the
 RTX-PRO → Mac → proxy WAN topology, not the macOS Network Extension capture
 path.
 
-## Functional gates demonstrated
-
-- Portable Go: race-enabled TCP/UDP, IPv4/IPv6, 2 MiB bidirectional/half-close,
-  cancellation, destination, process metadata, SOCKS5 and HTTP CONNECT tests.
-- Reference backend: its SOCKS5 and HTTP CONNECT inbounds both completed through
-  a real mihomo v1.19.30 downstream on RTX-PRO; the HTTPS checks returned the
-  server's `155.103.252.95` exit address and HTTP 200 respectively.
-- SOCKS metadata: authenticated username negotiation and Unix-socket
-  source-port registration/lookup/lifecycle integration. Go and Swift clients
-  also reject a server-selected authentication method they did not offer.
-- Linux TCP: `curl` and headless Chromium loaded through mihomo with no proxy
-  configuration in either application. The final browser check used an unpacked
-  Google Chrome build and asserted that the flow count increased; Ubuntu's Snap
-  Chromium moved to a sibling cgroup and was correctly treated as out of scope
-  for the deliberately narrow test cgroup.
-- Linux UDP: connected and unconnected UDP4 and UDP6 round-tripped. UDP6 used a
-  temporary `2001:db8::1/128` loopback echo target that was removed afterward.
-  The final relay allocator was verifier-loaded and runtime-tested after adding
-  fail-open handling for its 24-bit relay-address collision case.
-- BPF filters: `0.0.0.0/0` exclusion emitted no flow; a `1.1.1.0/24` inclusion
-  captured DNS while unrelated HTTPS stayed direct.
-- DNS observer: returned real `example.com` answers and attributed a later
-  IP-only flow to `example.com.`; ambiguous mappings are unit-tested as unknown.
-- Fail-open: during a 1 GiB transfer, `SIGKILL` caused the in-flight TLS stream
-  to end (curl 56). A fresh connection succeeded direct in 263 ms, and bpftool
-  reported zero links without manual network repair.
-- systemd topology: a transient service ran in
-  `/system.slice/tunless-integration.service`, captured the test cgroup, and
-  left zero links after `systemctl stop`.
-- Kernel floor: the seven programs were compiled and verifier-loaded natively
-  in the ARM64 5.10 VM. The release binary, using the shipped embedded BPF
-  object, then passed HTTPS, headless Chromium, UDP4, connected/unconnected
-  UDP6, include/exclude policy, DNS attribution, graceful teardown, and
-  SIGKILL fail-open. The final binary additionally passed a live HTTPS capture
-  with redirect sockets created through `--network-namespace` on that exact
-  5.10 kernel. This is independent of the x86-64 6.8 run.
-- Native Linux Docker namespace mode: a stock Python container with no proxy
-  environment completed hostname-based HTTPS, connected/unconnected UDP4, TCP6,
-  and connected/unconnected UDP6. IPv6 used an isolated dual-stack Docker
-  network and a second echo container. Docker's `127.0.0.11` name service stayed
-  direct while the resolved connection was captured. All seven Tunless links
-  were visible on the target cgroup. After `SIGKILL`, only Docker's device hook
-  remained and fresh TCP/UDP succeeded direct. Stopping the target also stopped
-  the controller automatically.
-- macOS Docker Desktop namespace mode: a stock Python bridge container with an
-  empty proxy environment and unchanged routes completed hostname-based HTTPS
-  plus connected/unconnected UDP4 through the automatically created host SOCKS
-  bridge. Docker Desktop's `192.168.65.7` resolver stayed direct. Stopping the
-  controller immediately restored direct TCP/UDP; stopping the target removed
-  the controller in the next 250 ms poll. Label-scoped watch mode attached only
-  the Dev Container-labelled target and followed its lifecycle.
-- Container boundary negative control: the earlier host-loopback implementation
-  still produced `ECONNREFUSED` for a bridge container because its private
-  loopback had no listener. Namespace-local sockets are the implemented fix,
-  not an environment-variable or route workaround.
-- macOS build 9 upgrade smoke: on 2026-08-18 the 25-test Swift suite, Go suite,
-  and unsigned Debug containing-app/system-extension build passed. The
-  universal Release bundle was signed with direct Developer ID profiles,
-  notarized, stapled, accepted by Gatekeeper, and installed over build 8. The
-  build 9 (`1.0.8`) extension was the single `activated enabled` entry, status
-  reported `connected` through the Clash Verge preset at `127.0.0.1:7897`, and
-  SOCKS5 preflight plus live HTTPS passed. Provider telemetry confirmed live
-  DNS rewriting to `1.1.1.1:53`.
-- macOS build 8 full validation: on 2026-08-17, build 8 (`1.0.7`) was signed with
-  matching direct Developer ID profiles, notarized, stapled, accepted by
-  Gatekeeper, installed, activated, and enabled. Captured UDP and TCP queries
-  addressed to the configured `223.6.6.6` system resolver were rewritten to
-  `1.1.1.1:53` through Clash; Google, YouTube, Google Video, GitHub, and
-  Cloudflare returned public answers. Repeated DNS checks passed 20/20 UDP and
-  10/10 TCP, and Cloudflare DNS-over-HTTPS agreed. HTTP/1.0 close-delimited
-  responses passed 5/5 after the provider began propagating remote EOF as soon
-  as Clash closed. HTTP/1.1, HTTP/2, redirects, streaming, a POST upload, raw
-  TLS 1.3, SSH over TCP/443, Cloudflare and Google STUN, and 32 concurrent HTTPS
-  requests passed. A loopback packet capture measured 0.865 ms from Clash FIN
-  to Tunless FIN in the fixed path. A 2 MiB Cloudflare speed probe was slow in
-  both Tunless and explicit-SOCKS controls, identifying the selected Clash path
-  rather than Tunless as the bottleneck. Both paths reported the same public
-  egress IP. Private destination exclusions kept the LAN gateway reachable over
-  ICMP and HTTP with zero captured gateway records. Clash remained at the same
-  PIDs and its original HTTP/HTTPS proxy settings were restored and rechecked.
-- macOS negative boundary: when a client calls `shutdown(SHUT_WR)`, macOS marks
-  its `NEAppProxyTCPFlow` disconnected. Packet capture showed Clash returning
-  the response after FIN, but the provider's later write failed with
-  `NEAppProxyFlowErrorDomain` code 1. The SOCKS transport's delayed response-
-  after-FIN unit test passes, isolating this behavior to the Network Extension
-  flow API. Client-FIN-delimited protocols therefore require a packet-layer
-  backend. The installed Apple curl has HTTP/2 but no HTTP/3 feature, so QUIC
-  HTTP/3 was not claimed; non-DNS UDP was covered independently with STUN.
-- Windows userspace: Go cross-compiles to a PE32+ amd64 executable. The accepted
-  WFP socket now carries queried redirect records into the flow, and the SOCKS
-  dialer sets them before outbound connect. Both PowerShell Docker launchers
-  pass the PowerShell parser; this is source validation, not Windows runtime
-  evidence.
-- Cross-platform DNS/lifecycle source gate on 2026-08-18: all Go packages and
-  the race suite passed; vet and Linux/Windows amd64 cross-builds passed; the
-  macOS Swift suite increased to 25 passing tests; and an unsigned build of the
-  containing app plus embedded extension succeeded. This covers disable-policy
-  routing, TCP/UDP inactivity, hard-error and pending-callback cancellation,
-  joined UDP teardown, short TCP writes, bounded UDP DNS-ID translation, and
-  Clash Verge preset argument validation. Live local SOCKS5 preflight also
-  passed against the active Clash listener, while a refused port returned a
-  nonzero result without enabling capture.
-  The build-9 app was not installed over
-  the active notarized build, and Windows UDP remains runtime-gated.
-
 ## Gates not demonstrated
 
 | Gate | Status / reason |
@@ -350,3 +372,6 @@ path.
 
 These unmet items are release blockers for their respective platform, not
 silent TODOs.
+
+See also: [README](../README.md) for the claims this ledger backs, and
+[RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for the release-time gate review.

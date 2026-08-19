@@ -1,4 +1,9 @@
-# Release process
+# Releasing
+
+How a release candidate is prepared, reviewed by a maintainer, published only
+after explicit approval, and rolled back if defective.
+
+*Audience: maintainers.*
 
 No public release is created by the current automation. The
 `release-candidate.yml` workflow is manual and only builds a review artifact.
@@ -52,3 +57,6 @@ section documents the later procedure; it is not permission to execute it.
 Do not replace published assets or retag. Mark a defective release as withdrawn,
 publish a security advisory when appropriate, fix forward with a new version,
 and preserve checksums/provenance so consumers can identify affected files.
+
+See also: [Release checklist](RELEASE_CHECKLIST.md) and the
+[project README](../README.md).

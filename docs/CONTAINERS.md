@@ -1,7 +1,14 @@
 # Containers and virtual machines
 
-Tunless does not require a dev container to understand proxy settings. Its
-Linux container mode preserves the host socket-layer architecture:
+Tunless captures application containers from the host at the socket layer, so a
+container needs no proxy awareness, no extra privileges, and no changes to its
+image to have its TCP and UDP traffic routed through your SOCKS5 upstream.
+
+*Audience: operators running Docker, Podman, Kubernetes, or Docker Desktop.*
+
+There is no TUN device, policy route, NAT rule, proxy environment variable, or
+privileged process inside the application container. Container mode preserves
+the host socket-layer architecture:
 
 1. the controller opens the target container's network namespace only long
    enough to create TCP4/TCP6 and UDP4/UDP6 redirect sockets;
@@ -12,12 +19,11 @@ Linux container mode preserves the host socket-layer architecture:
 4. outbound SOCKS connections originate outside the captured cgroup and remain
    able to reach the configured upstream.
 
-There is no TUN device, policy route, NAT rule, proxy environment variable, or
-privileged process inside the application container. Listener ports are chosen
-dynamically per namespace. Process exit closes unpinned BPF links, retaining
-fail-open behavior.
+Listener ports are chosen dynamically per namespace. Process exit closes
+unpinned BPF links, retaining fail-open behavior: if the helper dies, new
+traffic simply goes direct.
 
-## Platform matrix
+## Platform support
 
 | Host / engine | Application containers | Capture path |
 | --- | --- | --- |
@@ -30,10 +36,11 @@ fail-open behavior.
 | Windows Docker engine | Windows | Global host WFP backend for host and container TCP; Windows UDP stays direct |
 
 The first three rows use the same Linux backend. The Desktop controller joins
-the VM's host PID and cgroup namespaces, bind-mounts cgroup v2, creates listeners
-in the application container's network namespace, then relays from its own
-uncaptured namespace. `--privileged`, `--pid host`, and `--cgroupns host` apply
-only to that controller. They are never added to the application container.
+the VM's host PID and cgroup namespaces, bind-mounts cgroup v2, creates
+listeners in the application container's network namespace, then relays from
+its own uncaptured namespace. `--privileged`, `--pid host`, and
+`--cgroupns host` apply only to that controller. They are never added to the
+application container.
 
 ## One container
 
@@ -50,10 +57,9 @@ TUNLESS_UPSTREAM=127.0.0.1:7890 \
 The helper obtains the live init PID from Docker, derives the exact cgroup-v2
 path from `/proc/PID/cgroup`, and supplies `/proc/PID/ns/net` to
 `--network-namespace`. It refreshes the PID after image/bridge preparation and
-passes the expected full container ID; Tunless refuses attachment if PID reuse
-changed the cgroup. The helper remains in the foreground and terminates Tunless
-when the container stops. `SIGHUP`, `SIGINT`, and `SIGTERM` perform the same
-cleanup. Pass ordinary Tunless flags after the container name.
+passes the expected full container ID. The helper remains in the foreground and
+terminates Tunless when the container stops. `SIGHUP`, `SIGINT`, and `SIGTERM`
+perform the same cleanup. Pass ordinary Tunless flags after the container name.
 
 Rootful Podman on native Linux uses the same implementation:
 
@@ -84,14 +90,18 @@ because loading cgroup BPF and entering a network namespace require host
 privileges. Docker Desktop puts those privileges in the controller. The target
 container receives no capability and never mounts the host cgroup tree.
 
+### DNS inside captured containers
+
 With the default trusted-DNS override, Tunless reads the target's
-`/etc/resolv.conf`, captures its loopback/private/link-local resolver addresses,
-and routes their port-53 queries to `TUNLESS_DNS_UPSTREAM` through SOCKS. With
-`TUNLESS_DISABLE_DNS_OVERRIDE=true`, those container-local resolver addresses
-are excluded and remain direct. Earlier direct-resolver validation exercised
-Docker Desktop's `192.168.65.7` and native Docker's `127.0.0.11`; the new
-override path is covered by source, unit, and cross-build gates and still needs
-a repeated privileged container runtime run before release.
+`/etc/resolv.conf`, captures its loopback/private/link-local resolver
+addresses, and routes their port-53 queries to `TUNLESS_DNS_UPSTREAM` through
+SOCKS. With `TUNLESS_DISABLE_DNS_OVERRIDE=true`, those container-local resolver
+addresses are excluded and remain direct. Earlier direct-resolver validation
+exercised Docker Desktop's `192.168.65.7` and native Docker's `127.0.0.11`; the
+new override path is covered by source, unit, and cross-build gates and still
+needs a repeated privileged container runtime run before release.
+
+### Reaching a host-loopback upstream from Docker Desktop
 
 SOCKS5 UDP association usually returns a separate UDP relay port. Rewriting
 only `127.0.0.1` to `host.docker.internal` handles TCP but can leave that relay
@@ -99,17 +109,16 @@ unreachable. When the configured upstream is host-loopback, the macOS and
 PowerShell launchers therefore run a temporary loopback Tunless bridge on the
 host. The controller is the sole DNS-policy owner. The bridge explicitly
 disables its own override and forwards the controller's already-routed TCP and
-UDP destinations to the original authenticated or unauthenticated upstream.
-Set `TUNLESS_DOCKER_BRIDGE=never`
-only when the supplied upstream is already fully reachable from the Desktop VM.
-An installed bridge binary can be selected with
+UDP destinations to the original authenticated or unauthenticated upstream. Set
+`TUNLESS_DOCKER_BRIDGE=never` only when the supplied upstream is already fully
+reachable from the Desktop VM. An installed bridge binary can be selected with
 `TUNLESS_DOCKER_BRIDGE_BINARY`.
+
+### More than one cgroup
 
 Start one helper for each cgroup. Containers sharing a network namespace may
 still have separate cgroups, so attaching each independently is safe; each
-instance has its own BPF maps and dynamically chosen listener port. When a
-container is recreated, its PID, namespace, and cgroup change. The one-shot
-helper exits, while watch mode attaches the replacement automatically.
+instance has its own BPF maps and dynamically chosen listener port.
 
 ## All containers and Dev Containers
 
@@ -194,8 +203,8 @@ outbound SOCKS socket before connect. One service configuration is therefore
 intended to cover ordinary host processes and Windows-container TCP.
 
 This path is source-complete but not release-qualified: the available machines
-did not include Windows plus WDK, so the driver has not been built, loaded under
-Driver Verifier, or exercised in a Windows container. UDP is deliberately
+did not include Windows plus WDK, so the driver has not been built, loaded
+under Driver Verifier, or exercised in a Windows container. UDP is deliberately
 direct on Windows. The PowerShell launchers were parser-checked and the Go
 service cross-built, which is not a substitute for that runtime gate.
 
@@ -204,12 +213,25 @@ service cross-built, which is not a substitute for that runtime gate.
 `--network=host` containers do not need namespace-local listeners. They can be
 captured by placing their cgroup beneath the cgroup used by the normal host
 Tunless service. With Docker's cgroup-v2 `cgroupfs` driver, the tested form was
-`--cgroup-parent=/tunless-containers`; other cgroup drivers use different parent
-syntax.
+`--cgroup-parent=/tunless-containers`; other cgroup drivers use different
+parent syntax.
 
 Once Docker enables controllers and creates descendants, the cgroup parent is
 an internal node and cannot also hold ordinary host processes. Put host
 processes in a separate child instead of writing them directly to that parent.
+
+## Container lifecycle and cgroup identity
+
+Attachment is to a specific cgroup, not to a name. When a container is
+recreated, its PID, namespace, and cgroup change. The one-shot helper exits,
+while watch mode attaches the replacement automatically.
+
+Because attachment is identity-based, the helpers guard against stale targets.
+The Docker helper passes the expected full container ID, and Tunless refuses
+attachment if PID reuse changed the cgroup. Podman's `libpod` scope identity is
+verified the same way, and the CRI helper requires an exact
+`cri-containerd-…scope` or `crio-…scope` match, polling identity and PID until
+the container stops or is replaced.
 
 ## Boundaries
 
@@ -225,3 +247,6 @@ the guest when socket-layer behavior is required. A host QEMU/SLIRP process can
 be captured only for connections it creates itself. If guest installation is
 impossible, whole-VM transparency is inherently a packet-layer problem and TUN
 or TPROXY is the appropriate mechanism.
+
+See also: [README](../README.md) ·
+[measurements and release gates](MEASUREMENTS.md).
