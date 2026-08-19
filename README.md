@@ -39,9 +39,14 @@ application-level rules, it has to fake things:
   table entry has no owner, so a crash leaves your networking broken.
 - **A second TCP/IP stack** in userspace, alongside the kernel's.
 
-**Explicit HTTP/SOCKS proxy settings** have one fatal flaw:
+**Explicit HTTP/SOCKS proxy settings** only work if every application plays
+along:
 
-- **Applications must cooperate** — most ignore them. That is the entire
+- **Support is opt-in per app** — environment variables like `HTTPS_PROXY`
+  and the system proxy setting are just conventions; every application must
+  implement and honor them itself.
+- **Many applications don't** — plenty of tools never read proxy settings at
+  all, so their traffic bypasses the proxy silently. This gap is the entire
   reason TUN mode exists.
 
 `tunless` takes a third path: capture at the **socket layer**, where the
@@ -59,6 +64,16 @@ operating system still knows the real destination and the real process:
 The full design rationale is in [BLUEPRINT.md](BLUEPRINT.md).
 
 ## How it works
+
+<p align="center">
+  <img src="assets/architecture.svg" alt="Architecture: applications make ordinary socket calls; tunless captures flows at the OS socket layer and hands them with their real addresses to the tunless core, which emits plain SOCKS5 to your existing mihomo or sing-box proxy; rules and nodes stay downstream" width="720">
+</p>
+
+Applications make ordinary socket calls. The capture point lives inside the
+operating system's socket layer — eBPF cgroup hooks on Linux, a Network
+Extension on macOS, WFP on Windows — so every flow keeps its real destination
+and its calling process. `tunless` emits those flows as plain SOCKS5 to your
+existing proxy, where nodes, subscriptions, and rules stay unchanged.
 
 | Platform | Capture mechanism | Implementation status |
 | --- | --- | --- |
