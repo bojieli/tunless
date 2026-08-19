@@ -75,6 +75,14 @@ namespace; the launchers detect rootless mode and stop with an actionable
 error. A rootful host controller is required. The application container itself
 remains unprivileged.
 
+Container identity and state queries are bounded to ten seconds so an engine
+metadata lock cannot pin a controller indefinitely; a watcher retries a failed
+query on its next discovery pass. Concurrent rootful Podman startup queries are
+serialized through a private watcher lock. Set
+`TUNLESS_CONTAINER_QUERY_TIMEOUT` to another positive number of seconds only
+for an unusually slow local engine. Long-lived container waits and controller
+processes are not subject to this metadata-query timeout.
+
 On macOS Docker Desktop, omit `TUNLESS_BINARY`; the helper builds
 `packaging/docker/Dockerfile` and launches the Linux controller. On Windows
 Docker Desktop use PowerShell:

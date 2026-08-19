@@ -16,6 +16,7 @@ test:
 check: test
 	go vet ./...
 	bash scripts/test-release-common.sh
+	bash scripts/test-container-helpers.sh
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/tunless-linux-amd64 ./cmd/tunless
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/tunless-windows-amd64.exe ./cmd/tunless
 	cd macos && swift test

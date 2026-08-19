@@ -33,8 +33,28 @@ command -v "$engine" >/dev/null 2>&1 || {
 	echo "container engine is unavailable: $engine" >&2
 	exit 1
 }
+query_timeout=${TUNLESS_CONTAINER_QUERY_TIMEOUT:-10}
+query_lock=${TUNLESS_CONTAINER_QUERY_LOCK:-}
+[[ "$query_timeout" =~ ^[1-9][0-9]*$ ]] || {
+	echo "TUNLESS_CONTAINER_QUERY_TIMEOUT must be a positive integer number of seconds" >&2
+	exit 2
+}
+engine_query() {
+	local -a query_command=("$engine" "$@")
+	if command -v timeout >/dev/null 2>&1; then
+		query_command=(timeout --signal=TERM --kill-after=2s "${query_timeout}s" "${query_command[@]}")
+	fi
+	if [[ -n "$query_lock" ]] && command -v flock >/dev/null 2>&1; then
+		flock --wait "$query_timeout" "$query_lock" "${query_command[@]}"
+	else
+		"${query_command[@]}"
+	fi
+}
 
-container_id=$("$engine" inspect --format '{{.Id}}' "$container")
+container_id=$(engine_query inspect --format '{{.Id}}' "$container") || {
+	echo "timed out or failed while resolving container identity: $container" >&2
+	exit 1
+}
 [[ "$container_id" =~ ^[0-9a-f]{12,64}$ ]] || {
 	echo "container engine returned an invalid immutable ID: $container_id" >&2
 	exit 1
@@ -42,10 +62,12 @@ container_id=$("$engine" inspect --format '{{.Id}}' "$container")
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 refresh_pid() {
-	local running current current_id
-	read -r current_id running current < <(
-		"$engine" inspect --format '{{.Id}} {{.State.Running}} {{.State.Pid}}' "$container"
-	)
+	local running current current_id state
+	state=$(engine_query inspect --format '{{.Id}} {{.State.Running}} {{.State.Pid}}' "$container") || {
+		echo "timed out or failed while inspecting container state: $container_id" >&2
+		exit 1
+	}
+	read -r current_id running current <<<"$state"
 	[[ "$current_id" == "$container_id" ]] || {
 		echo "container was replaced while starting: $container" >&2
 		exit 1
@@ -99,8 +121,8 @@ if [[ "$mode" == native ]]; then
 	# that case: freshly initialized Podman can serialize concurrent `info`
 	# requests while the watcher starts controllers for existing containers.
 	if [[ $(id -u) -ne 0 && ${engine##*/} == podman ]]; then
-		[[ $("$engine" info --format '{{.Host.Security.Rootless}}' 2>/dev/null || true) == true ]] && rootless=true
-	elif [[ $(id -u) -ne 0 ]] && "$engine" info --format '{{json .SecurityOptions}}' 2>/dev/null | grep -qi rootless; then
+		[[ $(engine_query info --format '{{.Host.Security.Rootless}}' 2>/dev/null || true) == true ]] && rootless=true
+	elif [[ $(id -u) -ne 0 ]] && engine_query info --format '{{json .SecurityOptions}}' 2>/dev/null | grep -qi rootless; then
 		rootless=true
 	fi
 	if [[ "$rootless" == true ]]; then
@@ -122,7 +144,7 @@ cleanup() {
 	if [[ "$mode" == desktop && -r "$controller_cid_file" ]]; then
 		controller_id=$(<"$controller_cid_file")
 		if [[ "$controller_id" =~ ^[0-9a-f]{12,64}$ ]]; then
-			"$engine" stop --time 2 "$controller_id" >/dev/null 2>&1 || true
+			engine_query stop --time 2 "$controller_id" >/dev/null 2>&1 || true
 		fi
 	elif [[ -n "$relay_job" ]] && kill -0 "$relay_job" 2>/dev/null; then
 		if [[ $(id -u) -eq 0 ]]; then kill "$relay_job" 2>/dev/null || true; else sudo kill "$relay_job" 2>/dev/null || true; fi
@@ -160,6 +182,7 @@ if [[ "$mode" == native ]]; then
 	}
 	privilege=(sudo)
 	if [[ $(id -u) -eq 0 ]]; then privilege=(); fi
+	echo "starting native Tunless controller for container ${container_id:0:12} (pid $pid)" >&2
 	"${privilege[@]}" "$binary" "${tunless_args[@]}" \
 		--upstream "$upstream" \
 		--backend linux \
@@ -171,7 +194,7 @@ else
 	image=${TUNLESS_DOCKER_IMAGE:-tunless:local}
 	if [[ ${TUNLESS_DOCKER_BUILD:-auto} != never ]]; then
 		"$engine" build --quiet --tag "$image" --file "$repository_root/packaging/docker/Dockerfile" "$repository_root" >/dev/null
-	elif ! "$engine" image inspect "$image" >/dev/null 2>&1; then
+	elif ! engine_query image inspect "$image" >/dev/null 2>&1; then
 		echo "Docker controller image is unavailable: $image" >&2
 		exit 1
 	fi

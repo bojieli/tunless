@@ -27,6 +27,28 @@ command -v "$engine" >/dev/null 2>&1 || {
 	echo "container engine is unavailable: $engine" >&2
 	exit 1
 }
+query_timeout=${TUNLESS_CONTAINER_QUERY_TIMEOUT:-10}
+[[ "$query_timeout" =~ ^[1-9][0-9]*$ ]] || {
+	echo "TUNLESS_CONTAINER_QUERY_TIMEOUT must be a positive integer number of seconds" >&2
+	exit 2
+}
+query_lock=${TUNLESS_CONTAINER_QUERY_LOCK:-}
+if [[ -z "$query_lock" && ${engine##*/} == podman ]] && command -v flock >/dev/null 2>&1; then
+	query_lock=$state_dir/engine-query.lock
+	touch "$query_lock"
+	export TUNLESS_CONTAINER_QUERY_LOCK=$query_lock
+fi
+engine_query() {
+	local -a query_command=("$engine" "$@")
+	if command -v timeout >/dev/null 2>&1; then
+		query_command=(timeout --signal=TERM --kill-after=2s "${query_timeout}s" "${query_command[@]}")
+	fi
+	if [[ -n "$query_lock" ]] && command -v flock >/dev/null 2>&1; then
+		flock --wait "$query_timeout" "$query_lock" "${query_command[@]}"
+	else
+		"${query_command[@]}"
+	fi
+}
 
 # Every Desktop controller uses the same immutable image. Build it once before
 # fan-out so a watcher attaching several existing containers does not launch
@@ -51,6 +73,9 @@ cleanup() {
 		if [[ "$job" =~ ^[1-9][0-9]*$ ]]; then wait "$job" 2>/dev/null || true; fi
 		rm -f -- "$pid_file"
 	done
+	if [[ -n "$query_lock" && "$query_lock" == "$state_dir/engine-query.lock" ]]; then
+		rm -f -- "$query_lock"
+	fi
 	rmdir "$state_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -60,11 +85,11 @@ trap 'exit 143' TERM
 
 selected() {
 	local id=$1 controller_label requested_label label_value
-	controller_label=$("$engine" inspect --format '{{index .Config.Labels "com.bojieli.tunless.container"}}' "$id" 2>/dev/null || true)
+	controller_label=$(engine_query inspect --format '{{index .Config.Labels "com.bojieli.tunless.container"}}' "$id" 2>/dev/null || true)
 	[[ -z "$controller_label" ]] || return 1
 	requested_label=${TUNLESS_CONTAINER_LABEL:-${TUNLESS_DOCKER_LABEL:-}}
 	[[ -n "$requested_label" ]] || return 0
-	label_value=$("$engine" inspect --format "{{index .Config.Labels \"$requested_label\"}}" "$id" 2>/dev/null || true)
+	label_value=$(engine_query inspect --format "{{index .Config.Labels \"$requested_label\"}}" "$id" 2>/dev/null || true)
 	[[ -n "$label_value" && "$label_value" != '<no value>' ]]
 }
 
@@ -97,14 +122,14 @@ while :; do
 		"$helper" "$id" "$@" &
 		job=$!
 		printf '%s\n' "$job" >"$pid_file"
-	done < <("$engine" ps --quiet)
+	done < <(engine_query ps --quiet)
 
 	for pid_file in "$state_dir"/*.pid; do
 		[[ -e "$pid_file" ]] || continue
 		id=${pid_file##*/}
 		id=${id%.pid}
 		job=$(<"$pid_file")
-		if ! "$engine" inspect --format '{{.State.Running}}' "$id" 2>/dev/null | grep -qx true || ! kill -0 "$job" 2>/dev/null; then
+		if ! engine_query inspect --format '{{.State.Running}}' "$id" 2>/dev/null | grep -qx true || ! kill -0 "$job" 2>/dev/null; then
 			kill "$job" 2>/dev/null || true
 			wait "$job" 2>/dev/null || true
 			rm -f -- "$pid_file"
