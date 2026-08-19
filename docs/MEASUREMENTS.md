@@ -188,9 +188,20 @@ replies. All 40 replies arrived, but 20 carried the wrong apparent source: each
 affected `1.1.1.1` reply was attributed to `8.8.8.8`. The kernel
 `original_map` retains only the latest destination per socket cookie, so a
 later send can overwrite attribution for an earlier in-flight datagram. This
-is a release blocker; documentation advises one connected or separate socket
-per destination until the implementation rejects ambiguous sends or preserves
-per-datagram identity and passes a repeat live test.
+was treated as a release blocker rather than a documented correctness caveat.
+
+The replacement BPF/userspace ABI marks connected UDP records and makes an
+unconnected record's destination immutable for the life of its userspace
+association. A conflicting send returns a permission error; unconnected state
+is removed when the association ends so the same socket can later select a new
+destination, while marked connected state remains available for relay
+recovery. Response sources must match the preserved original destination.
+On LinuxKit 6.10.14 ARM64, the exact 40-query Docker Desktop reproducer then
+reported 20 accepted sends, 20 rejected conflicting sends, and zero wrong
+sources in each of three container lifecycle probes. The same run proved
+post-idle destination turnover, connected UDP, TCP/UDP WAN routing,
+immutable-ID attachment, and same-name container recreation (`attachments=3`,
+`tcp_flows=6`, `udp_flows=39`).
 
 The hosted current-kernel run for base commit `24c6cde` independently passed
 the exact embedded-BPF rebuild/verifier check, WAN/recovery suite, and Docker
@@ -278,11 +289,11 @@ datapath's backend lock while walking large maps.
 
 The canonical Ubuntu 22.04 clang 14.0.0 rebuild is byte-identical to the
 embedded BPF ELF at SHA-256
-`a915ec5fb1c6b5a0b9549c98bd8689b6dd8bfaa1cdffcea89f3675af74c9cd80`.
+`8216fb35a58c35e53a7450034035c1cd39469a41fb2f28a1be8fb7927d46b44e`.
 Ubuntu 24.04 clang 14.0.6 emits different debug/BTF metadata because its UAPI
 headers and compiler build differ; after those metadata sections are removed,
 the program/map object is byte-identical at SHA-256
-`61cd30e8b026cf2f90742ae54f2533f480d987ad3ef198e9cae554664086ad99`.
+`a58b0098e442d17f5ba5a9b7c4e136aa3128ee13e09f475c8c4b8acafdd2f480`.
 Hosted CI enforces that normalized comparison and verifier-loads the rebuilt
 object; the current-kernel and 5.10 runtime suites load the exact embedded ELF.
 

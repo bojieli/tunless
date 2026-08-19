@@ -9,6 +9,8 @@
 #define __type(name, val) val *name
 #define AF_INET 2
 #define AF_INET6 10
+#define TUNLESS_PROTOCOL_CONNECTED 0x80
+#define TUNLESS_PROTOCOL_MASK 0x7f
 
 static void *(*bpf_map_lookup_elem)(void *map, const void *key) = (void *)BPF_FUNC_map_lookup_elem;
 static long (*bpf_map_update_elem)(void *map, const void *key, const void *value, __u64 flags) = (void *)BPF_FUNC_map_update_elem;
@@ -146,6 +148,8 @@ int connect4(struct bpf_sock_addr *ctx) {
     orig.port = ctx->user_port;
     orig.family = AF_INET;
     orig.protocol = ctx->protocol;
+    if (ctx->protocol == IPPROTO_UDP)
+        orig.protocol |= TUNLESS_PROTOCOL_CONNECTED;
     orig.pid = bpf_get_current_pid_tgid() >> 32;
     orig.cgroup_id = bpf_get_current_cgroup_id();
     if (bpf_map_update_elem(&original_map, &cookie, &orig, BPF_ANY))
@@ -184,6 +188,8 @@ int connect6(struct bpf_sock_addr *ctx) {
     orig.port = ctx->user_port;
     orig.family = AF_INET6;
     orig.protocol = ctx->protocol;
+    if (ctx->protocol == IPPROTO_UDP)
+        orig.protocol |= TUNLESS_PROTOCOL_CONNECTED;
     orig.pid = bpf_get_current_pid_tgid() >> 32;
     orig.cgroup_id = bpf_get_current_cgroup_id();
     if (bpf_map_update_elem(&original_map, &cookie, &orig, BPF_ANY))
@@ -230,13 +236,18 @@ static __always_inline int sendmsg4(struct bpf_sock_addr *ctx) {
     struct config_value *cfg = config();
     if (!cfg)
         return 1;
-    if ((__builtin_bswap32(ctx->user_ip4) >> 24) == 127 && ctx->user_ip4 != cfg->listen_ip4)
-        return 1;
-    if (ctx->user_ip4 != cfg->listen_ip4 && !capture4(cfg, ctx->user_ip4))
-        return 1;
     __u64 cookie = bpf_get_socket_cookie(ctx);
+    if (!cookie)
+        return 1;
     struct original_value *existing = bpf_map_lookup_elem(&original_map, &cookie);
-    if (!existing || ctx->user_ip4 != cfg->listen_ip4 || ctx->user_port != cfg->listen_port) {
+    if (existing && existing->protocol == (IPPROTO_UDP | TUNLESS_PROTOCOL_CONNECTED))
+        return 1;
+    if (existing && (existing->protocol != IPPROTO_UDP || existing->family != AF_INET ||
+        existing->port != ctx->user_port || *(__u32 *)&existing->addr[0] != ctx->user_ip4))
+        return 0;
+    if (!existing) {
+        if ((__builtin_bswap32(ctx->user_ip4) >> 24) == 127 || !capture4(cfg, ctx->user_ip4))
+            return 1;
         struct original_value orig = {};
         __builtin_memcpy(orig.addr, &ctx->user_ip4, sizeof(ctx->user_ip4));
         orig.port = ctx->user_port;
@@ -246,12 +257,12 @@ static __always_inline int sendmsg4(struct bpf_sock_addr *ctx) {
         orig.cgroup_id = bpf_get_current_cgroup_id();
         if (bpf_map_update_elem(&original_map, &cookie, &orig, BPF_ANY))
             return 1;
-        __u32 relay_ip;
-        if (!reserve_udp_relay(cookie, &relay_ip))
-            return 1;
-        ctx->user_ip4 = relay_ip;
-        ctx->user_port = cfg->listen_port;
     }
+    __u32 relay_ip;
+    if (!reserve_udp_relay(cookie, &relay_ip))
+        return 1;
+    ctx->user_ip4 = relay_ip;
+    ctx->user_port = cfg->listen_port;
     return 1;
 }
 
@@ -265,23 +276,34 @@ int udp_sendmsg6(struct bpf_sock_addr *ctx) {
     struct config_value *cfg = config();
     if (!cfg)
         return 1;
-    if ((ctx->user_ip6[0] == 0 && ctx->user_ip6[1] == 0 && ctx->user_ip6[2] == 0 && ctx->user_ip6[3] == __builtin_bswap32(1)) || mapped_loopback6(ctx->user_ip6))
-        return 1;
-    if (!capture6(cfg, ctx->user_ip6))
-        return 1;
     __u64 cookie = bpf_get_socket_cookie(ctx);
-    struct original_value orig = {};
-    *(__u32 *)&orig.addr[0] = ctx->user_ip6[0];
-    *(__u32 *)&orig.addr[4] = ctx->user_ip6[1];
-    *(__u32 *)&orig.addr[8] = ctx->user_ip6[2];
-    *(__u32 *)&orig.addr[12] = ctx->user_ip6[3];
-    orig.port = ctx->user_port;
-    orig.family = AF_INET6;
-    orig.protocol = IPPROTO_UDP;
-    orig.pid = bpf_get_current_pid_tgid() >> 32;
-    orig.cgroup_id = bpf_get_current_cgroup_id();
-    if (bpf_map_update_elem(&original_map, &cookie, &orig, BPF_ANY))
+    if (!cookie)
         return 1;
+    struct original_value *existing = bpf_map_lookup_elem(&original_map, &cookie);
+    if (existing && existing->protocol == (IPPROTO_UDP | TUNLESS_PROTOCOL_CONNECTED))
+        return 1;
+    if (existing && (existing->protocol != IPPROTO_UDP || existing->family != AF_INET6 ||
+        existing->port != ctx->user_port || *(__u32 *)&existing->addr[0] != ctx->user_ip6[0] ||
+        *(__u32 *)&existing->addr[4] != ctx->user_ip6[1] || *(__u32 *)&existing->addr[8] != ctx->user_ip6[2] ||
+        *(__u32 *)&existing->addr[12] != ctx->user_ip6[3]))
+        return 0;
+    if (!existing) {
+        if ((ctx->user_ip6[0] == 0 && ctx->user_ip6[1] == 0 && ctx->user_ip6[2] == 0 && ctx->user_ip6[3] == __builtin_bswap32(1)) ||
+            mapped_loopback6(ctx->user_ip6) || !capture6(cfg, ctx->user_ip6))
+            return 1;
+        struct original_value orig = {};
+        *(__u32 *)&orig.addr[0] = ctx->user_ip6[0];
+        *(__u32 *)&orig.addr[4] = ctx->user_ip6[1];
+        *(__u32 *)&orig.addr[8] = ctx->user_ip6[2];
+        *(__u32 *)&orig.addr[12] = ctx->user_ip6[3];
+        orig.port = ctx->user_port;
+        orig.family = AF_INET6;
+        orig.protocol = IPPROTO_UDP;
+        orig.pid = bpf_get_current_pid_tgid() >> 32;
+        orig.cgroup_id = bpf_get_current_cgroup_id();
+        if (bpf_map_update_elem(&original_map, &cookie, &orig, BPF_ANY))
+            return 1;
+    }
     struct tuple_key tuple = {};
     tuple.family = AF_INET6;
     tuple.protocol = IPPROTO_UDP;
@@ -300,7 +322,7 @@ SEC("cgroup/recvmsg4")
 int udp_recvmsg4(struct bpf_sock_addr *ctx) {
     __u64 cookie = bpf_get_socket_cookie(ctx);
     struct original_value *orig = bpf_map_lookup_elem(&original_map, &cookie);
-    if (orig && orig->protocol == IPPROTO_UDP && orig->family == AF_INET) {
+    if (orig && (orig->protocol & TUNLESS_PROTOCOL_MASK) == IPPROTO_UDP && orig->family == AF_INET) {
         __builtin_memcpy(&ctx->user_ip4, orig->addr, sizeof(ctx->user_ip4));
         ctx->user_port = orig->port;
     }
@@ -311,7 +333,7 @@ SEC("cgroup/recvmsg6")
 int udp_recvmsg6(struct bpf_sock_addr *ctx) {
     __u64 cookie = bpf_get_socket_cookie(ctx);
     struct original_value *orig = bpf_map_lookup_elem(&original_map, &cookie);
-    if (orig && orig->protocol == IPPROTO_UDP && orig->family == AF_INET6) {
+    if (orig && (orig->protocol & TUNLESS_PROTOCOL_MASK) == IPPROTO_UDP && orig->family == AF_INET6) {
         ctx->user_ip6[0] = *(__u32 *)&orig->addr[0];
         ctx->user_ip6[1] = *(__u32 *)&orig->addr[4];
         ctx->user_ip6[2] = *(__u32 *)&orig->addr[8];

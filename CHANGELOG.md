@@ -61,7 +61,11 @@ use ISO 8601. The repository has not made a public release yet.
   explicit runner images, and gate public-only dependency review consistently.
 - Linux UDP associations include the kernel socket cookie so endpoint reuse
   cannot inherit an older userspace session; malformed kernel-map records and
-  invalid or oversized datagrams fail closed. DNS attribution now matches the
-  requested A/AAAA type and uses the shortest validated CNAME/address TTL.
-  DEB/RPM config is root-owned mode `0600`, and pre-install scripts reject an
-  existing `/etc/tunless.env` symlink before package extraction.
+  invalid or oversized datagrams fail closed. An active unconnected association
+  rejects a different destination rather than overwriting in-flight source
+  attribution, while connected associations retain marked recovery state and
+  unconnected state is released on association turnover. DNS attribution now
+  matches the requested A/AAAA type and uses the shortest validated
+  CNAME/address TTL. DEB/RPM config is root-owned mode `0600`, and pre-install
+  scripts reject an existing `/etc/tunless.env` symlink before package
+  extraction.

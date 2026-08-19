@@ -225,15 +225,14 @@ Move capture-time process selection into the cgroup on Linux or signing-ID
 filters on macOS. Destination, domain, node, and subscription rules remain
 downstream.
 
-Two Linux unconnected-UDP cases remain release blockers. One socket must not
-alternate destinations while its association is active: current kernel state
-retains only the latest destination, so an earlier reply can be attributed to
-the later peer. Use a connected socket per destination or a separate socket
-for each destination. Simultaneous unconnected UDP6 sockets using
-`SO_REUSEPORT` to share the exact source endpoint are also ambiguous at the
-redirect listener. Avoid shared-source `SO_REUSEPORT` for captured UDP6
-workloads. The release checklist requires fail-safe behavior and live
-qualification before a public release.
+Linux unconnected UDP associations are deliberately single-destination. A
+second destination on the same socket fails with a permission error while the
+association is active, instead of risking a reply with the wrong apparent
+source; after the association closes, that socket may select a new destination.
+Use a connected socket or separate sockets when destinations must overlap.
+One edge case remains unsupported: simultaneous unconnected UDP6 sockets using
+`SO_REUSEPORT` to share the exact source endpoint are ambiguous at the redirect
+listener. Avoid shared-source `SO_REUSEPORT` for captured UDP6 workloads.
 
 ## Project status
 

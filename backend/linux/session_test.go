@@ -52,13 +52,38 @@ func TestDecodeOriginalRecordValidatesKernelABI(t *testing.T) {
 		append([]byte(nil), value...),
 		append([]byte(nil), value...),
 		append([]byte(nil), value...),
+		append([]byte(nil), value...),
 	}
 	invalid[1][18] = 99
 	invalid[2][19] = 99
 	binary.LittleEndian.PutUint32(invalid[3][20:24], ^uint32(0))
+	invalid[4][19] = originalProtocolTCP | originalProtocolConnected
 	for index, record := range invalid {
 		if _, _, _, err = decodeOriginalRecord(record); err == nil {
 			t.Fatalf("invalid record %d was accepted", index)
 		}
+	}
+}
+
+func TestConnectedUDPMarkerAndResponseValidation(t *testing.T) {
+	value := make([]byte, 32)
+	copy(value, netip.MustParseAddr("203.0.113.7").AsSlice())
+	binary.BigEndian.PutUint16(value[16:18], 53)
+	value[18] = 2
+	value[19] = originalProtocolUDP | originalProtocolConnected
+	binary.LittleEndian.PutUint32(value[20:24], 4242)
+
+	protocol, connected, err := decodeOriginalProtocol(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if protocol != originalProtocolUDP || !connected {
+		t.Fatalf("decoded protocol = %d connected=%t", protocol, connected)
+	}
+	if err = validateUDPResponseRecord(value, netip.MustParseAddrPort("[::ffff:203.0.113.7]:53")); err != nil {
+		t.Fatalf("matching mapped response source was rejected: %v", err)
+	}
+	if err = validateUDPResponseRecord(value, netip.MustParseAddrPort("198.51.100.8:53")); err == nil {
+		t.Fatal("response from a different source was accepted")
 	}
 }

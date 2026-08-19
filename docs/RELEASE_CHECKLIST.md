@@ -35,7 +35,7 @@ qualified. Link each completed item to a run, commit, or measurement.
       container stop/recreate, and fail-open recovery pass
 - [x] Docker native Linux and Docker Desktop macOS tests cover unmodified,
       no-proxy-environment applications
-- [ ] Linux unconnected UDP sockets that alternate destinations fail safely or
+- [x] Linux unconnected UDP sockets that alternate destinations fail safely or
       preserve per-datagram attribution in a current-kernel live test
 - [x] Rootful Podman and selected CRI/Kubernetes behavior are tested or marked
       experimental; rootless limitation is documented

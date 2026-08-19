@@ -560,19 +560,7 @@ func (p *packetPort) WritePacket(_ context.Context, v tunless.Packet) error {
 		p.backend.mu.Unlock()
 		return err
 	}
-	addr := v.Dst.Addr().Unmap()
-	if addr.Is4() {
-		a := addr.As4()
-		copy(value, a[:])
-		value[18] = 2
-	} else {
-		a := addr.As16()
-		copy(value, a[:])
-		value[18] = 10
-	}
-	binary.BigEndian.PutUint16(value[16:18], v.Dst.Port())
-	value[19] = 17
-	err := collection.Maps["original_map"].Put(p.cookie, value)
+	err := validateUDPResponseRecord(value, v.Dst)
 	p.backend.mu.Unlock()
 	if err != nil {
 		return err
@@ -588,11 +576,31 @@ func (p *packetPort) Close() error {
 	p.once.Do(func() {
 		p.backend.mu.Lock()
 		delete(p.backend.sessions, p.sessionKey)
-		// Keep kernel correlation until the LRU maps reclaim it. A connected UDP
-		// socket has already had its destination rewritten by connect(2), so it
-		// cannot recreate these entries in sendmsg after a transient SOCKS relay
-		// failure. Retaining them lets the next datagram open a fresh association;
-		// a newly created socket always refreshes entries for its own cookie.
+		collection := p.backend.collection
+		if collection != nil {
+			value := make([]byte, 32)
+			if err := collection.Maps["original_map"].Lookup(p.cookie, &value); err == nil {
+				protocol, connected, decodeErr := decodeOriginalProtocol(value)
+				if decodeErr == nil && protocol == originalProtocolUDP && !connected {
+					// An unconnected socket may select a new destination only after its
+					// userspace association has ended. Remove every correlation key before
+					// the original record so a concurrent send can at worst be dropped,
+					// never attached to the association that is closing.
+					if p.relay.Is4() {
+						relay := p.relay.As4()
+						_ = collection.Maps["udp_relay_map"].Delete(binary.LittleEndian.Uint32(relay[:]))
+					} else {
+						_ = collection.Maps["tuple_map"].Delete(tupleKey(p.peer, originalProtocolUDP))
+						unspecified := netip.AddrPortFrom(netip.IPv6Unspecified(), p.peer.Port())
+						_ = collection.Maps["tuple_map"].Delete(tupleKey(unspecified, originalProtocolUDP))
+					}
+					_ = collection.Maps["original_map"].Delete(p.cookie)
+				}
+			}
+		}
+		// Connected UDP sockets cannot recreate their connect-hook state after a
+		// transient SOCKS failure, so their marked records remain until LRU
+		// reclamation and allow the next datagram to open a fresh association.
 		p.backend.mu.Unlock()
 	})
 	return nil

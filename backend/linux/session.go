@@ -9,6 +9,13 @@ import (
 	"strconv"
 )
 
+const (
+	originalProtocolConnected byte = 0x80
+	originalProtocolMask      byte = 0x7f
+	originalProtocolTCP       byte = 6
+	originalProtocolUDP       byte = 17
+)
+
 // udpSessionKey includes the kernel socket cookie, not just the source
 // endpoint. UDP ports can be reused while an older SOCKS association is still
 // draining, and SO_REUSEPORT permits the same endpoint to be shared. Treating
@@ -66,8 +73,12 @@ func decodeOriginalRecord(value []byte) (netip.AddrPort, int32, uint64, error) {
 	default:
 		return netip.AddrPort{}, 0, 0, fmt.Errorf("unknown address family %d", value[18])
 	}
-	if value[19] != 6 && value[19] != 17 {
-		return netip.AddrPort{}, 0, 0, fmt.Errorf("unknown transport protocol %d", value[19])
+	protocol, connected, err := decodeOriginalProtocol(value)
+	if err != nil {
+		return netip.AddrPort{}, 0, 0, err
+	}
+	if connected && protocol != originalProtocolUDP {
+		return netip.AddrPort{}, 0, 0, errors.New("connected marker is valid only for UDP records")
 	}
 	port := binary.BigEndian.Uint16(value[16:18])
 	if port == 0 {
@@ -78,4 +89,35 @@ func decodeOriginalRecord(value []byte) (netip.AddrPort, int32, uint64, error) {
 		return netip.AddrPort{}, 0, 0, errors.New("original-destination record has an invalid PID")
 	}
 	return netip.AddrPortFrom(addr, port), int32(pid), binary.LittleEndian.Uint64(value[24:32]), nil // #nosec G115 -- PID range is checked above
+}
+
+func decodeOriginalProtocol(value []byte) (protocol byte, connected bool, err error) {
+	if len(value) < 20 {
+		return 0, false, errors.New("original-destination record is truncated")
+	}
+	raw := value[19]
+	protocol = raw & originalProtocolMask
+	if protocol != originalProtocolTCP && protocol != originalProtocolUDP {
+		return 0, false, fmt.Errorf("unknown transport protocol %d", raw)
+	}
+	return protocol, raw&originalProtocolConnected != 0, nil
+}
+
+func validateUDPResponseRecord(value []byte, destination netip.AddrPort) error {
+	original, _, _, err := decodeOriginalRecord(value)
+	if err != nil {
+		return err
+	}
+	protocol, _, err := decodeOriginalProtocol(value)
+	if err != nil {
+		return err
+	}
+	if protocol != originalProtocolUDP {
+		return errors.New("original-destination record is not UDP")
+	}
+	destination = netip.AddrPortFrom(destination.Addr().Unmap(), destination.Port())
+	if original != destination {
+		return fmt.Errorf("UDP response source %s does not match original destination %s", destination, original)
+	}
+	return nil
 }
