@@ -7,9 +7,13 @@ boundary.
 
 ## Development setup
 
-Install Go 1.26.6 or a compatible newer Go release. Linux BPF regeneration also
+Source builds require Go 1.25 or newer. Install Go 1.26.6 or a compatible
+newer Go release: the module toolchain directive and container build pin Go
+1.26.6 so released binaries do not silently inherit known standard-library
+vulnerabilities from an older local compiler. Linux BPF regeneration also
 requires clang 14, llvm 14, and libbpf headers; macOS work requires the Xcode
-toolchain. The ordinary portable checks are:
+toolchain. The committed eBPF object is built from
+`backend/linux/bpf/tunless.bpf.c`. The ordinary portable checks are:
 
 ```console
 go test -race ./...
@@ -20,9 +24,17 @@ cd macos && swift test
 ```
 
 Run `./scripts/verify-bpf.sh` before changing the embedded BPF program. On a
-native cgroup-v2 Linux host, run `scripts/integration-linux.sh`; container
-changes should also run `scripts/integration-containers.sh`. Platform-specific
-claims need a real runtime result on that platform.
+native cgroup-v2 Linux host, run `scripts/integration-linux.sh` (set
+`TUNLESS_BINARY` and `SINGBOX_BINARY` as needed); container changes should also
+run `scripts/integration-containers.sh`. Performance work runs
+`./scripts/benchmark-wan.sh` on the Linux capture host with `TUNLESS_PID`,
+`TUNLESS_PROXY_PID`, `TUNLESS_CGROUP`, and `TUNLESS_UPSTREAM` set as needed.
+Platform-specific claims need a real runtime result on that platform.
+
+Every push and pull request runs the race suite, vet, Linux/Windows builds,
+Swift tests, Docker build, shell parsing, and `govulncheck`. Scheduled checks
+add privileged kernel integration, fuzzing, CodeQL, full-history secret
+scanning, and public-only OpenSSF Scorecard analysis.
 
 ## Changes
 
