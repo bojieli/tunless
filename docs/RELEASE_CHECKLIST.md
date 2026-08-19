@@ -22,6 +22,8 @@ qualified. Link each completed item to a run, commit, or measurement.
 - [x] Dependencies and licenses reviewed; govulncheck and the full-history
       secret scan have acceptable results
 - [ ] Public-only CodeQL, dependency review, and Scorecard have acceptable results
+- [ ] Exact candidate commit has passing hosted CI, security, fuzz, and
+      current-kernel workflows
 
 ## Correctness and resilience
 
@@ -33,6 +35,8 @@ qualified. Link each completed item to a run, commit, or measurement.
       container stop/recreate, and fail-open recovery pass
 - [x] Docker native Linux and Docker Desktop macOS tests cover unmodified,
       no-proxy-environment applications
+- [ ] Linux unconnected UDP sockets that alternate destinations fail safely or
+      preserve per-datagram attribution in a current-kernel live test
 - [x] Rootful Podman and selected CRI/Kubernetes behavior are tested or marked
       experimental; rootless limitation is documented
 
@@ -71,6 +75,14 @@ including CodeQL, dependency review, and artifact attestations. Those unchecked
 items are ordered visibility-transition gates: make the repository public,
 enable them, obtain passing results, and only then consider a tag. The
 unpublished private candidate does not satisfy those public gates.
+
+The 2026-08-19 hosted run for base commit `24c6cde` passed embedded-BPF
+verification, WAN/recovery, and Docker lifecycle stages, but hit its 30-minute
+job limit during the subsequent Podman stage; the workflow now allows 60
+minutes and must pass on the exact reviewed candidate. The same commit's CI
+jobs were never assigned hosted runners and the run was ultimately marked
+failed without executing a step. Local substitution is useful diagnostic
+evidence, but it does not satisfy the exact-commit hosted gate.
 
 ## Approval
 

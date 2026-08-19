@@ -421,9 +421,10 @@ recorded as not met, not as pending.
 - Go module, repo layout, the `Backend` interface from §3.1.
 - The generic core: SOCKS5 client emitter, capture filter, CLI, structured logs.
 - A **`loopback` reference backend** — an ordinary explicit SOCKS5/HTTP listener
-  that fabricates `Flow` values from its own inbound. It captures nothing and
-  needs no privileges, and it exists so the core can be developed and tested on
-  any machine with no kernel work at all.
+  restricted to numeric loopback addresses that fabricates `Flow` values from
+  its own inbound. It captures nothing and needs no privileges, and it exists
+  so the core can be developed and tested on any machine with no kernel work at
+  all.
 - The **conformance suite**, which every backend must pass:
   original destination preserved exactly; process identity present and correct;
   TCP half-close in both directions; a large upload and a large download;
@@ -451,8 +452,9 @@ under load leaves connectivity intact.
 
 ### Stage 2 — macOS backend
 
-**Implementation status (2026-08-17): source and unsigned build complete;
-provisioned activation and measurement gate unmet.**
+**Implementation status (2026-08-19): source complete; notarized development
+builds have been activated and measured, but exact-candidate clean-machine
+qualification remains unmet.**
 
 The platform where the design is most clearly better than TUN, and the one that
 will decide whether the §3.1 abstraction is right.

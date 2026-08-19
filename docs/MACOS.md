@@ -1,6 +1,6 @@
 # macOS
 
-On macOS, tunless runs as a notarized `NETransparentProxyProvider` system extension that captures TCP and UDP flows and emits them to a local SOCKS5 upstream, with a small launcher app for activation and configuration.
+On macOS, tunless runs as an `NETransparentProxyProvider` system extension that captures TCP and UDP flows and emits them to a local SOCKS5 upstream, with a small launcher app for activation and configuration. Recorded development builds have been notarized and exercised live; the exact release candidate still requires the clean-machine qualification tracked in the release checklist.
 
 *Audience: developers building or running the macOS system extension, and operators deploying it alongside a Clash Verge (mihomo) upstream.*
 

@@ -36,10 +36,11 @@ effectively host-root access.
 | Capturing Tunless's own upstream connection | Relay runs outside the captured cgroup; Windows uses redirect records; container controller remains outside the target cgroup | Incorrect administrator cgroup layout can create loops |
 | PID reuse attaches to another container | PID is refreshed and its cgroup must contain the exact validated engine ID | A compromised engine/kernel can forge inspection state |
 | Controller crash blocks traffic | BPF links and redirect sockets are unpinned; process exit detaches them and new flows continue direct | In-flight proxied flows fail and must reconnect |
-| Resource exhaustion | Fixed BPF map capacities, maximum concurrent flow admission, bounded DNS/telemetry state, HTTP timeouts, and stress tests | The OS/upstream can still be exhausted below Tunless |
-| Status or metadata exposure | Status is numeric loopback-only; metadata socket is mode 0600; upstream credentials are omitted | Local privileged users can observe process/network state |
+| Resource exhaustion | Fixed BPF map capacities, maximum concurrent flow admission, bounded DNS/telemetry state, auxiliary HTTP connection caps/timeouts, and stress tests | The OS/upstream can still be exhausted below Tunless |
+| Status, DNS observer, or metadata exposure | Unauthenticated TCP/HTTP/DNS listeners are numeric loopback-only; metadata socket is mode 0600 inside a private service-owned directory; upstream credentials are omitted | Any local user can access an enabled loopback service; root can access metadata and process state |
 | Malformed network input | Strict SOCKS/DNS/address parsing, length bounds, race tests, and fuzz targets | Kernel and platform-specific parsers remain trusted dependencies |
 | DNS pollution or response misassociation | Captured port-53 traffic uses a numeric trusted resolver through SOCKS; UDP IDs and source endpoints are translated and restored with bounded expiry | Encrypted DNS and Windows UDP remain outside the override; disabling override intentionally retains the original resolver |
+| UDP socket/session misassociation | Linux userspace sessions include the kernel socket cookie, and DNS translations bind IDs to endpoints | An unconnected socket alternating destinations can currently attribute an earlier datagram to the most recent destination; simultaneous unconnected UDP6 `SO_REUSEPORT` sockets sharing one exact source endpoint are also ambiguous. Both are release blockers. |
 | Supply-chain compromise | Pinned toolchains/actions, dependency review, CodeQL, secret scanning, SBOMs, checksums, and provenance for candidate artifacts | Maintainer/account or upstream dependency compromise remains possible |
 
 ## Explicit non-goals

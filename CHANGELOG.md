@@ -44,3 +44,24 @@ use ISO 8601. The repository has not made a public release yet.
   BPF lifecycle, bounded flow concurrency, full-history secret scanning,
   public-release gates for CodeQL, dependency review, and provenance
   attestations.
+- Bounded DNS attribution state with CNAME-chain validation, failure-safe
+  private metadata-socket permissions, strict release-version validation, and
+  workflow input isolation for release-candidate builds. Process-controlled
+  metadata username fields are delimiter-escaped before SOCKS authentication;
+  valid SemVer build metadata is mapped safely into OCI tag syntax. DNS TCP
+  framing now completes short writes rather than silently truncating messages.
+- Unauthenticated reference-proxy, DNS-observer, and status listeners are
+  restricted to numeric loopback addresses and ports; auxiliary service
+  failures now produce a fatal process result instead of a clean exit. Private
+  metadata sockets also require private parent directories, never remove a
+  pre-existing socket they did not create, and requested auxiliary services
+  must become ready before capture starts. Status and metadata HTTP connection
+  counts are bounded against local slow-connection exhaustion.
+- Hosted checks do not persist checkout credentials into code under test, use
+  explicit runner images, and gate public-only dependency review consistently.
+- Linux UDP associations include the kernel socket cookie so endpoint reuse
+  cannot inherit an older userspace session; malformed kernel-map records and
+  invalid or oversized datagrams fail closed. DNS attribution now matches the
+  requested A/AAAA type and uses the shortest validated CNAME/address TTL.
+  DEB/RPM config is root-owned mode `0600`, and pre-install scripts reject an
+  existing `/etc/tunless.env` symlink before package extraction.

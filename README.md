@@ -77,8 +77,8 @@ existing proxy, where nodes, subscriptions, and rules stay unchanged.
 
 | Platform | Capture mechanism | Implementation status |
 | --- | --- | --- |
-| Linux | eBPF cgroup connect/sendmsg/recvmsg and sockops | Host and Docker namespace TCP plus connected/unconnected UDP4/UDP6; trusted DNS override is implemented in the shared SOCKS emitter |
-| macOS | `NETransparentProxyProvider` system extension | Notarized universal build passes live trusted-DNS redirection, SOCKS TCP/UDP, HTTP/1.x, HTTP/2, TLS, and concurrency tests |
+| Linux | eBPF cgroup connect/sendmsg/recvmsg and sockops | Host and Docker namespace TCP plus connected UDP4/UDP6 and single-destination unconnected UDP4/UDP6; trusted DNS override is implemented in the shared SOCKS emitter |
+| macOS | `NETransparentProxyProvider` system extension | Recorded notarized development builds pass live trusted-DNS redirection, SOCKS TCP/UDP, HTTP/1.x, HTTP/2, TLS, and concurrency tests; exact-candidate clean-machine qualification remains open |
 | Windows | WFP ALE connect-redirect callout | TCP and TCP DNS override source are implemented; WDK, signing, fuzzing, runtime, and UDP DNS gates are unmet |
 
 The portable core includes SOCKS5 TCP/UDP emission, HTTP CONNECT and SOCKS5
@@ -110,6 +110,9 @@ TUNLESS_UPSTREAM=127.0.0.1:7890
 TUNLESS_CGROUP=/sys/fs/cgroup/user.slice
 TUNLESS_DNS_UPSTREAM=1.1.1.1:53
 ```
+
+Packages install this optional environment file as root-owned mode `0600`
+because an upstream URL may contain SOCKS credentials.
 
 Run mihomo/sing-box as a system service outside `user.slice`. The `tunless`
 unit itself runs in `system.slice`; this cgroup separation is loop avoidance,
@@ -156,10 +159,12 @@ own helpers. See [the container notes](docs/CONTAINERS.md).
 
 ### macOS and Windows
 
-On macOS, `tunless` is a notarized Network Extension with a small launcher app
-and presets for coexisting with Clash Verge. On Windows, the WFP backend is
-implemented but not yet release-qualified — treat it as source, not a shippable
-driver. Details: [macOS notes](docs/MACOS.md) · [Windows notes](docs/WINDOWS.md).
+On macOS, notarized development builds of the `tunless` Network Extension and
+its small launcher app have passed the recorded live tests, but the exact
+release candidate still requires clean-machine qualification. Presets support
+coexistence with Clash Verge. On Windows, the WFP backend is implemented but
+not yet release-qualified — treat it as source, not a shippable driver. Details:
+[macOS notes](docs/MACOS.md) · [Windows notes](docs/WINDOWS.md).
 
 ## Migrate from mihomo TUN
 
@@ -219,6 +224,16 @@ Downstream `PROCESS-NAME` rules see `tunless`, not the original application.
 Move capture-time process selection into the cgroup on Linux or signing-ID
 filters on macOS. Destination, domain, node, and subscription rules remain
 downstream.
+
+Two Linux unconnected-UDP cases remain release blockers. One socket must not
+alternate destinations while its association is active: current kernel state
+retains only the latest destination, so an earlier reply can be attributed to
+the later peer. Use a connected socket per destination or a separate socket
+for each destination. Simultaneous unconnected UDP6 sockets using
+`SO_REUSEPORT` to share the exact source endpoint are also ambiguous at the
+redirect listener. Avoid shared-source `SO_REUSEPORT` for captured UDP6
+workloads. The release checklist requires fail-safe behavior and live
+qualification before a public release.
 
 ## Project status
 

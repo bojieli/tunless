@@ -148,6 +148,58 @@ Measured 2026-08-17.
 
 ## Follow-up hardening validation
 
+On 2026-08-19, the pre-publication working tree passed the Go race suite, vet,
+Staticcheck v0.7.0 for Linux/macOS/Windows build tags, Gosec v2.22.9,
+Govulncheck v1.1.4 with no vulnerabilities found, dependency-license and
+third-party-notice checks, all 25 Swift tests, ShellCheck, actionlint, and
+Linux/Windows amd64/arm64 cross-builds. A local non-publishing
+`0.1.0-rc.1` release check produced two byte-identical sets of binaries,
+archives, DEB/RPM packages, the multi-platform OCI archive, and per-platform
+SPDX documents. Package install/upgrade/uninstall, systemd, archive, and both
+OCI architecture smoke tests passed. This deliberately dirty-tree pipeline
+development run is not the required manual hosted candidate and created no tag
+or release. Five current-tree fuzz targets completed five-second runs without
+a crash (approximately 38,000 to 797,000 inputs per target), and the
+race-enabled 10,000-connection stress rerun completed in 1.672 s (5,980
+connections/s) with 381,120 bytes retained after forced garbage collection.
+
+The final same-day pass added kernel-cookie UDP session identity, strict
+kernel-map/datagram validation, private metadata-socket ownership and cleanup,
+exact DNS record-type/CNAME-TTL attribution, and secret-safe package config.
+The race suite and tagged static/security scans remained clean; five fresh
+five-second fuzz runs completed approximately 86,000 to 1,480,000 inputs each.
+A new two-build `0.1.0-rc.1` development pipeline was byte-reproducible, and
+its DEB and RPM tests proved that a dangling `/etc/tunless.env` symlink is
+rejected before extraction and that root ownership plus mode `0600` survive
+upgrade. Systemd, archive, SBOM, and amd64/arm64 OCI checks also passed.
+
+A Docker Desktop Linux-kernel probe tested whether unconnected UDP6 could carry
+the socket cookie through an IPv4-mapped loopback relay address. The kernel
+rejected that `sendmsg6` rewrite with error 524, while connected UDP6 remained
+functional, so the experimental change was reverted. The embedded BPF object
+remains the canonical hash recorded below. Userspace now separates every
+successfully correlated UDP socket by cookie, but simultaneous unconnected
+UDP6 `SO_REUSEPORT` sockets sharing the exact source endpoint remain an
+explicitly documented ambiguity; no incompatible alias design was shipped.
+
+A separate Docker Desktop probe sent 40 DNS queries from one unconnected UDP4
+socket, alternating between `1.1.1.1:53` and `8.8.8.8:53` without waiting for
+replies. All 40 replies arrived, but 20 carried the wrong apparent source: each
+affected `1.1.1.1` reply was attributed to `8.8.8.8`. The kernel
+`original_map` retains only the latest destination per socket cookie, so a
+later send can overwrite attribution for an earlier in-flight datagram. This
+is a release blocker; documentation advises one connected or separate socket
+per destination until the implementation rejects ambiguous sends or preserves
+per-datagram identity and passes a repeat live test.
+
+The hosted current-kernel run for base commit `24c6cde` independently passed
+the exact embedded-BPF rebuild/verifier check, WAN/recovery suite, and Docker
+lifecycle suite. GitHub then stopped the job at its configured 30-minute limit
+during Podman, before the CRI stage. The workflow limit was raised to 60
+minutes; a passing rerun on the exact reviewed candidate remains required.
+The same commit's CI jobs remained unassigned to runners and were marked
+failed without executing a step, so that hosted gate is also explicitly open.
+
 After the initial measurements, the build toolchain was pinned to Go 1.26.6
 and the direct dependencies were updated to cilium/ebpf 0.22.0, x/net 0.58.0,
 and x/sys 0.47.0. `govulncheck ./...` initially found one reachable x/net DNS
@@ -364,6 +416,7 @@ path.
 
 | Gate | Status / reason |
 | --- | --- |
+| macOS exact release candidate | Builds 8 and 9 provide notarization, staple, Gatekeeper, activation, upgrade, and live-runtime evidence, but the current working tree is newer and has not completed exact-candidate clean-machine qualification. |
 | macOS `remoteHostname` fraction | Activation and representative declined-flow behavior are verified, but a statistically useful fraction still requires a defined realistic app corpus; no number is invented. |
 | macOS HTTP/3 | The installed curl lacks HTTP/3 support. HTTP/1.x, HTTP/2, TLS, DNS UDP/TCP, and non-DNS UDP passed, but no QUIC HTTP client was exercised. |
 | Windows WDK build/runtime/UDP | No Windows+WDK host was available. UDP is intentionally left direct. |

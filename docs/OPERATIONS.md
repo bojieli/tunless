@@ -26,6 +26,10 @@ On macOS/Windows or with `--backend loopback`, the report validates the
 privilege-free backend selection and upstream protocol. Platform extension
 activation remains a separate qualification step.
 
+The explicit SOCKS5/HTTP reference backend is unauthenticated and therefore
+accepts only a numeric loopback `--listen` address. It is a local conformance
+and bridge component, not a LAN proxy.
+
 ## Health and status
 
 Enable the opt-in local API with `--status-listen 127.0.0.1:6060`. Only numeric
@@ -75,8 +79,9 @@ tunless --upstream 127.0.0.1:7890 \
 ```
 
 Point selected clients at that listener yourself. It is opt-in and never edits
-system DNS. Both UDP and TCP observer exchanges use the configured SOCKS5
-upstream rather than opening a direct resolver socket.
+system DNS. Because it is unauthenticated, the observer accepts only a numeric
+loopback listen address. Both UDP and TCP observer exchanges use the configured
+SOCKS5 upstream rather than opening a direct resolver socket.
 
 ## Process metadata (opt-in)
 
@@ -87,9 +92,14 @@ GET /v1/flow?source_port=54321
 ```
 
 over a mode-`0600` Unix socket. Entries exist only for the lifetime of the
-SOCKS control connection. `--metadata-username` instead encodes
+SOCKS control connection. The socket's parent directory must already exist,
+must be owned by the service user, and must grant no group or world access
+(mode `0700`); `/run/tunless` is the recommended system location.
+`--metadata-username` instead encodes
 `pid=...;path=...;signing-id=...` as the SOCKS5 username and requires the
-upstream to accept username/password negotiation.
+upstream to accept username/password negotiation. The path and signing-ID
+values use URL query escaping so process-controlled `;` or `=` characters
+cannot forge adjacent fields; consumers must decode each value separately.
 
 ## Capacity and alerts
 
@@ -137,7 +147,9 @@ logs, issue reports, shell history, or service files readable by other users.
 ## Upgrade and uninstall
 
 Verify candidate checksums and SBOMs, run `--check` with the new binary, then
-restart the service. A package upgrade must preserve `/etc/tunless.env`.
+restart the service. A package upgrade must preserve `/etc/tunless.env`; the
+file is installed as root-owned mode `0600` because it may contain SOCKS
+credentials. Keep those permissions when managing it outside the package.
 Uninstall stops/disables both the host and optional container-watcher units
 through package scripts and removes the binary/units while leaving the
 operator-owned config for deliberate cleanup.
