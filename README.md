@@ -2,16 +2,56 @@
   <img src="assets/tunless-icon.png" alt="Tunless icon" width="160">
 </p>
 
-# tunless
+<h1 align="center">tunless</h1>
 
-[![CI](https://github.com/bojieli/tunless/actions/workflows/ci.yml/badge.svg)](https://github.com/bojieli/tunless/actions/workflows/ci.yml)
+<p align="center">
+  <strong>TUN-less transparent proxying. No fake IP, no route hijack, no second TCP stack.</strong>
+</p>
 
-**TUN-less transparent proxying. No fake IP, no route hijack, no second TCP stack.**
+<p align="center">
+  <a href="https://github.com/bojieli/tunless/actions/workflows/ci.yml"><img src="https://github.com/bojieli/tunless/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
 `tunless` captures local TCP and UDP flows at the socket layer and hands them to
 an ordinary SOCKS5 listener. Applications keep using normal sockets; your
 existing mihomo or sing-box instance keeps its nodes, subscriptions, and routing
 rules.
+
+## Why tunless?
+
+If you want unmodified applications to use a proxy today, you get two options —
+and both have structural problems.
+
+**TUN mode** captures packets, not sockets. To connect that packet stream back
+to application-level routing rules it has to fake things: it forges DNS answers
+from a fake-IP pool (which leaks into DoH-aware apps, caches, WebRTC, and logs,
+and needs `fake-ip-filter` exception lists to stop breaking things), it sniffs
+SNI to recover hostnames (a bridge that ECH is removing), and it rewrites the
+global routing table with `auto-route` — a routing table entry has no owner, so
+a crash leaves your networking broken. It also runs a second userspace TCP/IP
+stack alongside the kernel's.
+
+**Explicit HTTP/SOCKS proxy settings** require every application to cooperate.
+Most applications ignore them. That is the entire reason TUN mode exists.
+
+`tunless` takes a third path: capture at the **socket layer**, where the
+operating system still knows the real destination and the real process.
+That gives you transparency without the trade-offs:
+
+- **No fabricated DNS answers** — names resolve normally, to real addresses.
+- **No route table mutation** — there is nothing to roll back after a crash.
+- **No second TCP/IP stack** — flows stay on the kernel's own sockets.
+- **Fail-open by construction** — capture state is owned by the kernel
+  (unpinned `bpf_link`, dynamic WFP session, system-extension lifecycle), so if
+  `tunless` dies, new traffic simply goes direct. This is tested with SIGKILL,
+  not asserted.
+- **Keep your proxy stack** — `tunless` only replaces the inbound. Nodes,
+  subscriptions, and rules stay in mihomo/sing-box where they belong.
+
+The full design rationale is in [BLUEPRINT.md](BLUEPRINT.md).
+
+## How it works
 
 | Platform | Capture mechanism | Implementation status |
 | --- | --- | --- |
@@ -21,21 +61,19 @@ rules.
 
 The portable core includes SOCKS5 TCP/UDP emission, HTTP CONNECT and SOCKS5
 reference inbounds, destination/process capture filters, a real-answer DNS
-observer, and two opt-in process-metadata transports. See
-[measurements and release gates](docs/MEASUREMENTS.md) for results that were
-actually demonstrated rather than assumed.
+observer, and two opt-in process-metadata transports.
 
-The repository is preparing an unpublished candidate; no public release has
-been made. Reviewable packages, SBOMs, checksums, and OCI output are built only
-by the manual non-publishing workflow described in
-[the release process](docs/RELEASING.md).
+Measured overhead is within **0.4% of direct throughput** (inside WAN
+run-to-run spread), at roughly 2.8% of one core and ~9 MB RSS. Every number is
+recorded with its host and date in
+[measurements and release gates](docs/MEASUREMENTS.md) — demonstrated, not
+assumed.
 
-## Linux quick start
+## Quick start (Linux)
 
 Requirements: cgroup v2, kernel 5.7 or newer, and privileges to load and attach
 BPF programs. The intended 5.10 floor and a current 6.8 kernel have both passed
-the verifier and live runtime suite; the exact hosts are recorded in
-[the measurements](docs/MEASUREMENTS.md).
+the verifier and live runtime suite.
 
 ```console
 make
@@ -53,8 +91,7 @@ TUNLESS_DNS_UPSTREAM=1.1.1.1:53
 
 Run mihomo/sing-box as a system service outside `user.slice`. The `tunless`
 unit itself runs in `system.slice`; this cgroup separation is loop avoidance,
-not an exception list. Do not run both the downstream proxy and `tunless`
-interactively inside the cgroup being captured.
+not an exception list.
 
 For an isolated scope or development test:
 
@@ -75,89 +112,32 @@ sudo ./tunless --upstream 127.0.0.1:7890 \
   --exclude-destination fc00::/7
 ```
 
-On Linux the cgroup is the process filter. Process glob flags are rejected
-because a userspace decision after `connect()` would be too late to let a flow
-continue direct.
-
-Captured TCP and UDP queries whose original destination port is 53 are sent to
-the numeric `--dns-upstream` through SOCKS5 by default. UDP query IDs are
-translated per outstanding request and restored with the original resolver
-source on reply, so reused IDs and out-of-order responses are unambiguous. Use
-`--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to retain each
-application's original resolver. `--flow-idle-timeout` and
-`--udp-idle-timeout` bound abandoned flows; zero disables the corresponding
-timeout.
+Captured queries whose original destination port is 53 are sent to the numeric
+`--dns-upstream` through SOCKS5 by default, with query IDs translated per
+outstanding request. Use `--disable-dns-override` to retain each application's
+original resolver.
 
 ### Containers and virtual machines
 
-Normal bridge-network containers use namespace-local mode. Tunless opens the
-container's network namespace only while creating redirect sockets, restores
-its original namespace for the SOCKS relay, and attaches eBPF to the exact
-container cgroup. Applications inside the container need no environment
-variables, capabilities, proxy configuration, route changes, or TUN device:
+Containers need **no** TUN device, policy route, NAT rule, proxy environment
+variable, or privileged process inside them. One command captures an existing
+container:
 
 ```console
-make
-TUNLESS_UPSTREAM=127.0.0.1:7890 \
-  TUNLESS_DNS_UPSTREAM=1.1.1.1:53 \
-  TUNLESS_BINARY="$PWD/tunless" \
-  ./scripts/tunless-docker.sh my-dev-container
+TUNLESS_UPSTREAM=127.0.0.1:7890 ./scripts/tunless-docker.sh my-dev-container
 ```
 
-The same command works on native Linux and macOS Docker Desktop. On Windows
-Docker Desktop use `scripts\tunless-docker.ps1`. Desktop launchers build a
-privileged controller inside the Linux VM; the application container remains
-unmodified. When the configured SOCKS server is host-loopback, the launcher
-also creates a short-lived host bridge so TCP and the separate SOCKS5 UDP relay
-are both reachable across the Desktop boundary.
+The same helper works on native Linux and macOS Docker Desktop; a PowerShell
+equivalent covers Windows Docker Desktop. Watch-mode variants attach to Dev
+Containers automatically, and rootful Podman, containerd, and CRI-O have their
+own helpers. See [the container notes](docs/CONTAINERS.md).
 
-For automatic Dev Container coverage, run the watcher once on the host:
+### macOS and Windows
 
-```console
-TUNLESS_DOCKER_LABEL=devcontainer.local_folder \
-  ./scripts/tunless-docker-watch.sh
-```
-
-Omit the label to attach to every running application container. PowerShell has
-the equivalent `tunless-docker-watch.ps1`. Controller containers are excluded,
-and recreated containers are discovered automatically. Both one-shot and watch
-modes detach when the target stops; forced process death leaves new traffic
-direct.
-
-On native Linux, rootful Podman uses `tunless-podman.sh` and
-`tunless-podman-watch.sh`. A node operator can attach a containerd or CRI-O
-workload with `tunless-cri.sh`. Rootless engines cannot provide the host cgroup
-and network-namespace authority this socket-layer design needs; the helpers
-reject that configuration instead of silently falling back to proxy variables.
-Rootful Docker and Podman lifecycle tests pass on RTX-PRO, and the containerd
-helper passes inside a disposable kind/Kubernetes node; CRI-O remains an
-explicitly untested runtime.
-
-Windows containers share the Windows kernel rather than the Docker Desktop
-Linux VM. The host WFP backend therefore covers host applications and Windows
-container TCP with one global configuration. That source path includes WFP
-redirect-record propagation, but remains release-blocked because no Windows/WDK
-runtime was available; UDP remains direct on Windows.
-
-A Docker container with `--network=host` can alternatively be captured when its
-cgroup is beneath the normal Linux Tunless cgroup. A full VM is different:
-guest socket calls are invisible to host cgroup/WFP/Network Extension hooks, so
-run Tunless inside the guest. If guest installation is impossible, whole-VM
-transparency requires a packet-layer mechanism such as TUN or TPROXY.
-
-For host-network containers, attach Tunless to a parent and let Docker create
-descendants beneath it. Once Docker enables controllers on that parent, Linux
-will not allow ordinary processes directly in the parent; use a separate child
-for host test processes. Cgroup-parent syntax varies by Docker cgroup driver.
-
-Processes that migrate to another systemd scope are captured only if the new
-scope remains under the attached ancestor. For example, attaching to
-`user.slice` covers its descendant user scopes, while attaching to one narrow
-manually-created leaf does not follow a Snap application that moves itself to a
-sibling scope.
-
-The namespace implementation and operational boundaries are detailed in
-[the container notes](docs/CONTAINERS.md).
+On macOS, `tunless` is a notarized Network Extension with a small launcher app
+and presets for coexisting with Clash Verge. On Windows, the WFP backend is
+implemented but not yet release-qualified — treat it as source, not a shippable
+driver. Details: [macOS notes](docs/MACOS.md) · [Windows notes](docs/WINDOWS.md).
 
 ## Migrate from mihomo TUN
 
@@ -181,10 +161,9 @@ and fake-IP filters. Current mihomo calls its real-answer mode `redir-host`.
 +  enhanced-mode: redir-host
 ```
 
-Then start the service with `TUNLESS_UPSTREAM=127.0.0.1:7890`. The current
-mihomo TUN and DNS fields are documented in its
-[TUN](https://wiki.metacubex.one/config/inbound/tun/) and
-[DNS](https://wiki.metacubex.one/en/config/dns/) references.
+Then start the service with `TUNLESS_UPSTREAM=127.0.0.1:7890`. References:
+mihomo [TUN](https://wiki.metacubex.one/config/inbound/tun/) and
+[DNS](https://wiki.metacubex.one/en/config/dns/).
 
 ## Migrate from sing-box TUN
 
@@ -210,151 +189,47 @@ add a loopback `mixed` inbound for `tunless`:
  ]
 ```
 
-Point `TUNLESS_UPSTREAM` at `127.0.0.1:7890`. The current schema is in the
-official sing-box [TUN](https://sing-box.sagernet.org/configuration/inbound/tun/)
-and [mixed inbound](https://sing-box.sagernet.org/configuration/inbound/mixed/)
-documentation.
+Point `TUNLESS_UPSTREAM` at `127.0.0.1:7890`. References: sing-box
+[TUN](https://sing-box.sagernet.org/configuration/inbound/tun/) and
+[mixed inbound](https://sing-box.sagernet.org/configuration/inbound/mixed/).
 
 Downstream `PROCESS-NAME` rules see `tunless`, not the original application.
 Move capture-time process selection into the cgroup on Linux or signing-ID
 filters on macOS. Destination, domain, node, and subscription rules remain
 downstream.
 
-## macOS
+## Project status
 
-The containing app is a bare launcher. Build it with:
+The repository is preparing an unpublished candidate; **no public release has
+been made**. Reviewable packages, SBOMs, checksums, and OCI output are built
+only by the manual non-publishing workflow described in
+[the release process](docs/RELEASING.md), and the evidence for each release
+gate — including the gates not yet demonstrated — is recorded in
+[docs/MEASUREMENTS.md](docs/MEASUREMENTS.md).
 
-```console
-brew install xcodegen
-xcodegen generate --spec macos/project.yml
-xcodebuild -project macos/Tunless.xcodeproj -scheme Tunless \
-  -configuration Release -derivedDataPath build build
-```
+## Documentation
 
-After signing with the Network Extension and System Extension entitlements,
-place `Tunless.app` in `/Applications`. When Clash Verge is the existing proxy
-client, keep its mixed/SOCKS listener and rules, disable its TUN mode, and use
-the focused companion preset:
+| Document | Contents |
+| --- | --- |
+| [BLUEPRINT.md](BLUEPRINT.md) | Design of record: the thesis, the faults in TUN mode, rejected alternatives |
+| [docs/CONTAINERS.md](docs/CONTAINERS.md) | Docker, Podman, containerd/CRI-O, Docker Desktop, VMs |
+| [docs/MACOS.md](docs/MACOS.md) | Network Extension build, signing, Clash Verge preset, recovery |
+| [docs/WINDOWS.md](docs/WINDOWS.md) | WFP driver design, build, and release gates |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Preflight checks, health API, capacity, DNS override, metadata, recovery |
+| [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md) | Dated performance and gate evidence, including what is not demonstrated |
+| [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Assets, trust boundaries, risks, and explicit non-goals |
+| [docs/RELEASING.md](docs/RELEASING.md) · [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) | Release procedure and review gates (maintainers) |
 
-```console
-/Applications/Tunless.app/Contents/MacOS/Tunless \
-  check --preset clash-verge --upstream 127.0.0.1:7897
-/Applications/Tunless.app/Contents/MacOS/Tunless \
-  start --preset clash-verge --upstream 127.0.0.1:7897
-/Applications/Tunless.app/Contents/MacOS/Tunless status
-/Applications/Tunless.app/Contents/MacOS/Tunless stop
-/Applications/Tunless.app/Contents/MacOS/Tunless cleanup
-```
+## Contributing
 
-The preset adds only the known Clash Verge process exclusions and defaults to
-port 7897; an explicit `--upstream` always wins. It does not import or replace
-Clash rules, nodes, subscriptions, or UI. `check` verifies SOCKS5 negotiation
-before capture is enabled, and preset-based `start` performs the same preflight
-automatically. The launcher also accepts the same repeated process/destination
-filter names as the Go CLI. macOS process patterns match signing identifiers.
-Re-running `start` updates a running provider, while `telemetry` prints and
-drains its bounded JSON flow buffer. `status` is non-destructive and reports
-the active state, credential-free upstream, DNS upstream, and recognized
-preset. `stop` disables capture but retains its configuration; `cleanup` stops
-capture, removes every Tunless transparent-proxy configuration, and requests
-Network Extension deactivation. A bounded recovery script is bundled at
-`Tunless.app/Contents/Resources/tunless-cleanup`. If Tunless cannot respond at
-all, the Network Extension can always be disabled manually under **System
-Settings > General > Login Items & Extensions > Network Extensions**. First
-activation requires normal macOS user approval. Legacy `--stop`, `--cleanup`,
-and `--telemetry` spellings remain supported.
-Detailed signing, Clash loop exclusions, and runtime validation are in
-[the macOS notes](docs/MACOS.md).
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development setup (`go test -race ./...`, `go vet`, `swift test`, privileged
+integration suites) and review expectations. Security reports should follow
+[SECURITY.md](SECURITY.md).
 
-## Windows
+`tunless` is local socket capture, not an IP-forwarding proxy: it does not
+intercept transit traffic from other machines, raw ICMP, ESP, GRE, or arbitrary
+IP protocols, and it is not a VPN, rule engine, proxy protocol collection, GUI,
+or mobile backend.
 
-The WFP driver and Go redirect service are under `windows/driver` and
-`backend/windows`. TCP is filtered at ALE connect-redirect; UDP is deliberately
-left direct until a Windows UDP datapath passes its own gate. The userspace
-service applies the same trusted-resolver rewrite to captured TCP port 53,
-unless `--disable-dns-override` is set. It queries the accepted socket's redirect context and records, then sets
-those records on the outbound socket before `connect()`, as required for
-cooperation with other WFP redirectors. Do not deploy this driver from an
-unvalidated build. See [the Windows notes](docs/WINDOWS.md).
-
-## Optional real-answer DNS observation
-
-The observer forwards UDP and TCP DNS without changing answers, records A/AAAA
-TTL mappings, and supplies a hostname only when exactly one unexpired name maps
-to the address. Ambiguous CDN addresses remain IP-only.
-
-```console
-tunless --upstream 127.0.0.1:7890 \
-  --dns-listen 127.0.0.1:5353 --dns-upstream 1.1.1.1:53
-```
-
-Point selected clients at that listener yourself. It is opt-in and never edits
-system DNS. Both UDP and TCP observer exchanges use the configured SOCKS5
-upstream rather than opening a direct resolver socket.
-
-## Diagnostics and health
-
-Before starting privileged Linux capture, validate the exact embedded BPF
-program, cgroup topology, loop avoidance, and both SOCKS5 commands:
-
-```console
-sudo tunless --upstream 127.0.0.1:7890 \
-  --backend linux --cgroup /sys/fs/cgroup/my-apps --check
-```
-
-`--check` prints JSON and does not leave capture attached. For monitoring, add
-`--status-listen 127.0.0.1:6060`; `GET /healthz` is a liveness response and
-`GET /v1/status` reports bounded flow counters, backend resources, BPF map
-occupancy, and the credential-free upstream address. The API accepts only a
-numeric loopback listener. `--max-flows` defaults to 4096; excess flows are
-failed immediately and counted instead of allowing unbounded goroutine growth.
-See [operations](docs/OPERATIONS.md).
-
-## Optional process metadata
-
-`--metadata-socket /run/tunless/metadata.sock` exposes:
-
-```text
-GET /v1/flow?source_port=54321
-```
-
-over a mode-`0600` Unix socket. Entries exist only for the lifetime of the
-SOCKS control connection. `--metadata-username` instead encodes
-`pid=...;path=...;signing-id=...` as the SOCKS5 username and requires the
-upstream to accept username/password negotiation.
-
-## Development
-
-Source builds require Go 1.25 or newer. The module toolchain directive and
-container build pin Go 1.26.6 so released binaries do not silently inherit
-known standard-library vulnerabilities from an older local compiler.
-
-```console
-go test -race ./...
-go vet ./...
-cd macos && swift test
-sudo TUNLESS_BINARY=./tunless SINGBOX_BINARY=sing-box \
-  ./scripts/integration-linux.sh
-./scripts/benchmark-wan.sh
-```
-
-The committed eBPF object is built from
-[`backend/linux/bpf/tunless.bpf.c`](backend/linux/bpf/tunless.bpf.c). Run the
-benchmark on the Linux capture host and set `TUNLESS_PID`,
-`TUNLESS_PROXY_PID`, `TUNLESS_CGROUP`, and `TUNLESS_UPSTREAM` as needed.
-Every push and pull request runs the race suite, vet, Linux/Windows builds,
-Swift tests, Docker build, shell parsing, and `govulncheck`. Scheduled checks
-add privileged kernel integration, fuzzing, CodeQL, full-history secret
-scanning, and public-only OpenSSF Scorecard analysis. Security reports
-should follow [`SECURITY.md`](SECURITY.md).
-
-This project is local socket capture, not an IP-forwarding proxy. Container
-support attaches inside the container's cgroup and network namespace; Tunless
-does not intercept transit bridge packets merely because they cross the host.
-It also does not capture other machines, raw ICMP, ESP, GRE, or arbitrary IP
-protocols. It is not a VPN, rule engine, proxy protocol collection, GUI, or
-mobile backend.
-
-MIT licensed. [`BLUEPRINT.md`](BLUEPRINT.md) remains the design of record.
-Contribution, support, governance, threat-model, and release-review policies
-are linked from [`CONTRIBUTING.md`](CONTRIBUTING.md).
+MIT licensed.
