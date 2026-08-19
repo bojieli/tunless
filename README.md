@@ -20,34 +20,41 @@ rules.
 
 ## Why tunless?
 
-If you want unmodified applications to use a proxy today, you get two options —
-and both have structural problems.
+To make unmodified applications use a proxy today, you get two options — and
+both have structural problems.
 
-**TUN mode** captures packets, not sockets. To connect that packet stream back
-to application-level routing rules it has to fake things: it forges DNS answers
-from a fake-IP pool (which leaks into DoH-aware apps, caches, WebRTC, and logs,
-and needs `fake-ip-filter` exception lists to stop breaking things), it sniffs
-SNI to recover hostnames (a bridge that ECH is removing), and it rewrites the
-global routing table with `auto-route` — a routing table entry has no owner, so
-a crash leaves your networking broken. It also runs a second userspace TCP/IP
-stack alongside the kernel's.
+**TUN mode** captures packets, not sockets. To bridge packets back to
+application-level rules, it has to fake things:
 
-**Explicit HTTP/SOCKS proxy settings** require every application to cooperate.
-Most applications ignore them. That is the entire reason TUN mode exists.
+- **Forged DNS answers (fake IP)** — leaks into DoH-aware apps, caches,
+  WebRTC, and logs, and needs `fake-ip-filter` exception lists to stop
+  breaking things.
+- **Trivially detectable** — fake answers come from a reserved range
+  (`198.18.0.0/15`), so any application that inspects its own DNS (coding
+  agents' SSRF guardrails, region checks) can tell it is being proxied; apps
+  with their own resolver (DoH) bypass the mapping entirely.
+- **SNI sniffing** — the second bridge from packets to hostnames, and ECH is
+  removing it.
+- **Global route hijack** — `auto-route` rewrites the routing table; a routing
+  table entry has no owner, so a crash leaves your networking broken.
+- **A second TCP/IP stack** in userspace, alongside the kernel's.
+
+**Explicit HTTP/SOCKS proxy settings** have one fatal flaw:
+
+- **Applications must cooperate** — most ignore them. That is the entire
+  reason TUN mode exists.
 
 `tunless` takes a third path: capture at the **socket layer**, where the
-operating system still knows the real destination and the real process.
-That gives you transparency without the trade-offs:
+operating system still knows the real destination and the real process:
 
 - **No fabricated DNS answers** — names resolve normally, to real addresses.
 - **No route table mutation** — there is nothing to roll back after a crash.
 - **No second TCP/IP stack** — flows stay on the kernel's own sockets.
 - **Fail-open by construction** — capture state is owned by the kernel
-  (unpinned `bpf_link`, dynamic WFP session, system-extension lifecycle), so if
-  `tunless` dies, new traffic simply goes direct. This is tested with SIGKILL,
-  not asserted.
-- **Keep your proxy stack** — `tunless` only replaces the inbound. Nodes,
-  subscriptions, and rules stay in mihomo/sing-box where they belong.
+  (unpinned `bpf_link`, dynamic WFP session, system-extension lifecycle); if
+  `tunless` dies, new traffic goes direct. Tested with SIGKILL, not asserted.
+- **Keep your proxy stack** — `tunless` only replaces the inbound; nodes,
+  subscriptions, and rules stay in mihomo/sing-box.
 
 The full design rationale is in [BLUEPRINT.md](BLUEPRINT.md).
 
