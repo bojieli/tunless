@@ -31,7 +31,7 @@ func TestFilter(t *testing.T) {
 func TestFilterValidateRejectsMalformedPatternsAndPrefixes(t *testing.T) {
 	for _, filter := range []Filter{
 		{IncludeProcesses: []string{"["}},
-		{ExcludeProcesses: []string{"path\\"}},
+		{ExcludeProcesses: []string{"path["}},
 		{IncludeDestinations: []netip.Prefix{{}}},
 		{ExcludeDestinations: []netip.Prefix{{}}},
 	} {

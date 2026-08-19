@@ -8,11 +8,19 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/bojieli/tunless"
 )
+
+func requirePOSIXMetadataSocket(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("metadata socket ownership tests require POSIX filesystem semantics")
+	}
+}
 
 func TestRegister(t *testing.T) {
 	s := &Server{}
@@ -27,6 +35,7 @@ func TestRegister(t *testing.T) {
 }
 
 func TestServeRejectsSharedSocketDirectory(t *testing.T) {
+	requirePOSIXMetadataSocket(t)
 	directory := filepath.Join(t.TempDir(), "shared")
 	if err := os.Mkdir(directory, 0755); err != nil {
 		t.Fatal(err)
@@ -41,6 +50,7 @@ func TestServeRejectsSharedSocketDirectory(t *testing.T) {
 }
 
 func TestCloseDoesNotRemoveUnownedSocket(t *testing.T) {
+	requirePOSIXMetadataSocket(t)
 	directory, err := os.MkdirTemp("", "tm-")
 	if err != nil {
 		t.Fatal(err)
@@ -65,6 +75,7 @@ func TestCloseDoesNotRemoveUnownedSocket(t *testing.T) {
 }
 
 func TestCloseDoesNotRemoveReplacementSocket(t *testing.T) {
+	requirePOSIXMetadataSocket(t)
 	directory, err := os.MkdirTemp("", "tm-")
 	if err != nil {
 		t.Fatal(err)
