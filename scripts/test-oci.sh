@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=scripts/release-common.sh
+source "$repository_root/scripts/release-common.sh"
 version=${1:-}
 output=${2:-dist}
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+tunless_validate_version "$version" || {
 	echo "usage: test-oci.sh SEMVER [OUTPUT_DIRECTORY]" >&2
 	exit 2
 }

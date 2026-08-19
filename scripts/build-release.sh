@@ -3,10 +3,12 @@ set -euo pipefail
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repository_root"
+# shellcheck source=scripts/release-common.sh
+source "$repository_root/scripts/release-common.sh"
 
 version=${1:-}
 output=${2:-dist}
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+tunless_validate_version "$version" || {
 	echo "usage: build-release.sh SEMVER [OUTPUT_DIRECTORY]" >&2
 	exit 2
 }
@@ -71,5 +73,4 @@ for arch in amd64 arm64; do
 	rm -f -- "$config"
 done
 
-find "$output" -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
-	sort -z | xargs -0 sha256sum | sed "s#  $output/#  #" >"$output/SHA256SUMS"
+./scripts/finalize-release.sh "$output"

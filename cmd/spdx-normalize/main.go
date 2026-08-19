@@ -18,7 +18,7 @@ func main() {
 	}
 
 	path := flag.Arg(0)
-	input, err := os.ReadFile(path)
+	input, err := os.ReadFile(path) // #nosec G304 -- this CLI intentionally normalizes its caller-selected artifact
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read SPDX document: %v\n", err)
 		os.Exit(1)
@@ -28,6 +28,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "normalize SPDX document: %v\n", err)
 		os.Exit(1)
 	}
+	// #nosec G306 -- release SBOMs are intentionally world-readable.
 	if err := os.WriteFile(path, output, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "write SPDX document: %v\n", err)
 		os.Exit(1)

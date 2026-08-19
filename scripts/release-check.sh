@@ -4,6 +4,12 @@ set -euo pipefail
 version=${1:-0.1.0-rc.1}
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repository_root"
+# shellcheck source=scripts/release-common.sh
+source "$repository_root/scripts/release-common.sh"
+tunless_validate_version "$version" || {
+	echo "usage: release-check.sh SEMVER" >&2
+	exit 2
+}
 
 output=${TUNLESS_RELEASE_OUTPUT:-dist}
 builder=${TUNLESS_RELEASE_BUILDER:-tunless-release-builder:local}
@@ -26,10 +32,19 @@ case "$output" in
 	exit 2
 	;;
 esac
+git check-ignore --quiet -- "$output" || {
+	echo "release output must be an ignored directory: $output" >&2
+	exit 2
+}
 mkdir -p "$output"
 output_real=$(cd "$output" && pwd -P)
 [[ $output_real == "$repository_root/"* ]] || {
 	echo "release output resolves outside the repository: $output" >&2
+	exit 2
+}
+output_relative=${output_real#"$repository_root/"}
+git check-ignore --quiet -- "$output_relative" || {
+	echo "release output resolves to a non-ignored directory: $output" >&2
 	exit 2
 }
 find "$output_real" -xdev -mindepth 1 -depth -delete

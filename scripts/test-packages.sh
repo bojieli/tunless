@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=scripts/release-common.sh
+source "$repository_root/scripts/release-common.sh"
 version=${1:-}
 output=${2:-dist}
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+tunless_validate_version "$version" || {
 	echo "usage: test-packages.sh SEMVER [OUTPUT_DIRECTORY]" >&2
 	exit 2
 }
@@ -28,6 +31,14 @@ done
 
 docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_amd64_image" sh -euxc "
   printf '%s\n' 'path-include /usr/share/doc/tunless/*' > /etc/dpkg/dpkg.cfg.d/tunless-test
+  ln -s /tmp/tunless-env-target /etc/tunless.env
+  if dpkg -i /release/$(basename "$deb") >/dev/null 2>&1; then
+    printf '%s\n' 'DEB accepted a dangling /etc/tunless.env symlink' >&2
+    exit 1
+  fi
+  test -L /etc/tunless.env
+  test ! -e /tmp/tunless-env-target
+  rm /etc/tunless.env
   dpkg -i /release/$(basename "$deb") >/dev/null
   test \"\$(tunless --version)\" = '$version'
   test -f /usr/lib/systemd/system/tunless.service
@@ -38,9 +49,12 @@ docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$debian_amd64_i
   apt-get update >/dev/null
   apt-get install -y systemd >/dev/null
   systemd-analyze verify /usr/lib/systemd/system/tunless.service /usr/lib/systemd/system/tunless-container-watch.service
+  test \"\$(stat -c %a /etc/tunless.env)\" = 600
+  test \"\$(stat -c %U:%G /etc/tunless.env)\" = root:root
   test \"\$(stat -c %a /usr/bin/tunless)\" = 755
   printf '%s\\n' 'TUNLESS_UPSTREAM=127.0.0.1:9999' > /etc/tunless.env
   dpkg -i /release/$(basename "$deb") >/dev/null
+  test \"\$(stat -c %a /etc/tunless.env)\" = 600
   grep -qx 'TUNLESS_UPSTREAM=127.0.0.1:9999' /etc/tunless.env
   dpkg --remove tunless >/dev/null
   test ! -e /usr/bin/tunless
@@ -62,6 +76,14 @@ docker run --rm --platform linux/arm64 -v "$output:/release:ro" "$debian_arm64_i
 "
 
 docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$rocky_amd64_image" sh -euxc "
+  ln -s /tmp/tunless-env-target /etc/tunless.env
+  if rpm -i /release/$(basename "$rpm") >/dev/null 2>&1; then
+    printf '%s\n' 'RPM accepted a dangling /etc/tunless.env symlink' >&2
+    exit 1
+  fi
+  test -L /etc/tunless.env
+  test ! -e /tmp/tunless-env-target
+  rm /etc/tunless.env
   rpm -i /release/$(basename "$rpm")
   test \"\$(tunless --version)\" = '$version'
   test -f /usr/lib/systemd/system/tunless.service
@@ -69,9 +91,12 @@ docker run --rm --platform linux/amd64 -v "$output:/release:ro" "$rocky_amd64_im
   test -x /usr/libexec/tunless/tunless-podman.sh
   test -f /usr/share/licenses/tunless/LICENSE
   test -f /usr/share/licenses/tunless/THIRD_PARTY_NOTICES.md
+  test \"\$(stat -c %a /etc/tunless.env)\" = 600
+  test \"\$(stat -c %U:%G /etc/tunless.env)\" = root:root
   test \"\$(stat -c %a /usr/bin/tunless)\" = 755
   printf '%s\\n' 'TUNLESS_UPSTREAM=127.0.0.1:9999' > /etc/tunless.env
   rpm -U --replacepkgs /release/$(basename "$rpm")
+  test \"\$(stat -c %a /etc/tunless.env)\" = 600
   grep -qx 'TUNLESS_UPSTREAM=127.0.0.1:9999' /etc/tunless.env
   rpm -e tunless
   test ! -e /usr/bin/tunless

@@ -46,7 +46,9 @@ contents:
     dst: /etc/tunless.env
     type: config|noreplace
     file_info:
-      mode: 0644
+      # This file commonly carries SOCKS credentials. Keep it root-only even
+      # though the shipped example itself contains no secret.
+      mode: 0600
   - src: LICENSE
     dst: /usr/share/doc/tunless/copyright
     packager: deb
@@ -70,6 +72,7 @@ contents:
     file_info:
       mode: 0644
 scripts:
+  preinstall: packaging/nfpm/preinstall.sh
   postinstall: packaging/nfpm/postinstall.sh
   preremove: packaging/nfpm/preremove.sh
   postremove: packaging/nfpm/postremove.sh

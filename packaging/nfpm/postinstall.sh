@@ -1,5 +1,13 @@
 #!/bin/sh
 set -eu
+if [ -e /etc/tunless.env ] || [ -L /etc/tunless.env ]; then
+    if [ -L /etc/tunless.env ]; then
+        printf '%s\n' 'Refusing insecure symlink at /etc/tunless.env.' >&2
+        exit 1
+    fi
+    chown root:root /etc/tunless.env
+    chmod 0600 /etc/tunless.env
+fi
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
 fi

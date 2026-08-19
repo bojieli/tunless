@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=scripts/release-common.sh
+source "$repository_root/scripts/release-common.sh"
 version=${1:-}
 first=${2:-dist}
 second=${3:-dist/.reproducibility}
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+tunless_validate_version "$version" || {
 	echo "usage: verify-release-reproducible.sh SEMVER [FIRST_DIRECTORY] [SECOND_DIRECTORY]" >&2
 	exit 2
 }
