@@ -1,6 +1,7 @@
 package tunless
 
 import (
+	"fmt"
 	"net/netip"
 	"path/filepath"
 )
@@ -10,6 +11,38 @@ type Filter struct {
 	ExcludeProcesses    []string
 	IncludeDestinations []netip.Prefix
 	ExcludeDestinations []netip.Prefix
+}
+
+func (f Filter) Validate() error {
+	processGroups := []struct {
+		kind     string
+		patterns []string
+	}{
+		{"include-process", f.IncludeProcesses},
+		{"exclude-process", f.ExcludeProcesses},
+	}
+	for _, group := range processGroups {
+		for _, pattern := range group.patterns {
+			if _, err := filepath.Match(pattern, ""); err != nil {
+				return fmt.Errorf("invalid %s pattern %q: %w", group.kind, pattern, err)
+			}
+		}
+	}
+	prefixGroups := []struct {
+		kind     string
+		prefixes []netip.Prefix
+	}{
+		{"include-destination", f.IncludeDestinations},
+		{"exclude-destination", f.ExcludeDestinations},
+	}
+	for _, group := range prefixGroups {
+		for _, prefix := range group.prefixes {
+			if !prefix.IsValid() {
+				return fmt.Errorf("invalid %s prefix", group.kind)
+			}
+		}
+	}
+	return nil
 }
 
 func (f Filter) Capture(flow Flow) bool {

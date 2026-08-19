@@ -2,12 +2,25 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestWaitForServicePrefersReportedError(t *testing.T) {
+	want := errors.New("listener failed")
+	serviceErrors := make(chan error, 1)
+	serviceErrors <- want
+	if got := waitForService(context.Background(), serviceErrors, func() bool { return false }); !errors.Is(got, want) {
+		t.Fatalf("waitForService error = %v, want %v", got, want)
+	}
+	if err := waitForService(context.Background(), make(chan error), func() bool { return true }); err != nil {
+		t.Fatalf("ready service returned %v", err)
+	}
+}
 
 func TestCgroupPathFromProc(t *testing.T) {
 	path, err := cgroupPathFromProc([]byte("0::/docker/0123456789abcdef\n"))

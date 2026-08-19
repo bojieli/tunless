@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -53,6 +54,29 @@ func TestCredentialsRequireUserPasswordMethod(t *testing.T) {
 	methods := <-seen
 	if len(methods) != 1 || methods[0] != 2 {
 		t.Fatalf("offered methods %v, want username/password only", methods)
+	}
+}
+
+func TestMetadataUsernameEscapesUntrustedFieldsAndRespectsLimit(t *testing.T) {
+	client := &Client{MetadataUsername: true, Password: "secret"}
+	username, password := client.credentials(tunless.Flow{Process: tunless.ProcessInfo{
+		PID:       42,
+		Path:      "/tmp/evil;signing-id=forged",
+		SigningID: "real=value",
+	}})
+	if password != "secret" {
+		t.Fatalf("metadata password = %q", password)
+	}
+	const want = "pid=42;path=%2Ftmp%2Fevil%3Bsigning-id%3Dforged;signing-id=real%3Dvalue"
+	if username != want {
+		t.Fatalf("metadata username = %q, want %q", username, want)
+	}
+	username, _ = client.credentials(tunless.Flow{Process: tunless.ProcessInfo{Path: strings.Repeat("%", 300)}})
+	if len(username) > 255 {
+		t.Fatalf("metadata username length = %d", len(username))
+	}
+	if strings.HasSuffix(username, "%") || (len(username) >= 2 && username[len(username)-2] == '%') {
+		t.Fatalf("metadata username ends with a partial escape: %q", username[len(username)-4:])
 	}
 }
 
@@ -141,6 +165,54 @@ func TestTCPDNSOverrideAndDisableSemantics(t *testing.T) {
 	}
 }
 
+func TestDNSExchangesRejectOversizedQueriesBeforeDial(t *testing.T) {
+	client := &Client{}
+	destination := netip.MustParseAddrPort("192.0.2.53:53")
+	query := make([]byte, 65536)
+	if _, err := client.ExchangeDNSUDP(context.Background(), destination, query); err == nil {
+		t.Fatal("oversized UDP DNS query was accepted")
+	}
+	if _, err := client.ExchangeDNSTCP(context.Background(), destination, query); err == nil {
+		t.Fatal("oversized TCP DNS query was accepted")
+	}
+}
+
+func TestDNSExchangesRejectScopedDestinationsBeforeDial(t *testing.T) {
+	client := &Client{}
+	destination := netip.MustParseAddrPort("[fe80::1%en0]:53")
+	if _, err := client.ExchangeDNSUDP(context.Background(), destination, []byte("query")); err == nil {
+		t.Fatal("UDP DNS exchange accepted an IPv6 zone that SOCKS5 cannot encode")
+	}
+	if _, err := client.ExchangeDNSTCP(context.Background(), destination, []byte("query")); err == nil {
+		t.Fatal("TCP DNS exchange accepted an IPv6 zone that SOCKS5 cannot encode")
+	}
+}
+
+func TestEmitRejectsInvalidFlowsBeforeDial(t *testing.T) {
+	client := &Client{}
+	if err := client.Emit(context.Background(), tunless.Flow{Proto: tunless.TCP}); err == nil {
+		t.Fatal("invalid flow reached the SOCKS5 emitter")
+	}
+	if err := client.Emit(context.Background(), tunless.Flow{
+		Proto:         tunless.TCP,
+		OrigDst:       netip.MustParseAddrPort("192.0.2.1:443"),
+		DatapathOwned: true,
+	}); err == nil {
+		t.Fatal("datapath-owned flow reached the SOCKS5 emitter")
+	}
+	local, remote := net.Pipe()
+	defer local.Close()
+	defer remote.Close()
+	client.DNSOverride = netip.MustParseAddrPort("1.1.1.1:0")
+	if err := client.Emit(context.Background(), tunless.Flow{
+		Proto:   tunless.TCP,
+		OrigDst: netip.MustParseAddrPort("192.0.2.53:53"),
+		Conn:    local,
+	}); err == nil {
+		t.Fatal("invalid DNS override reached the SOCKS5 dial path")
+	}
+}
+
 type contextPacketPort struct{}
 
 func (contextPacketPort) ReadPacket(ctx context.Context) (tunless.Packet, error) {
@@ -163,6 +235,12 @@ type shortWriter struct {
 	limit int
 }
 
+type invalidCountWriter int
+
+func (w invalidCountWriter) Write(payload []byte) (int, error) {
+	return len(payload) + int(w), nil
+}
+
 func (w *shortWriter) Write(payload []byte) (int, error) {
 	if len(payload) > w.limit {
 		payload = payload[:w.limit]
@@ -177,6 +255,20 @@ func TestWriteAllHandlesShortWrites(t *testing.T) {
 	}
 	if writer.String() != "complete" {
 		t.Fatalf("written payload = %q", writer.String())
+	}
+}
+
+func TestWriteAllRejectsInvalidWriterCounts(t *testing.T) {
+	for _, writer := range []invalidCountWriter{-100, 1} {
+		if err := writeAll(writer, []byte("complete")); !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("writeAll error = %v, want io.ErrShortWrite", err)
+		}
+	}
+}
+
+func TestParseAddrRejectsZeroSourcePort(t *testing.T) {
+	if _, _, err := parseAddr(context.Background(), []byte{1, 192, 0, 2, 1, 0, 0}); err == nil {
+		t.Fatal("accepted a SOCKS5 UDP source with port zero")
 	}
 }
 

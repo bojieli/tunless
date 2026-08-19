@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,16 +18,30 @@ import (
 type Observer struct {
 	Listen, Upstream string
 	MaxConcurrent    int
-	UDPExchange      func(context.Context, []byte) ([]byte, error)
-	TCPExchange      func(context.Context, []byte) ([]byte, error)
-	mu               sync.Mutex
-	records          map[netip.Addr]map[string]time.Time
-	udp              *net.UDPConn
-	tcp              net.Listener
-	sem              chan struct{}
-	wg               sync.WaitGroup
-	close            sync.Once
+	// MaxRecords bounds cached address/name associations. Zero selects the
+	// default. The observer is fed by an external DNS server, so this limit is
+	// independent of the number of concurrently proxied requests.
+	MaxRecords  int
+	UDPExchange func(context.Context, []byte) ([]byte, error)
+	TCPExchange func(context.Context, []byte) ([]byte, error)
+	mu          sync.Mutex
+	records     map[netip.Addr]map[string]time.Time
+	recordCount int
+	stateMu     sync.Mutex
+	udp         *net.UDPConn
+	tcp         net.Listener
+	closed      bool
+	serving     bool
+	sem         chan struct{}
+	wg          sync.WaitGroup
+	close       sync.Once
 }
+
+const (
+	defaultMaxRecords            = 65536
+	maxObservedNamesPerMessage   = 256
+	maxAssociationsPerDNSMessage = 4096
+)
 
 func (o *Observer) Lookup(addr netip.Addr) string {
 	o.mu.Lock()
@@ -36,6 +52,9 @@ func (o *Observer) Lookup(addr netip.Addr) string {
 	for name, expires := range names {
 		if now.After(expires) {
 			delete(names, name)
+			if o.recordCount > 0 {
+				o.recordCount--
+			}
 			continue
 		}
 		if result != "" && result != name {
@@ -43,16 +62,40 @@ func (o *Observer) Lookup(addr netip.Addr) string {
 		}
 		result = name
 	}
+	if len(names) == 0 {
+		delete(o.records, addr.Unmap())
+	}
 	return result
 }
 
 func (o *Observer) Serve(ctx context.Context) error {
+	o.stateMu.Lock()
+	if o.closed {
+		o.stateMu.Unlock()
+		return net.ErrClosed
+	}
+	if o.serving || o.udp != nil || o.tcp != nil {
+		o.stateMu.Unlock()
+		return errors.New("DNS observer already serving")
+	}
+	o.serving = true
+	o.stateMu.Unlock()
+	defer func() {
+		o.stateMu.Lock()
+		o.serving = false
+		o.stateMu.Unlock()
+	}()
 	if o.Listen == "" {
 		o.Listen = "127.0.0.1:5353"
 	}
 	if o.Upstream == "" {
 		o.Upstream = "1.1.1.1:53"
 	}
+	listen, err := ValidateAddress(o.Listen)
+	if err != nil {
+		return err
+	}
+	o.Listen = listen
 	maxConcurrent := o.MaxConcurrent
 	if maxConcurrent == 0 {
 		maxConcurrent = 256
@@ -60,29 +103,58 @@ func (o *Observer) Serve(ctx context.Context) error {
 	if maxConcurrent < 0 {
 		return errors.New("DNS observer concurrency limit cannot be negative")
 	}
+	if o.MaxRecords < 0 {
+		return errors.New("DNS observer record limit cannot be negative")
+	}
 	o.sem = make(chan struct{}, maxConcurrent)
 	o.mu.Lock()
 	o.records = make(map[netip.Addr]map[string]time.Time)
+	o.recordCount = 0
 	o.mu.Unlock()
 	addr, err := net.ResolveUDPAddr("udp", o.Listen)
 	if err != nil {
 		return err
 	}
-	o.udp, err = net.ListenUDP("udp", addr)
+	udp, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		return err
 	}
-	o.tcp, err = net.Listen("tcp", o.Listen)
+	if _, port, splitErr := net.SplitHostPort(o.Listen); splitErr == nil && port == "0" {
+		o.Listen = udp.LocalAddr().String()
+	}
+	tcp, err := net.Listen("tcp", o.Listen)
 	if err != nil {
-		o.udp.Close()
+		_ = udp.Close()
 		return err
 	}
-	go func() { <-ctx.Done(); o.Close() }()
-	o.wg.Add(1)
+	o.stateMu.Lock()
+	if o.closed {
+		o.stateMu.Unlock()
+		_ = udp.Close()
+		_ = tcp.Close()
+		return net.ErrClosed
+	}
+	o.udp, o.tcp = udp, tcp
+	// Count the TCP accept loop as well as the UDP loop. This keeps the wait
+	// group nonzero while the accept loop can add connection handlers, avoiding
+	// Add/Wait races during concurrent shutdown.
+	o.wg.Add(2)
+	o.stateMu.Unlock()
+	defer o.Close()
+	serveDone := make(chan struct{})
+	defer close(serveDone)
 	go func() {
 		defer o.wg.Done()
 		o.serveUDP(ctx)
 	}()
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = o.Close()
+		case <-serveDone:
+		}
+	}()
+	defer o.wg.Done()
 	for {
 		conn, err := o.tcp.Accept()
 		if err != nil {
@@ -118,15 +190,25 @@ func (o *Observer) release() { <-o.sem }
 func (o *Observer) Close() error {
 	var err error
 	o.close.Do(func() {
-		if o.udp != nil {
-			err = o.udp.Close()
+		o.stateMu.Lock()
+		o.closed = true
+		udp, tcp := o.udp, o.tcp
+		o.stateMu.Unlock()
+		if udp != nil {
+			err = udp.Close()
 		}
-		if o.tcp != nil {
-			err = errors.Join(err, o.tcp.Close())
+		if tcp != nil {
+			err = errors.Join(err, tcp.Close())
 		}
 	})
 	o.wg.Wait()
 	return err
+}
+
+func (o *Observer) Ready() bool {
+	o.stateMu.Lock()
+	defer o.stateMu.Unlock()
+	return !o.closed && o.udp != nil && o.tcp != nil
 }
 
 func (o *Observer) serveUDP(ctx context.Context) {
@@ -153,10 +235,17 @@ func (o *Observer) serveUDP(ctx context.Context) {
 	}
 }
 func (o *Observer) exchangeUDP(ctx context.Context, query []byte) ([]byte, error) {
+	if len(query) > 65535 {
+		return nil, errors.New("DNS UDP query exceeds 65535 bytes")
+	}
 	if o.UDPExchange != nil {
 		exchangeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		return o.UDPExchange(exchangeCtx, query)
+		reply, err := o.UDPExchange(exchangeCtx, query)
+		if len(reply) > 65535 {
+			return nil, errors.New("DNS UDP reply exceeds 65535 bytes")
+		}
+		return reply, err
 	}
 	d := net.Dialer{}
 	conn, err := d.DialContext(ctx, "udp", o.Upstream)
@@ -190,19 +279,29 @@ func (o *Observer) serveTCP(ctx context.Context, client net.Conn) {
 		if err != nil {
 			return
 		}
+		if len(reply) > 65535 {
+			return
+		}
 		o.observe(query, reply)
-		binary.BigEndian.PutUint16(size[:], uint16(len(reply)))
-		if _, err = client.Write(append(size[:], reply...)); err != nil {
+		binary.BigEndian.PutUint16(size[:], uint16(len(reply))) // #nosec G115 -- length is checked immediately above
+		if err = writeAll(client, append(size[:], reply...)); err != nil {
 			return
 		}
 	}
 }
 
 func (o *Observer) exchangeTCP(ctx context.Context, query []byte) ([]byte, error) {
+	if len(query) > 65535 {
+		return nil, errors.New("DNS TCP query exceeds 65535 bytes")
+	}
 	if o.TCPExchange != nil {
 		exchangeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		return o.TCPExchange(exchangeCtx, query)
+		reply, err := o.TCPExchange(exchangeCtx, query)
+		if len(reply) > 65535 {
+			return nil, errors.New("DNS TCP reply exceeds 65535 bytes")
+		}
+		return reply, err
 	}
 	d := net.Dialer{}
 	upstream, err := d.DialContext(ctx, "tcp", o.Upstream)
@@ -212,9 +311,9 @@ func (o *Observer) exchangeTCP(ctx context.Context, query []byte) ([]byte, error
 	defer upstream.Close()
 	_ = upstream.SetDeadline(time.Now().Add(5 * time.Second))
 	frame := make([]byte, 2, len(query)+2)
-	binary.BigEndian.PutUint16(frame, uint16(len(query)))
+	binary.BigEndian.PutUint16(frame, uint16(len(query))) // #nosec G115 -- length is checked above
 	frame = append(frame, query...)
-	if _, err = upstream.Write(frame); err != nil {
+	if err = writeAll(upstream, frame); err != nil {
 		return nil, err
 	}
 	var size [2]byte
@@ -228,42 +327,257 @@ func (o *Observer) exchangeTCP(ctx context.Context, query []byte) ([]byte, error
 	return reply, nil
 }
 
+func writeAll(writer io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		written, err := writer.Write(payload)
+		if written < 0 || written > len(payload) {
+			return io.ErrShortWrite
+		}
+		payload = payload[written:]
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrNoProgress
+		}
+	}
+	return nil
+}
+
 func (o *Observer) observe(query, reply []byte) {
 	var q, r dnsmessage.Message
 	if q.Unpack(query) != nil || r.Unpack(reply) != nil || !matchingResponse(q, r) {
 		return
 	}
-	names := make(map[string]struct{})
-	for _, question := range q.Questions {
-		names[question.Name.String()] = struct{}{}
+	// Attribute an address only to a queried name that owns the A/AAAA answer,
+	// directly or through the response's CNAME chain. Merely appearing in the
+	// answer section is not sufficient: unrelated records must not pollute later
+	// flow attribution.
+	now := time.Now()
+	type cnameRecord struct {
+		target  string
+		expires time.Time
 	}
+	cname := make(map[string]cnameRecord)
 	for _, answer := range r.Answers {
+		body, ok := answer.Body.(*dnsmessage.CNAMEResource)
+		if !ok || answer.Header.Class != dnsmessage.ClassINET || answer.Header.Type != dnsmessage.TypeCNAME {
+			continue
+		}
+		owner := strings.ToLower(answer.Header.Name.String())
+		target := strings.ToLower(body.CNAME.String())
+		expires := now.Add(observedTTL(answer.Header.TTL))
+		if current, exists := cname[owner]; !exists {
+			cname[owner] = cnameRecord{target: target, expires: expires}
+		} else if current.target == target {
+			if expires.Before(current.expires) {
+				current.expires = expires
+				cname[owner] = current
+			}
+		} else {
+			// Conflicting aliases are not safe to attribute.
+			cname[owner] = cnameRecord{}
+		}
+	}
+	type originRecord struct {
+		name    string
+		typ     dnsmessage.Type
+		expires time.Time
+	}
+	origins := make(map[string][]originRecord)
+	seenQuestions := make(map[string]struct{})
+	for _, question := range q.Questions {
+		if question.Class != dnsmessage.ClassINET || (question.Type != dnsmessage.TypeA && question.Type != dnsmessage.TypeAAAA) {
+			continue
+		}
+		name := question.Name.String()
+		canonicalName := strings.ToLower(name)
+		if _, seen := seenQuestions[canonicalName]; seen || len(seenQuestions) >= maxObservedNamesPerMessage {
+			continue
+		}
+		seenQuestions[canonicalName] = struct{}{}
+		current := canonicalName
+		var chainExpires time.Time
+		visited := make(map[string]struct{})
+		validChain := false
+		for range len(r.Answers) + 1 {
+			if _, loop := visited[current]; loop {
+				break
+			}
+			visited[current] = struct{}{}
+			next, ok := cname[current]
+			if !ok {
+				validChain = true
+				break
+			}
+			if next.target == "" {
+				break
+			}
+			if chainExpires.IsZero() || next.expires.Before(chainExpires) {
+				chainExpires = next.expires
+			}
+			current = next.target
+		}
+		if !validChain {
+			continue
+		}
+		// Only the terminal owner may carry address records. A CNAME owner is
+		// not allowed to carry an A/AAAA record alongside the alias.
+		origins[current] = append(origins[current], originRecord{name: name, typ: question.Type, expires: chainExpires})
+	}
+	type observedRecord struct {
+		addr    netip.Addr
+		name    string
+		expires time.Time
+	}
+	records := make([]observedRecord, 0, min(len(r.Answers), maxAssociationsPerDNSMessage))
+	for _, answer := range r.Answers {
+		if answer.Header.Class != dnsmessage.ClassINET {
+			continue
+		}
 		var addr netip.Addr
+		var answerType dnsmessage.Type
 		switch body := answer.Body.(type) {
 		case *dnsmessage.AResource:
 			addr = netip.AddrFrom4(body.A)
+			answerType = dnsmessage.TypeA
 		case *dnsmessage.AAAAResource:
 			addr = netip.AddrFrom16(body.AAAA)
+			answerType = dnsmessage.TypeAAAA
 		default:
 			continue
 		}
-		ttl := time.Duration(answer.Header.TTL) * time.Second
-		if ttl == 0 {
-			ttl = time.Second
+		if answer.Header.Type != answerType {
+			continue
 		}
-		o.mu.Lock()
-		if o.records[addr] == nil {
-			o.records[addr] = make(map[string]time.Time)
+		originRecords := origins[strings.ToLower(answer.Header.Name.String())]
+		if len(originRecords) == 0 {
+			continue
 		}
+		addressExpires := now.Add(observedTTL(answer.Header.TTL))
+		for _, origin := range originRecords {
+			if origin.typ != answerType {
+				continue
+			}
+			if len(records) >= maxAssociationsPerDNSMessage {
+				break
+			}
+			expires := addressExpires
+			if !origin.expires.IsZero() && origin.expires.Before(expires) {
+				expires = origin.expires
+			}
+			records = append(records, observedRecord{addr: addr.Unmap(), name: origin.name, expires: expires})
+		}
+		if len(records) >= maxAssociationsPerDNSMessage {
+			break
+		}
+	}
+	if len(records) == 0 {
+		return
+	}
+	limit := o.MaxRecords
+	if limit == 0 {
+		limit = defaultMaxRecords
+	}
+	if limit < 1 {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.records == nil {
+		o.records = make(map[netip.Addr]map[string]time.Time)
+	}
+	type recordKey struct {
+		addr netip.Addr
+		name string
+	}
+	countNew := func() int {
+		seen := make(map[recordKey]struct{}, len(records))
+		count := 0
+		for _, record := range records {
+			key := recordKey{addr: record.addr, name: record.name}
+			if _, duplicate := seen[key]; duplicate {
+				continue
+			}
+			seen[key] = struct{}{}
+			if _, exists := o.records[record.addr][record.name]; !exists {
+				count++
+			}
+		}
+		return count
+	}
+	newRecords := countNew()
+	if o.recordCount+newRecords > limit {
+		o.pruneExpiredLocked(now)
+		newRecords = countNew()
+		if excess := o.recordCount + min(newRecords, limit) - limit; excess > 0 {
+			o.evictLocked(excess)
+		}
+	}
+	for _, record := range records {
+		names := o.records[record.addr]
+		if names != nil {
+			if _, exists := names[record.name]; exists {
+				names[record.name] = record.expires
+				continue
+			}
+		}
+		if o.recordCount >= limit {
+			continue
+		}
+		if names == nil {
+			names = make(map[string]time.Time)
+			o.records[record.addr] = names
+		}
+		names[record.name] = record.expires
+		o.recordCount++
+	}
+}
+
+func observedTTL(value uint32) time.Duration {
+	if value == 0 {
+		return time.Second
+	}
+	return time.Duration(value) * time.Second
+}
+
+func (o *Observer) pruneExpiredLocked(now time.Time) {
+	for addr, names := range o.records {
+		for name, expires := range names {
+			if !now.Before(expires) {
+				delete(names, name)
+				if o.recordCount > 0 {
+					o.recordCount--
+				}
+			}
+		}
+		if len(names) == 0 {
+			delete(o.records, addr)
+		}
+	}
+}
+
+func (o *Observer) evictLocked(count int) {
+	for addr, names := range o.records {
 		for name := range names {
-			o.records[addr][name] = time.Now().Add(ttl)
+			delete(names, name)
+			o.recordCount--
+			count--
+			if count == 0 {
+				break
+			}
 		}
-		o.mu.Unlock()
+		if len(names) == 0 {
+			delete(o.records, addr)
+		}
+		if count == 0 {
+			return
+		}
 	}
 }
 
 func matchingResponse(query, reply dnsmessage.Message) bool {
-	if query.Header.Response || !reply.Header.Response || query.Header.ID != reply.Header.ID || len(query.Questions) == 0 || len(query.Questions) != len(reply.Questions) {
+	if query.Header.Response || !reply.Header.Response || reply.Header.RCode != dnsmessage.RCodeSuccess || query.Header.ID != reply.Header.ID || len(query.Questions) == 0 || len(query.Questions) != len(reply.Questions) {
 		return false
 	}
 	for index := range query.Questions {
@@ -272,4 +586,21 @@ func matchingResponse(query, reply dnsmessage.Message) bool {
 		}
 	}
 	return true
+}
+
+// ValidateAddress accepts only an unauthenticated numeric loopback listener.
+// Port zero is retained for tests and callers that want an ephemeral port.
+func ValidateAddress(value string) (string, error) {
+	host, port, err := net.SplitHostPort(value)
+	if err != nil || port == "" {
+		return "", errors.New("DNS observer listen address must be loopback IP:port")
+	}
+	address, err := netip.ParseAddr(host)
+	if err != nil || !address.IsLoopback() {
+		return "", errors.New("DNS observer may listen only on a numeric loopback address")
+	}
+	if _, err = strconv.ParseUint(port, 10, 16); err != nil {
+		return "", errors.New("DNS observer listen port must be between 0 and 65535")
+	}
+	return value, nil
 }

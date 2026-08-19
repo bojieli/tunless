@@ -37,6 +37,22 @@ type Packet struct {
 	Dst     netip.AddrPort
 }
 
+func (p Packet) Validate() error {
+	if !p.Dst.IsValid() || p.Dst.Port() == 0 {
+		return errors.New("packet destination is invalid")
+	}
+	if p.Dst.Addr().Zone() != "" {
+		return errors.New("packet destination cannot contain an IPv6 zone")
+	}
+	// The UDP length field is 16 bits and includes its eight-byte header. The
+	// SOCKS encapsulation imposes a slightly smaller path-specific limit, which
+	// the emitter checks before allocating a frame.
+	if len(p.Payload) > 65527 {
+		return errors.New("packet payload exceeds the UDP protocol limit")
+	}
+	return nil
+}
+
 // PacketPort is the datagram equivalent of net.Conn. ReadPacket returns a
 // packet sent by the captured application; WritePacket sends one back.
 type PacketPort interface {
@@ -61,12 +77,23 @@ type Flow struct {
 	DatapathOwned bool
 }
 
+const maxRedirectRecords = 1 << 20
+
 func (f Flow) Validate() error {
 	if !f.OrigDst.IsValid() {
 		return errors.New("original destination is required")
 	}
 	if f.OrigDst.Port() == 0 {
 		return errors.New("original destination port is required")
+	}
+	if f.OrigDst.Addr().Zone() != "" {
+		return errors.New("original destination cannot contain an IPv6 zone")
+	}
+	if f.Process.PID < 0 {
+		return errors.New("process PID cannot be negative")
+	}
+	if len(f.RedirectRecords) > maxRedirectRecords {
+		return errors.New("redirect records exceed the one MiB limit")
 	}
 	switch f.Proto {
 	case TCP:

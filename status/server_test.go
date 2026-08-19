@@ -3,6 +3,8 @@ package status
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -12,7 +14,7 @@ import (
 )
 
 func TestRejectsNonLoopbackListener(t *testing.T) {
-	for _, address := range []string{"", ":6060", "0.0.0.0:6060", "localhost:6060", "192.0.2.1:6060"} {
+	for _, address := range []string{"", ":6060", "0.0.0.0:6060", "localhost:6060", "192.0.2.1:6060", "127.0.0.1:http", "127.0.0.1:65536"} {
 		if _, err := ValidateAddress(address); err == nil {
 			t.Fatalf("accepted status address %q", address)
 		}
@@ -49,10 +51,10 @@ func TestStatusEndpoints(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.Serve(ctx) }()
 	deadline := time.Now().Add(time.Second)
-	for s.Addr() == nil && time.Now().Before(deadline) {
+	for !s.Ready() && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if s.Addr() == nil {
+	if !s.Ready() {
 		t.Fatal("status server did not start")
 	}
 	response, err := http.Get("http://" + s.Addr().String() + "/v1/status")
@@ -73,5 +75,18 @@ func TestStatusEndpoints(t *testing.T) {
 	cancel()
 	if err = <-done; err != nil {
 		t.Fatal(err)
+	}
+	if s.Ready() {
+		t.Fatal("status server remained ready after shutdown")
+	}
+}
+
+func TestCloseBeforeServePreventsStart(t *testing.T) {
+	s := &Server{Address: "127.0.0.1:0"}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Serve(context.Background()); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Serve after Close = %v, want net.ErrClosed", err)
 	}
 }

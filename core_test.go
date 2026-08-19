@@ -2,6 +2,7 @@ package tunless
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -72,8 +73,8 @@ func TestCoreClosesBackendBeforeWaitingForEmitters(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, ErrBackendStopped) {
+			t.Fatalf("Core.Run error = %v, want ErrBackendStopped", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Core.Run waited for an emitter before closing its backend")
@@ -110,13 +111,51 @@ func TestCoreRejectsFlowsBeyondConcurrencyLimit(t *testing.T) {
 		t.Fatal("overloaded flow was not closed")
 	}
 	close(release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	if err := <-done; !errors.Is(err, ErrBackendStopped) {
+		t.Fatalf("Core.Run error = %v, want ErrBackendStopped", err)
 	}
 	_ = firstClient.Close()
 	_ = secondClient.Close()
 	snapshot := stats.Snapshot()
 	if snapshot.AcceptedFlows != 1 || snapshot.OverloadedFlows != 1 || snapshot.CompletedFlows != 1 {
 		t.Fatalf("unexpected stats: %+v", snapshot)
+	}
+}
+
+type nilFlowBackend struct{ closed chan struct{} }
+
+func (*nilFlowBackend) Start(context.Context) (<-chan Flow, error) { return nil, nil }
+func (b *nilFlowBackend) Close() error {
+	close(b.closed)
+	return nil
+}
+
+func TestCoreRejectsNilFlowStreamAndClosesBackend(t *testing.T) {
+	backend := &nilFlowBackend{closed: make(chan struct{})}
+	err := (&Core{Backend: backend, Emitter: blockingEmitter{}}).Run(context.Background())
+	if err == nil {
+		t.Fatal("Core.Run accepted a nil backend flow stream")
+	}
+	select {
+	case <-backend.closed:
+	default:
+		t.Fatal("Core.Run did not close a backend that returned a nil stream")
+	}
+}
+
+type closeErrorBackend struct{ err error }
+
+func (*closeErrorBackend) Start(context.Context) (<-chan Flow, error) {
+	flows := make(chan Flow)
+	close(flows)
+	return flows, nil
+}
+func (b *closeErrorBackend) Close() error { return b.err }
+
+func TestCoreReportsBackendStreamAndCleanupFailures(t *testing.T) {
+	closeErr := errors.New("cleanup failed")
+	err := (&Core{Backend: &closeErrorBackend{err: closeErr}, Emitter: blockingEmitter{}}).Run(context.Background())
+	if !errors.Is(err, ErrBackendStopped) || !errors.Is(err, closeErr) {
+		t.Fatalf("Core.Run error = %v, want stream and cleanup failures", err)
 	}
 }

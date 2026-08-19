@@ -7,11 +7,15 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/bojieli/tunless"
+	"golang.org/x/net/netutil"
 )
+
+const maxStatusConnections = 128
 
 type Server struct {
 	Address       string
@@ -27,6 +31,8 @@ type Server struct {
 	mu       sync.Mutex
 	listener net.Listener
 	http     *http.Server
+	closed   bool
+	serving  bool
 
 	captureMu sync.Mutex
 	captureAt time.Time
@@ -46,6 +52,22 @@ type response struct {
 }
 
 func (s *Server) Serve(ctx context.Context) error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return net.ErrClosed
+	}
+	if s.serving || s.listener != nil || s.http != nil {
+		s.mu.Unlock()
+		return errors.New("status API already serving")
+	}
+	s.serving = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.serving = false
+		s.mu.Unlock()
+	}()
 	address, err := ValidateAddress(s.Address)
 	if err != nil {
 		return err
@@ -65,18 +87,35 @@ func (s *Server) Serve(ctx context.Context) error {
 		MaxHeaderBytes:    8 << 10,
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = listener.Close()
+		return net.ErrClosed
+	}
 	s.listener = listener
 	s.http = server
 	s.mu.Unlock()
+	defer s.Close()
+	serveDone := make(chan struct{})
+	defer close(serveDone)
 	go func() {
-		<-ctx.Done()
-		_ = s.Close()
+		select {
+		case <-ctx.Done():
+			_ = s.Close()
+		case <-serveDone:
+		}
 	}()
-	err = server.Serve(listener)
+	err = server.Serve(netutil.LimitListener(listener, maxStatusConnections))
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
+}
+
+func (s *Server) Ready() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && s.listener != nil
 }
 
 func (s *Server) Addr() net.Addr {
@@ -90,6 +129,7 @@ func (s *Server) Addr() net.Addr {
 
 func (s *Server) Close() error {
 	s.mu.Lock()
+	s.closed = true
 	server := s.http
 	listener := s.listener
 	s.http = nil
@@ -168,6 +208,9 @@ func ValidateAddress(value string) (string, error) {
 	address, err := netip.ParseAddr(host)
 	if err != nil || !address.IsLoopback() {
 		return "", errors.New("status API may listen only on a numeric loopback address")
+	}
+	if _, err = strconv.ParseUint(port, 10, 16); err != nil {
+		return "", errors.New("status API listen port must be between 0 and 65535")
 	}
 	return value, nil
 }

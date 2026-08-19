@@ -27,3 +27,19 @@ func TestFilter(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterValidateRejectsMalformedPatternsAndPrefixes(t *testing.T) {
+	for _, filter := range []Filter{
+		{IncludeProcesses: []string{"["}},
+		{ExcludeProcesses: []string{"path\\"}},
+		{IncludeDestinations: []netip.Prefix{{}}},
+		{ExcludeDestinations: []netip.Prefix{{}}},
+	} {
+		if err := filter.Validate(); err == nil {
+			t.Fatalf("accepted invalid filter: %+v", filter)
+		}
+	}
+	if err := (Filter{IncludeProcesses: []string{"/usr/bin/*"}, IncludeDestinations: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}}).Validate(); err != nil {
+		t.Fatalf("rejected valid filter: %v", err)
+	}
+}

@@ -57,7 +57,7 @@ func run() error {
 		dnsDefault = "1.1.1.1:53"
 	}
 	flag.StringVar(&upstream, "upstream", os.Getenv("TUNLESS_UPSTREAM"), "SOCKS5 upstream, e.g. 127.0.0.1:7890 or socks5://user:pass@host:port")
-	flag.StringVar(&listen, "listen", "127.0.0.1:1080", "reference SOCKS5 listener address")
+	flag.StringVar(&listen, "listen", "127.0.0.1:1080", "numeric loopback address for redirect/reference listeners")
 	flag.StringVar(&backendName, "backend", "auto", "capture backend: auto, linux, or loopback")
 	flag.StringVar(&cgroupPath, "cgroup", os.Getenv("TUNLESS_CGROUP"), "cgroup v2 path captured by the Linux backend")
 	flag.StringVar(&networkNamespace, "network-namespace", "", "optional Linux network namespace path for namespace-local redirect listeners")
@@ -115,6 +115,13 @@ func run() error {
 			return errors.New("--dns-upstream must be a numeric IP:port (IPv6 addresses require brackets)")
 		}
 		dnsTarget = netip.AddrPortFrom(dnsTarget.Addr().Unmap(), dnsTarget.Port())
+	}
+	if dnsListen != "" {
+		var listenErr error
+		dnsListen, listenErr = dnsobserver.ValidateAddress(dnsListen)
+		if listenErr != nil {
+			return listenErr
+		}
 	}
 	if statusListen != "" {
 		var statusErr error
@@ -218,6 +225,16 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	serviceErrors := make(chan error, 1)
+	reportServiceError := func(name string, err error) {
+		wrapped := fmt.Errorf("%s stopped: %w", name, err)
+		logger.Error(name+" stopped", "error", err)
+		select {
+		case serviceErrors <- wrapped:
+		default:
+		}
+		stop()
+	}
 	if containerPID != 0 {
 		go watchContainerScope(ctx, stop, cgroupPath, networkNamespace)
 	}
@@ -226,11 +243,13 @@ func run() error {
 		client.Registry = server
 		go func() {
 			if err := server.Serve(ctx); err != nil && ctx.Err() == nil {
-				logger.Error("metadata API stopped", "error", err)
-				stop()
+				reportServiceError("metadata API", err)
 			}
 		}()
 		defer server.Close()
+		if err = waitForService(ctx, serviceErrors, server.Ready); err != nil {
+			return err
+		}
 		logger.Info("metadata API enabled", "socket", metadataSocket)
 	}
 	var resolver tunless.NameResolver
@@ -248,11 +267,13 @@ func run() error {
 		resolver = observer
 		go func() {
 			if err := observer.Serve(ctx); err != nil && ctx.Err() == nil {
-				logger.Error("DNS observer stopped", "error", err)
-				stop()
+				reportServiceError("DNS observer", err)
 			}
 		}()
 		defer observer.Close()
+		if err = waitForService(ctx, serviceErrors, observer.Ready); err != nil {
+			return err
+		}
 		logger.Info("DNS observer enabled", "listen", dnsListen, "upstream", dnsUpstream)
 	}
 	stats := &tunless.Stats{}
@@ -274,15 +295,17 @@ func run() error {
 		}
 		go func() {
 			if err := server.Serve(ctx); err != nil && ctx.Err() == nil {
-				logger.Error("status API stopped", "error", err)
-				stop()
+				reportServiceError("status API", err)
 			}
 		}()
 		defer server.Close()
+		if err = waitForService(ctx, serviceErrors, server.Ready); err != nil {
+			return err
+		}
 		logger.Info("status API enabled", "listen", statusListen)
 	}
 	logger.Info("starting tunless", "backend", backendName, "listen", listen, "upstream", client.Address, "dns_override", !disableDNSOverride, "dns_upstream", dnsTarget)
-	return (&tunless.Core{
+	coreErr := (&tunless.Core{
 		Backend:       backend,
 		Emitter:       client,
 		Filter:        coreFilter,
@@ -291,6 +314,43 @@ func run() error {
 		Stats:         stats,
 		MaxConcurrent: maxFlows,
 	}).Run(ctx)
+	select {
+	case serviceErr := <-serviceErrors:
+		return serviceErr
+	default:
+		return coreErr
+	}
+}
+
+func waitForService(ctx context.Context, serviceErrors <-chan error, ready func() bool) error {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-serviceErrors:
+			return err
+		default:
+		}
+		if ready() {
+			return nil
+		}
+		select {
+		case err := <-serviceErrors:
+			return err
+		case <-ctx.Done():
+			select {
+			case err := <-serviceErrors:
+				return err
+			default:
+				return ctx.Err()
+			}
+		case <-ticker.C:
+		case <-timer.C:
+			return errors.New("timed out waiting for auxiliary service startup")
+		}
+	}
 }
 
 func containerDNSPrefixes(pid int) []string {
@@ -360,7 +420,7 @@ func containerScope(pid int, containerID string) (string, string, error) {
 	if _, err := os.Stat(filepath.Join(proc, "ns/net")); err != nil {
 		return "", "", fmt.Errorf("container network namespace: %w", err)
 	}
-	data, err := os.ReadFile(filepath.Join(proc, "cgroup"))
+	data, err := os.ReadFile(filepath.Join(proc, "cgroup")) // #nosec G304 -- pid is a positive integer selected by the administrator
 	if err != nil {
 		return "", "", fmt.Errorf("read container cgroup: %w", err)
 	}

@@ -3,12 +3,14 @@ package metadata_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -19,14 +21,35 @@ import (
 )
 
 func TestSOCKSRegistryEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("metadata Unix sockets require POSIX filesystem permissions")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	path := filepath.Join(t.TempDir(), "metadata.sock")
+	directory, err := os.MkdirTemp("", "tm-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	path := filepath.Join(directory, "metadata.sock")
 	registry := &metadata.Server{Path: path}
-	go func() { _ = registry.Serve(ctx) }()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- registry.Serve(ctx) }()
 	for deadline := time.Now().Add(2 * time.Second); ; {
-		if _, err := os.Stat(path); err == nil {
+		if registry.Ready() {
+			info, statErr := os.Stat(path)
+			if statErr != nil {
+				t.Fatalf("ready metadata socket is unavailable: %v", statErr)
+			}
+			if got := info.Mode().Perm(); got != 0600 {
+				t.Fatalf("metadata socket mode = %04o, want 0600", got)
+			}
 			break
+		}
+		select {
+		case err = <-serveDone:
+			t.Fatalf("metadata socket failed to start: %v", err)
+		default:
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("metadata socket did not start")
@@ -96,6 +119,15 @@ func TestSOCKSRegistryEndToEnd(t *testing.T) {
 	case <-emitDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("SOCKS emitter did not stop")
+	}
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		if _, err = os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("metadata socket was not removed after shutdown: %v", err)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

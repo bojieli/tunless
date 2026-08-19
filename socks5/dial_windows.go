@@ -4,6 +4,7 @@ package socks5
 
 import (
 	"context"
+	"errors"
 	"net"
 	"syscall"
 	"unsafe"
@@ -41,7 +42,11 @@ func dialContext(ctx context.Context, dialer net.Dialer, network, address string
 				0,
 			)
 			if result != 0 {
-				ioctlErr = callErr
+				if errors.Is(callErr, syscall.Errno(0)) {
+					ioctlErr = errors.New("WFP redirect-record install failed without a Windows error code")
+				} else {
+					ioctlErr = callErr
+				}
 			}
 		}); err != nil {
 			return err

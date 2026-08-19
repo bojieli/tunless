@@ -43,19 +43,14 @@ func RelayContext(ctx context.Context, a, b net.Conn, idleTimeout time.Duration)
 		buffer := make([]byte, 32<<10)
 		for {
 			n, readErr := src.Read(buffer)
+			if n < 0 || n > len(buffer) {
+				results <- result{dst: dst, err: io.ErrShortBuffer}
+				return
+			}
 			if n > 0 {
-				written := 0
-				for written < n {
-					m, writeErr := dst.Write(buffer[written:n])
-					written += m
-					if writeErr != nil {
-						results <- result{dst: dst, err: writeErr}
-						return
-					}
-					if m == 0 {
-						results <- result{dst: dst, err: io.ErrNoProgress}
-						return
-					}
+				if writeErr := writeFull(dst, buffer[:n]); writeErr != nil {
+					results <- result{dst: dst, err: writeErr}
+					return
 				}
 				select {
 				case activity <- struct{}{}:
@@ -121,4 +116,21 @@ func RelayContext(ctx context.Context, a, b net.Conn, idleTimeout time.Duration)
 		all = append(all, ctx.Err())
 	}
 	return errors.Join(all...)
+}
+
+func writeFull(writer io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		written, err := writer.Write(payload)
+		if written < 0 || written > len(payload) {
+			return io.ErrShortWrite
+		}
+		payload = payload[written:]
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrNoProgress
+		}
+	}
+	return nil
 }

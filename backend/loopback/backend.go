@@ -20,11 +20,18 @@ import (
 	"time"
 
 	"github.com/bojieli/tunless"
+	"golang.org/x/net/netutil"
+)
+
+const (
+	defaultMaxConnections = 4096
+	maxHTTPHeaderBytes    = 32 << 10
 )
 
 type Backend struct {
 	Address          string
 	HandshakeTimeout time.Duration
+	MaxConnections   int
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -58,17 +65,29 @@ func (b *Backend) Diagnostics() tunless.BackendDiagnostics {
 func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.listener != nil {
+	if b.cancel != nil {
 		return nil, errors.New("loopback backend already started")
 	}
 	addr := b.Address
 	if addr == "" {
 		addr = "127.0.0.1:0"
 	}
+	if err := validateListenAddress(addr); err != nil {
+		return nil, err
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
+	maxConnections := b.MaxConnections
+	if maxConnections == 0 {
+		maxConnections = defaultMaxConnections
+	}
+	if maxConnections < 0 {
+		_ = ln.Close()
+		return nil, errors.New("loopback backend connection limit cannot be negative")
+	}
+	ln = netutil.LimitListener(ln, maxConnections)
 	ctx, b.cancel = context.WithCancel(ctx)
 	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
 	if !ok {
@@ -81,8 +100,31 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	return b.flows, nil
 }
 
+func validateListenAddress(value string) error {
+	host, port, err := net.SplitHostPort(value)
+	if err != nil || port == "" {
+		return errors.New("loopback backend listen address must be loopback IP:port")
+	}
+	address, err := netip.ParseAddr(host)
+	if err != nil || !address.IsLoopback() {
+		return errors.New("loopback backend may listen only on a numeric loopback address")
+	}
+	if _, err = strconv.ParseUint(port, 10, 16); err != nil {
+		return errors.New("loopback backend listen port must be between 0 and 65535")
+	}
+	return nil
+}
+
 func (b *Backend) Close() error {
+	err := b.closeResources()
+	b.acceptWG.Wait()
+	b.flowWG.Wait()
+	return err
+}
+
+func (b *Backend) closeResources() error {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.cancel != nil {
 		b.cancel()
 	}
@@ -91,9 +133,6 @@ func (b *Backend) Close() error {
 		err = b.listener.Close()
 		b.listener = nil
 	}
-	b.mu.Unlock()
-	b.acceptWG.Wait()
-	b.flowWG.Wait()
 	return err
 }
 
@@ -106,6 +145,7 @@ func (b *Backend) accept(ctx context.Context, ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			_ = b.closeResources()
 			return
 		}
 		b.flowWG.Add(1)
@@ -175,6 +215,10 @@ func (b *Backend) handle(ctx context.Context, conn net.Conn) {
 	process := currentProcess()
 	switch request[1] {
 	case 1:
+		if dst.Port() == 0 {
+			_, _ = conn.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
+			return
+		}
 		if err = conn.SetDeadline(time.Time{}); err != nil {
 			return
 		}
@@ -231,11 +275,16 @@ func acceptCredentials(reader io.Reader, conn net.Conn) bool {
 }
 
 func (b *Backend) handleHTTP(ctx context.Context, conn net.Conn, reader *bufio.Reader) bool {
-	request, err := http.ReadRequest(reader)
+	limited := &io.LimitedReader{R: reader, N: maxHTTPHeaderBytes + 1}
+	requestReader := bufio.NewReader(limited)
+	request, err := http.ReadRequest(requestReader)
 	if err != nil {
 		_, _ = io.WriteString(conn, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
 		return false
 	}
+	// ReadRequest may have prefetched body bytes. Drain that reader through its
+	// limit and then continue from the original connection reader.
+	reader = bufio.NewReader(io.MultiReader(requestReader, reader))
 	if request.Method != http.MethodConnect {
 		return b.handleHTTPForward(ctx, conn, reader, request)
 	}
@@ -284,8 +333,14 @@ func (b *Backend) handleHTTPForward(ctx context.Context, conn net.Conn, reader *
 	_, _ = fmt.Fprintf(&prefix, "%s %s HTTP/%d.%d\r\n", request.Method, path, request.ProtoMajor, request.ProtoMinor)
 	_, _ = fmt.Fprintf(&prefix, "Host: %s\r\n", request.Host)
 	header := request.Header.Clone()
-	header.Del("Proxy-Authorization")
-	header.Del("Proxy-Connection")
+	for _, connection := range header.Values("Connection") {
+		for token := range strings.SplitSeq(connection, ",") {
+			header.Del(strings.TrimSpace(token))
+		}
+	}
+	for _, name := range []string{"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Proxy-Connection", "TE", "Trailer", "Upgrade"} {
+		header.Del(name)
+	}
 	header.Set("Connection", "close")
 	if request.ContentLength >= 0 {
 		header.Set("Content-Length", fmt.Sprint(request.ContentLength))
@@ -399,8 +454,19 @@ func (p *packetPort) ReadPacket(ctx context.Context) (tunless.Packet, error) {
 	}
 }
 func (p *packetPort) WritePacket(ctx context.Context, v tunless.Packet) error {
-	b := []byte{0, 0, 0}
-	b = append(b, encodeAddress(v.Dst)...)
+	if err := v.Validate(); err != nil {
+		return err
+	}
+	address := encodeAddress(v.Dst)
+	network := "udp6"
+	if p.udp.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap().Is4() {
+		network = "udp4"
+	}
+	if 3+len(address)+len(v.Payload) > maxUDPDatagramSize(network) {
+		return errors.New("UDP response exceeds the SOCKS5 relay datagram limit")
+	}
+	b := make([]byte, 3, 3+len(address)+len(v.Payload))
+	b = append(b, address...)
 	b = append(b, v.Payload...)
 	_, err := p.udp.WriteToUDPAddrPort(b, p.peer)
 	return err
@@ -413,7 +479,11 @@ func (p *packetPort) Close() error {
 
 func currentProcess() tunless.ProcessInfo {
 	path, _ := os.Executable()
-	return tunless.ProcessInfo{PID: int32(os.Getpid()), Path: path}
+	pid := os.Getpid()
+	if pid < 0 || int64(pid) > int64(^uint32(0)>>1) {
+		return tunless.ProcessInfo{Path: path}
+	}
+	return tunless.ProcessInfo{PID: int32(pid), Path: path} // #nosec G115 -- range is checked above
 }
 
 func reply(a netip.AddrPort) []byte { return append([]byte{5, 0, 0}, encodeAddress(a)...) }
@@ -473,7 +543,11 @@ func readAddress(ctx context.Context, r io.Reader) (netip.AddrPort, string, erro
 	} else {
 		addr, _ = netip.AddrFromSlice(b[:n])
 	}
-	return netip.AddrPortFrom(addr, binary.BigEndian.Uint16(b[n:])), hostname, nil
+	port := binary.BigEndian.Uint16(b[n:])
+	if !addr.IsValid() {
+		return netip.AddrPort{}, hostname, errors.New("invalid destination address")
+	}
+	return netip.AddrPortFrom(addr, port), hostname, nil
 }
 
 func parseDatagram(ctx context.Context, b []byte) (netip.AddrPort, int, error) {
@@ -504,6 +578,9 @@ func parseDatagram(ctx context.Context, b []byte) (netip.AddrPort, int, error) {
 			return netip.AddrPort{}, 0, errors.New("UDP domain address resolved without results")
 		}
 		port := binary.BigEndian.Uint16(b[5+n:])
+		if port == 0 {
+			return netip.AddrPort{}, 0, errors.New("UDP domain destination has port zero")
+		}
 		return netip.AddrPortFrom(ips[0], port), 5 + n + 2, nil
 	default:
 		return netip.AddrPort{}, 0, errors.New("unsupported UDP address")
@@ -513,7 +590,17 @@ func parseDatagram(ctx context.Context, b []byte) (netip.AddrPort, int, error) {
 	}
 	a, _ := netip.AddrFromSlice(b[offset : offset+n])
 	port := binary.BigEndian.Uint16(b[offset+n:])
+	if !a.IsValid() || port == 0 {
+		return netip.AddrPort{}, 0, errors.New("invalid UDP destination address")
+	}
 	return netip.AddrPortFrom(a, port), offset + n + 2, nil
+}
+
+func maxUDPDatagramSize(network string) int {
+	if network == "udp4" {
+		return 65507
+	}
+	return 65527
 }
 
 func sameAddrPort(a, b netip.AddrPort) bool {

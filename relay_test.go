@@ -9,6 +9,20 @@ import (
 	"time"
 )
 
+type invalidCountWriter int
+
+func (w invalidCountWriter) Write(payload []byte) (int, error) {
+	return len(payload) + int(w), nil
+}
+
+func TestWriteFullRejectsInvalidWriterCounts(t *testing.T) {
+	for _, count := range []invalidCountWriter{-100, 1} {
+		if err := writeFull(count, []byte("payload")); !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("writeFull error = %v, want io.ErrShortWrite", err)
+		}
+	}
+}
+
 func TestRelayContextUnblocksOppositePumpAfterHardError(t *testing.T) {
 	aClient, aRelay := net.Pipe()
 	bRelay, bServer := net.Pipe()

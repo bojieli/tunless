@@ -3,10 +3,13 @@ package tunless
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"sync"
 )
+
+var ErrBackendStopped = errors.New("backend flow stream stopped unexpectedly")
 
 type Emitter interface {
 	Emit(context.Context, Flow) error
@@ -24,7 +27,7 @@ type Core struct {
 
 type NameResolver interface{ Lookup(netip.Addr) string }
 
-func (c *Core) Run(ctx context.Context) error {
+func (c *Core) Run(ctx context.Context) (runErr error) {
 	if c.Backend == nil || c.Emitter == nil {
 		return errors.New("backend and emitter are required")
 	}
@@ -34,6 +37,9 @@ func (c *Core) Run(ctx context.Context) error {
 	}
 	if maxConcurrent < 0 {
 		return errors.New("maximum concurrent flows cannot be negative")
+	}
+	if err := c.Filter.Validate(); err != nil {
+		return err
 	}
 	stats := c.Stats
 	if stats == nil {
@@ -54,25 +60,34 @@ func (c *Core) Run(ctx context.Context) error {
 		// Closing the backend first releases any flow-owned sockets on which an
 		// emitter may still be blocked. Waiting first deadlocks when a backend
 		// closes its flow channel because of an internal shutdown.
-		_ = c.Backend.Close()
+		closeErr := c.Backend.Close()
 		wg.Wait()
+		if closeErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("close backend: %w", closeErr))
+		}
 	}()
+	if flows == nil {
+		return errors.New("backend returned a nil flow stream")
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case flow, ok := <-flows:
 			if !ok {
-				return nil
-			}
-			if flow.Hostname == "" && c.Resolver != nil {
-				flow.Hostname = c.Resolver.Lookup(flow.OrigDst.Addr())
+				if ctx.Err() != nil {
+					return nil
+				}
+				return ErrBackendStopped
 			}
 			if err := flow.Validate(); err != nil {
 				stats.invalid.Add(1)
 				logger.Error("invalid flow", "error", err)
 				closeFlow(flow)
 				continue
+			}
+			if flow.Hostname == "" && c.Resolver != nil {
+				flow.Hostname = c.Resolver.Lookup(flow.OrigDst.Addr())
 			}
 			if !c.Filter.Capture(flow) {
 				stats.excluded.Add(1)
