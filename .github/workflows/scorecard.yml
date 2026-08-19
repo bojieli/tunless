@@ -12,7 +12,7 @@ jobs:
   analysis:
     name: Scorecard analysis
     if: github.event.repository.visibility == 'public'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       security-events: write
       id-token: write
