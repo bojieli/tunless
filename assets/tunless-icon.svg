@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DCEBFF"/>
+    </linearGradient>
+    <linearGradient id="flow" gradientUnits="userSpaceOnUse" x1="76" y1="512" x2="948" y2="512">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#14B8A6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <!-- Flow: a connection passes straight through, unbroken and unmodified. -->
+  <line x1="76" y1="512" x2="948" y2="512" stroke="url(#flow)" stroke-width="120" stroke-linecap="round"/>
+  <!-- Ring: the socket-layer capture point. Open at both sides: nothing tunnels through. -->
+  <g fill="none" stroke="#1E40AF" stroke-width="120" stroke-linecap="round">
+    <path d="M 775.1 607.8 A 280 280 0 0 1 248.9 607.8"/>
+    <path d="M 248.9 416.2 A 280 280 0 0 1 775.1 416.2"/>
+  </g>
+</svg>
