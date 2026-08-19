@@ -53,9 +53,13 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	if address == "" {
 		address = "127.0.0.1:15080"
 	}
-	_, portText, err := net.SplitHostPort(address)
+	host, portText, err := net.SplitHostPort(address)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("windows redirect listen address must be loopback IP:port")
+	}
+	listenAddr, err := netip.ParseAddr(host)
+	if err != nil || !listenAddr.IsLoopback() {
+		return nil, errors.New("windows redirect listeners may use only a numeric loopback address")
 	}
 	parsed, err := netip.ParseAddrPort(net.JoinHostPort("127.0.0.1", portText))
 	if err != nil {
@@ -97,6 +101,11 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 		b.wg.Add(1)
 		go b.accept(ctx, ln)
 	}
+	flows := b.flows
+	go func() {
+		b.wg.Wait()
+		close(flows)
+	}()
 	return b.flows, nil
 }
 
@@ -105,6 +114,7 @@ func (b *Backend) accept(ctx context.Context, ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			b.closeResources()
 			return
 		}
 		flow, err := redirectedFlow(conn)
@@ -142,8 +152,11 @@ func redirectedFlow(conn net.Conn) (tunless.Flow, error) {
 		return tunless.Flow{}, queryErr
 	}
 	size := len(context)
-	if size < 128 {
-		return tunless.Flow{}, errors.New("WFP redirect context is truncated")
+	if size != 128+8+520 {
+		return tunless.Flow{}, fmt.Errorf("WFP redirect context has size %d, expected 656", size)
+	}
+	if len(redirectRecords) == 0 {
+		return tunless.Flow{}, errors.New("WFP redirect records are empty")
 	}
 	family := binary.LittleEndian.Uint16(context[:2])
 	var addr netip.Addr
@@ -155,22 +168,29 @@ func redirectedFlow(conn net.Conn) (tunless.Flow, error) {
 	case syscall.AF_INET6:
 		addr, _ = netip.AddrFromSlice(context[8:24])
 		port = binary.BigEndian.Uint16(context[2:4])
+		if binary.LittleEndian.Uint32(context[24:28]) != 0 {
+			return tunless.Flow{}, errors.New("WFP redirect context has a scoped IPv6 destination")
+		}
 	default:
 		return tunless.Flow{}, fmt.Errorf("WFP address family %d", family)
 	}
-	process := tunless.ProcessInfo{}
-	if size >= 136 {
-		process.PID = int32(binary.LittleEndian.Uint64(context[128:136]))
-		words := make([]uint16, 0, 260)
-		for offset := 136; offset+1 < size && offset < 656; offset += 2 {
-			v := binary.LittleEndian.Uint16(context[offset:])
-			if v == 0 {
-				break
-			}
-			words = append(words, v)
-		}
-		process.SigningID = string(utf16.Decode(words))
+	if !addr.IsValid() || port == 0 {
+		return tunless.Flow{}, errors.New("WFP redirect context has an invalid destination")
 	}
+	pid := binary.LittleEndian.Uint64(context[128:136])
+	if pid == 0 || pid > uint64(^uint32(0)>>1) {
+		return tunless.Flow{}, errors.New("WFP redirect context has an invalid process ID")
+	}
+	process := tunless.ProcessInfo{PID: int32(pid)} // #nosec G115 -- range checked above
+	words := make([]uint16, 0, 260)
+	for offset := 136; offset < size; offset += 2 {
+		v := binary.LittleEndian.Uint16(context[offset:])
+		if v == 0 {
+			break
+		}
+		words = append(words, v)
+	}
+	process.SigningID = string(utf16.Decode(words))
 	return tunless.Flow{
 		Proto:           tunless.TCP,
 		OrigDst:         netip.AddrPortFrom(addr, port),
@@ -181,6 +201,9 @@ func redirectedFlow(conn net.Conn) (tunless.Flow, error) {
 }
 
 func queryWSAIoctl(fd uintptr, code uint32, initialSize int) ([]byte, error) {
+	if initialSize < 1 {
+		return nil, errors.New("WFP redirect query buffer must not be empty")
+	}
 	buffer := make([]byte, initialSize)
 	for attempts := 0; attempts < 2; attempts++ {
 		var returned uint32
@@ -196,11 +219,17 @@ func queryWSAIoctl(fd uintptr, code uint32, initialSize int) ([]byte, error) {
 			0,
 		)
 		if result == 0 {
+			if returned > uint32(len(buffer)) {
+				return nil, errors.New("WFP redirect query returned an invalid length")
+			}
 			return append([]byte(nil), buffer[:returned]...), nil
 		}
 		if returned > uint32(len(buffer)) && returned <= 1<<20 {
 			buffer = make([]byte, returned)
 			continue
+		}
+		if errors.Is(callErr, syscall.Errno(0)) {
+			return nil, errors.New("WFP redirect query failed without a Windows error code")
 		}
 		return nil, callErr
 	}
@@ -208,19 +237,25 @@ func queryWSAIoctl(fd uintptr, code uint32, initialSize int) ([]byte, error) {
 }
 
 func (b *Backend) Close() error {
+	b.closeResources()
+	b.wg.Wait()
+	return nil
+}
+
+func (b *Backend) closeResources() {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.cancel != nil {
 		b.cancel()
+	}
+	// Closing the exclusive device handle removes the dynamic WFP filters. Do
+	// that before closing listeners so no new flow is redirected to a dead port.
+	if b.device != 0 {
+		_ = win.CloseHandle(b.device)
+		b.device = 0
 	}
 	for _, ln := range b.listeners {
 		_ = ln.Close()
 	}
 	b.listeners = nil
-	if b.device != 0 {
-		_ = win.CloseHandle(b.device)
-		b.device = 0
-	}
-	b.mu.Unlock()
-	b.wg.Wait()
-	return nil
 }

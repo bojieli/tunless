@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Container.StartsWith('-')) { throw 'Container name or ID must not start with a hyphen.' }
 
 function Get-TunlessUpstream {
     $value = if ($env:TUNLESS_UPSTREAM) { $env:TUNLESS_UPSTREAM } else { '127.0.0.1:7890' }
@@ -21,9 +22,13 @@ function Get-TunlessUpstream {
     return $value
 }
 
-$running = & docker inspect --format '{{.State.Running}}' $Container
+$containerState = & docker inspect --format '{{.Id}} {{.State.Running}} {{.State.Pid}}' -- $Container
+$containerFields = @($containerState -split '\s+')
+if ($containerFields.Count -ne 3 -or $containerFields[0] -notmatch '^[0-9a-f]{12,64}$') {
+    throw "Docker returned invalid container identity data: $Container"
+}
+$containerID, $running, $pidInDesktopVM = $containerFields
 if ($running -ne 'true') { throw "Container is not running: $Container" }
-$containerID = & docker inspect --format '{{.Id}}' $Container
 $engineOS = & docker info --format '{{.OSType}}'
 $upstream = Get-TunlessUpstream
 $controllerDNSArguments = @()
@@ -48,13 +53,12 @@ if ($engineOS -eq 'windows') {
     }
     $binary = if ($env:TUNLESS_BINARY) { $env:TUNLESS_BINARY } else { 'tunless.exe' }
     Write-Host 'Windows containers share the host kernel; starting the global WFP backend for host and container TCP flows.'
-    & $binary @TunlessArguments --upstream $upstream --backend windows
+    & $binary @TunlessArguments @controllerDNSArguments --upstream $upstream --backend windows
     exit $LASTEXITCODE
 }
 
 if ($engineOS -ne 'linux') { throw "Unsupported Docker engine OS: $engineOS" }
 
-$pidInDesktopVM = & docker inspect --format '{{.State.Pid}}' $Container
 if ($pidInDesktopVM -notmatch '^[1-9][0-9]*$') { throw "Container has no usable Linux PID: $Container" }
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
@@ -76,6 +80,7 @@ if ($upstream -match '^(socks5h?://(?:[^/@]+@)?)(?:127\.0\.0\.1|localhost|\[::1\
 $bridgeProcess = $null
 $bridgeDirectory = $null
 if ($env:TUNLESS_DOCKER_BRIDGE -ne 'never' -and $upstream -match '^(socks5h?://([^/@]+@)?)?(127\.0\.0\.1|localhost|\[::1\]):') {
+  try {
     $bridgeBinary = if ($env:TUNLESS_DOCKER_BRIDGE_BINARY) {
         $env:TUNLESS_DOCKER_BRIDGE_BINARY
     } elseif ($env:TUNLESS_BINARY) {
@@ -121,22 +126,40 @@ if ($env:TUNLESS_DOCKER_BRIDGE -ne 'never' -and $upstream -match '^(socks5h?://(
 	}
     $desktopUpstream = "host.docker.internal:$bridgePort"
     Write-Host "Bridging Docker Desktop TCP/UDP to host upstream $upstream"
+  } catch {
+    if ($bridgeProcess -and -not $bridgeProcess.HasExited) { Stop-Process -Id $bridgeProcess.Id -Force }
+    if ($bridgeDirectory) { Remove-Item -LiteralPath $bridgeDirectory -Recurse -Force -ErrorAction SilentlyContinue }
+    throw
+  }
 }
 $controllerName = 'tunless-{0}-{1}' -f $containerID.Substring(0, 12), $PID
 
 # Image builds and host-bridge startup can outlive a fast container restart.
 # Refresh the PID immediately before attaching so a recycled PID is never used.
-$running = & docker inspect --format '{{.State.Running}}' $Container
-$pidInDesktopVM = & docker inspect --format '{{.State.Pid}}' $Container
-if ($running -ne 'true' -or $pidInDesktopVM -notmatch '^[1-9][0-9]*$') {
+$currentState = & docker inspect --format '{{.Id}} {{.State.Running}} {{.State.Pid}}' -- $Container
+$currentFields = @($currentState -split '\s+')
+if ($currentFields.Count -ne 3 -or $currentFields[0] -ne $containerID -or
+    $currentFields[1] -ne 'true' -or $currentFields[2] -notmatch '^[1-9][0-9]*$') {
     if ($bridgeProcess -and -not $bridgeProcess.HasExited) { Stop-Process -Id $bridgeProcess.Id -Force }
     if ($bridgeDirectory) { Remove-Item -LiteralPath $bridgeDirectory -Recurse -Force }
-    throw "Container stopped while preparing Tunless: $Container"
+    throw "Container stopped or was replaced while preparing Tunless: $Container"
 }
+$pidInDesktopVM = $currentFields[2]
+
+$controllerStateDirectory = Join-Path ([IO.Path]::GetTempPath()) ("tunless-controller-{0}" -f [guid]::NewGuid())
+try {
+    New-Item -ItemType Directory $controllerStateDirectory | Out-Null
+} catch {
+    if ($bridgeProcess -and -not $bridgeProcess.HasExited) { Stop-Process -Id $bridgeProcess.Id -Force }
+    if ($bridgeDirectory) { Remove-Item -LiteralPath $bridgeDirectory -Recurse -Force -ErrorAction SilentlyContinue }
+    throw
+}
+$controllerCIDFile = Join-Path $controllerStateDirectory 'cid'
 
 $dockerArguments = @(
     'run', '--rm',
     '--name', $controllerName,
+    '--cidfile', $controllerCIDFile,
     '--label', "com.bojieli.tunless.container=$containerID",
     '--privileged',
     '--pid', 'host',
@@ -156,7 +179,14 @@ try {
     & docker @dockerArguments
     exit $LASTEXITCODE
 } finally {
-    & docker stop --time 2 $controllerName 2>$null | Out-Null
+    if (Test-Path -LiteralPath $controllerCIDFile -PathType Leaf) {
+        $controllerID = (Get-Content -LiteralPath $controllerCIDFile -Raw).Trim()
+        if ($controllerID -match '^[0-9a-f]{12,64}$') {
+            & docker stop --time 2 $controllerID 2>$null | Out-Null
+        }
+        Remove-Item -LiteralPath $controllerCIDFile -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $controllerStateDirectory -Force -ErrorAction SilentlyContinue
     if ($bridgeProcess -and -not $bridgeProcess.HasExited) { Stop-Process -Id $bridgeProcess.Id -Force }
     if ($bridgeDirectory) { Remove-Item -LiteralPath $bridgeDirectory -Recurse -Force }
 }

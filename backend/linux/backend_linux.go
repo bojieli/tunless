@@ -41,7 +41,7 @@ type Backend struct {
 	collection *ebpf.Collection
 	flows      chan tunless.Flow
 	wg         sync.WaitGroup
-	sessions   map[string]*packetPort
+	sessions   map[udpSessionKey]*packetPort
 }
 
 func (b *Backend) Diagnostics() tunless.BackendDiagnostics {
@@ -103,6 +103,9 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	}
 	if b.CgroupPath == "" {
 		return nil, errors.New("linux backend requires a cgroup v2 path")
+	}
+	if err := b.Filter.Validate(); err != nil {
+		return nil, err
 	}
 	if err := rlimit.RemoveMemlock(); err != nil && !errors.Is(err, os.ErrPermission) {
 		return nil, fmt.Errorf("memlock: %w", err)
@@ -183,7 +186,7 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	b.links = links
 	b.collection = collection
 	b.flows = make(chan tunless.Flow)
-	b.sessions = make(map[string]*packetPort)
+	b.sessions = make(map[udpSessionKey]*packetPort)
 	for _, ln := range listeners {
 		b.wg.Add(1)
 		go b.accept(ctx, ln)
@@ -192,6 +195,11 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	go b.readPackets4(ctx, udp[0])
 	b.wg.Add(1)
 	go b.readPackets(ctx, udp[1])
+	flows := b.flows
+	go func() {
+		b.wg.Wait()
+		close(flows)
+	}()
 	go func() { <-ctx.Done(); b.closeResources() }()
 	return b.flows, nil
 }
@@ -225,47 +233,62 @@ func listenSockets(address, networkNamespace string) (uint16, []net.Listener, []
 	if networkNamespace == "" {
 		return listenSocketsCurrentNamespace(address)
 	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	current, err := os.Open("/proc/self/ns/net")
-	if err != nil {
-		return 0, nil, nil, fmt.Errorf("open current network namespace: %w", err)
+	type result struct {
+		port      uint16
+		listeners []net.Listener
+		udp       []*net.UDPConn
+		err       error
 	}
-	defer current.Close()
-	target, err := os.Open(networkNamespace)
-	if err != nil {
-		return 0, nil, nil, fmt.Errorf("open target network namespace: %w", err)
-	}
-	defer target.Close()
-	if err = unix.Setns(int(target.Fd()), unix.CLONE_NEWNET); err != nil {
-		return 0, nil, nil, fmt.Errorf("enter target network namespace: %w", err)
-	}
-	port, listeners, udp, listenErr := listenSocketsCurrentNamespace(address)
-	restoreErr := unix.Setns(int(current.Fd()), unix.CLONE_NEWNET)
-	if restoreErr != nil {
-		for _, listener := range listeners {
-			_ = listener.Close()
+	completed := make(chan result, 1)
+	go func() {
+		runtime.LockOSThread()
+		unlock := true
+		defer func() {
+			if unlock {
+				runtime.UnlockOSThread()
+			}
+		}()
+		current, err := os.Open("/proc/self/ns/net")
+		if err != nil {
+			completed <- result{err: fmt.Errorf("open current network namespace: %w", err)}
+			return
 		}
-		for _, socket := range udp {
-			_ = socket.Close()
+		defer current.Close()
+		target, err := os.Open(networkNamespace)
+		if err != nil {
+			completed <- result{err: fmt.Errorf("open target network namespace: %w", err)}
+			return
 		}
-		return 0, nil, nil, fmt.Errorf("restore host network namespace: %w", restoreErr)
-	}
-	return port, listeners, udp, listenErr
+		defer target.Close()
+		if err = unix.Setns(int(target.Fd()), unix.CLONE_NEWNET); err != nil {
+			completed <- result{err: fmt.Errorf("enter target network namespace: %w", err)}
+			return
+		}
+		port, listeners, udp, listenErr := listenSocketsCurrentNamespace(address)
+		if restoreErr := unix.Setns(int(current.Fd()), unix.CLONE_NEWNET); restoreErr != nil {
+			for _, listener := range listeners {
+				_ = listener.Close()
+			}
+			for _, socket := range udp {
+				_ = socket.Close()
+			}
+			// Returning from a goroutine that remains locked terminates this OS
+			// thread. Never release a thread whose network namespace could not be
+			// restored back into the Go scheduler's shared pool.
+			unlock = false
+			completed <- result{err: fmt.Errorf("restore host network namespace: %w", restoreErr)}
+			return
+		}
+		completed <- result{port: port, listeners: listeners, udp: udp, err: listenErr}
+	}()
+	created := <-completed
+	return created.port, created.listeners, created.udp, created.err
 }
 
 func listenSocketsCurrentNamespace(address string) (uint16, []net.Listener, []*net.UDPConn, error) {
-	port := uint16(0)
-	if address != "" {
-		_, p, err := net.SplitHostPort(address)
-		if err != nil {
-			return 0, nil, nil, err
-		}
-		parsed, err := netip.ParseAddrPort(net.JoinHostPort("127.0.0.1", p))
-		if err != nil {
-			return 0, nil, nil, err
-		}
-		port = parsed.Port()
+	port, err := parseRedirectListenPort(address)
+	if err != nil {
+		return 0, nil, nil, err
 	}
 	v4, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
 	if err != nil {
@@ -311,18 +334,12 @@ func tupleKey(ap netip.AddrPort, proto byte) []byte {
 }
 
 func decodeOriginal(value []byte) (netip.AddrPort, tunless.ProcessInfo, error) {
-	var dst netip.Addr
-	switch value[18] {
-	case 2:
-		dst, _ = netip.AddrFromSlice(value[:4])
-	case 10:
-		dst, _ = netip.AddrFromSlice(value[:16])
-	default:
-		return netip.AddrPort{}, tunless.ProcessInfo{}, fmt.Errorf("unknown address family %d", value[18])
+	dst, pid, cgroupID, err := decodeOriginalRecord(value)
+	if err != nil {
+		return netip.AddrPort{}, tunless.ProcessInfo{}, err
 	}
-	pid := int32(binary.LittleEndian.Uint32(value[20:24]))
 	path, _ := os.Readlink(filepath.Join("/proc", fmt.Sprint(pid), "exe"))
-	return netip.AddrPortFrom(dst, binary.BigEndian.Uint16(value[16:18])), tunless.ProcessInfo{PID: pid, Path: path, CgroupID: binary.LittleEndian.Uint64(value[24:32])}, nil
+	return dst, tunless.ProcessInfo{PID: pid, Path: path, CgroupID: cgroupID}, nil
 }
 
 func (b *Backend) lookup(ap netip.AddrPort, proto byte) (uint64, []byte, error) {
@@ -357,6 +374,7 @@ func (b *Backend) accept(ctx context.Context, ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			b.closeResources()
 			return
 		}
 		peer := conn.RemoteAddr().(*net.TCPAddr).AddrPort()
@@ -392,6 +410,7 @@ func (b *Backend) readPackets(ctx context.Context, conn *net.UDPConn) {
 	for {
 		n, peer, err := conn.ReadFromUDPAddrPort(buf)
 		if err != nil {
+			b.closeResources()
 			return
 		}
 		cookie, value, err := b.lookup(peer, 17)
@@ -402,7 +421,7 @@ func (b *Backend) readPackets(ctx context.Context, conn *net.UDPConn) {
 		if err != nil {
 			continue
 		}
-		sessionKey := conn.LocalAddr().Network() + "/" + peer.String()
+		sessionKey := makeUDPSessionKey("udp6", peer, cookie)
 		b.mu.Lock()
 		port := b.sessions[sessionKey]
 		fresh := port == nil
@@ -432,15 +451,19 @@ func (b *Backend) readPackets4(ctx context.Context, conn *net.UDPConn) {
 	defer b.wg.Done()
 	raw, err := conn.SyscallConn()
 	if err != nil {
+		b.closeResources()
 		return
 	}
-	if err = raw.Control(func(fd uintptr) { err = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1) }); err != nil {
+	var optionErr error
+	if err = raw.Control(func(fd uintptr) { optionErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1) }); err != nil || optionErr != nil {
+		b.closeResources()
 		return
 	}
 	buf, oob := make([]byte, 65535), make([]byte, 128)
 	for {
 		n, oobn, _, peer, err := conn.ReadMsgUDPAddrPort(buf, oob)
 		if err != nil {
+			b.closeResources()
 			return
 		}
 		var relayKey uint32
@@ -474,7 +497,7 @@ func (b *Backend) readPackets4(ctx context.Context, conn *net.UDPConn) {
 		if err != nil {
 			continue
 		}
-		sessionKey := "udp4/" + peer.String()
+		sessionKey := makeUDPSessionKey("udp4", peer, cookie)
 		b.mu.Lock()
 		port := b.sessions[sessionKey]
 		fresh := port == nil
@@ -507,7 +530,7 @@ type packetPort struct {
 	peer       netip.AddrPort
 	cookie     uint64
 	relay      netip.Addr
-	sessionKey string
+	sessionKey udpSessionKey
 	in         chan tunless.Packet
 	once       sync.Once
 }
@@ -523,6 +546,9 @@ func (p *packetPort) ReadPacket(ctx context.Context) (tunless.Packet, error) {
 	}
 }
 func (p *packetPort) WritePacket(_ context.Context, v tunless.Packet) error {
+	if err := v.Validate(); err != nil {
+		return err
+	}
 	p.backend.mu.Lock()
 	collection := p.backend.collection
 	if collection == nil {
@@ -573,11 +599,6 @@ func (p *packetPort) Close() error {
 }
 
 func (b *Backend) Close() error {
-	b.mu.Lock()
-	if b.cancel != nil {
-		b.cancel()
-	}
-	b.mu.Unlock()
 	b.closeResources()
 	b.wg.Wait()
 	return nil
@@ -585,6 +606,16 @@ func (b *Backend) Close() error {
 func (b *Backend) closeResources() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.cancel != nil {
+		b.cancel()
+	}
+	// Stop new kernel redirection before closing its userspace endpoints. This
+	// avoids a teardown window in which fresh connections are sent to dead
+	// listeners.
+	for _, lnk := range b.links {
+		_ = lnk.Close()
+	}
+	b.links = nil
 	for _, ln := range b.listeners {
 		_ = ln.Close()
 	}
@@ -593,10 +624,6 @@ func (b *Backend) closeResources() {
 		_ = c.Close()
 	}
 	b.udp = nil
-	for _, lnk := range b.links {
-		_ = lnk.Close()
-	}
-	b.links = nil
 	if b.collection != nil {
 		b.collection.Close()
 		b.collection = nil

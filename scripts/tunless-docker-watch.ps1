@@ -38,6 +38,10 @@ try {
     while ($true) {
         $running = @(& docker ps --quiet)
         foreach ($id in $running) {
+            if ($id -notmatch '^[0-9a-f]{12,64}$') {
+                Write-Warning 'Docker returned an invalid container ID; skipping.'
+                continue
+            }
             $controllerLabel = & docker inspect --format '{{index .Config.Labels "com.bojieli.tunless.container"}}' $id 2>$null
             if ($controllerLabel) { continue }
             if ($requiredLabel) {

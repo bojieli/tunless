@@ -17,6 +17,10 @@ EOF
 	echo "run this helper as root on the Linux CRI node" >&2
 	exit 2
 }
+[[ "$1" != -* ]] || {
+	echo "container ID must not start with '-'" >&2
+	exit 2
+}
 command -v crictl >/dev/null 2>&1 || {
 	echo "crictl is required" >&2
 	exit 2

@@ -718,6 +718,7 @@ actor DNSResponseMap {
 
     private var entries: [UInt16: Entry] = [:]
     private var nextID: UInt16 = 0
+    private var nextPrune = Date.distantPast
     private let maxEntries: Int
     private let ttlSeconds: TimeInterval
 
@@ -730,7 +731,14 @@ actor DNSResponseMap {
         guard maxEntries > 0, routed != original, query.count >= 12 else { return query }
         let now = Date()
         prune(now: now)
-        if entries.count >= maxEntries { evictOldest() }
+        if entries.count >= maxEntries {
+            prune(now: now, force: true)
+            if entries.count >= maxEntries {
+                // Evict a small oldest batch so a saturated map does not scan
+                // every outstanding DNS request for every new datagram.
+                evictOldest(count: max(1, maxEntries / 16))
+            }
+        }
         guard let translatedID = allocateID() else { return query }
         let originalID = Self.identifier(in: query)!
         entries[translatedID] = Entry(
@@ -745,8 +753,11 @@ actor DNSResponseMap {
         guard response.count >= 12, let translatedID = Self.identifier(in: response) else {
             return RestoredResponse(payload: response, source: source)
         }
-        prune(now: Date())
-        guard let entry = entries[translatedID], entry.routed == source else {
+        let now = Date()
+        guard let entry = entries[translatedID], now < entry.expires, entry.routed == source else {
+            if let entry = entries[translatedID], now >= entry.expires {
+                entries.removeValue(forKey: translatedID)
+            }
             return RestoredResponse(payload: response, source: source)
         }
         entries.removeValue(forKey: translatedID)
@@ -766,13 +777,16 @@ actor DNSResponseMap {
         return nil
     }
 
-    private func prune(now: Date) {
+    private func prune(now: Date, force: Bool = false) {
+        guard force || now >= nextPrune else { return }
         entries = entries.filter { now < $0.value.expires }
+        nextPrune = now.addingTimeInterval(1)
     }
 
-    private func evictOldest() {
-        guard let oldest = entries.min(by: { $0.value.expires < $1.value.expires }) else { return }
-        entries.removeValue(forKey: oldest.key)
+    private func evictOldest(count: Int) {
+        for entry in entries.sorted(by: { $0.value.expires < $1.value.expires }).prefix(count) {
+            entries.removeValue(forKey: entry.key)
+        }
     }
 
     private static func identifier(in message: Data) -> UInt16? {

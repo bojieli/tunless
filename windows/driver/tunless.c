@@ -7,6 +7,48 @@ static HANDLE RedirectHandle;
 static UINT32 Callout4;
 static UINT32 Callout6;
 static TUNLESS_CONFIG Config;
+static TUNLESS_CONFIG ActiveConfig;
+static FAST_MUTEX ControlLock;
+static KSPIN_LOCK ConfigLock;
+
+static BOOLEAN IsValidConfig(const TUNLESS_CONFIG *config)
+{
+    SIZE_T index;
+
+    if (config->ProcessId == 0 || config->ProcessId > MAXLONG || config->Port == 0) {
+        return FALSE;
+    }
+    for (index = 0; index < RTL_NUMBER_OF(config->Reserved); ++index) {
+        if (config->Reserved[index] != 0) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static TUNLESS_CONFIG ReadActiveConfig(void)
+{
+    TUNLESS_CONFIG config;
+    KIRQL oldIrql;
+
+    KeAcquireSpinLock(&ConfigLock, &oldIrql);
+    config = ActiveConfig;
+    KeReleaseSpinLock(&ConfigLock, oldIrql);
+    return config;
+}
+
+static void PublishActiveConfig(const TUNLESS_CONFIG *config)
+{
+    KIRQL oldIrql;
+
+    KeAcquireSpinLock(&ConfigLock, &oldIrql);
+    if (config == NULL) {
+        RtlZeroMemory(&ActiveConfig, sizeof(ActiveConfig));
+    } else {
+        ActiveConfig = *config;
+    }
+    KeReleaseSpinLock(&ConfigLock, oldIrql);
+}
 
 static void NTAPI Classify(
     const FWPS_INCOMING_VALUES0 *values,
@@ -25,17 +67,24 @@ static void NTAPI Classify(
     UINT16 appField;
     const FWP_BYTE_BLOB *appId;
     SIZE_T appBytes;
+    const FWPS_CONNECT_REQUEST0 *previous;
+    TUNLESS_CONFIG config;
 
     UNREFERENCED_PARAMETER(layerData);
     UNREFERENCED_PARAMETER(flowContext);
 
-    if (!(classifyOut->rights & FWPS_RIGHT_ACTION_WRITE)) {
+    if (values == NULL || metadata == NULL || classifyContext == NULL || filter == NULL || classifyOut == NULL ||
+        !(classifyOut->rights & FWPS_RIGHT_ACTION_WRITE)) {
         return;
     }
     classifyOut->actionType = FWP_ACTION_PERMIT;
-    if (Config.Port == 0 ||
+    config = ReadActiveConfig();
+    if (config.Port == 0 ||
+        (values->layerId != FWPS_LAYER_ALE_CONNECT_REDIRECT_V4 &&
+         values->layerId != FWPS_LAYER_ALE_CONNECT_REDIRECT_V6) ||
         !(metadata->currentMetadataValues & FWPS_METADATA_FIELD_PROCESS_ID) ||
-        metadata->processId == Config.ProcessId) {
+        metadata->processId == 0 || metadata->processId > MAXLONG ||
+        metadata->processId == config.ProcessId) {
         return;
     }
 
@@ -57,9 +106,21 @@ static void NTAPI Classify(
         0,
         (void **)&request,
         classifyOut);
-    if (!NT_SUCCESS(status)) {
+    if (!NT_SUCCESS(status) || request == NULL) {
         FwpsReleaseClassifyHandle0(classifyHandle);
         return;
+    }
+
+    /* Do not stack another local proxy on top of a different redirector. */
+    for (previous = request->previousVersion;
+         previous != NULL;
+         previous = previous->previousVersion) {
+        if (previous->modifierFilterId != filter->filterId &&
+            previous->localRedirectHandle != NULL) {
+            FwpsApplyModifiedLayerData0(classifyHandle, request, 0);
+            FwpsReleaseClassifyHandle0(classifyHandle);
+            return;
+        }
     }
 
     redirect = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(*redirect), 'LnuT');
@@ -79,23 +140,25 @@ static void NTAPI Classify(
         appId = values->incomingValue[appField].value.byteBlob;
         if (appId != NULL && appId->data != NULL) {
             appBytes = min((SIZE_T)appId->size, sizeof(redirect->AppId) - sizeof(WCHAR));
+            appBytes -= appBytes % sizeof(WCHAR);
             RtlCopyMemory(redirect->AppId, appId->data, appBytes);
         }
     }
 
+    RtlZeroMemory(&request->remoteAddressAndPort, sizeof(request->remoteAddressAndPort));
     if (values->layerId == FWPS_LAYER_ALE_CONNECT_REDIRECT_V4) {
         SOCKADDR_IN *target = (SOCKADDR_IN *)&request->remoteAddressAndPort;
         target->sin_family = AF_INET;
         target->sin_addr.S_un.S_addr = RtlUlongByteSwap(0x7f000001);
-        target->sin_port = RtlUshortByteSwap(Config.Port);
+        target->sin_port = RtlUshortByteSwap(config.Port);
     } else {
         SOCKADDR_IN6 *target = (SOCKADDR_IN6 *)&request->remoteAddressAndPort;
         target->sin6_family = AF_INET6;
         IN6_SET_ADDR_LOOPBACK(&target->sin6_addr);
-        target->sin6_port = RtlUshortByteSwap(Config.Port);
+        target->sin6_port = RtlUshortByteSwap(config.Port);
     }
     request->localRedirectHandle = RedirectHandle;
-    request->localRedirectTargetPID = Config.ProcessId;
+    request->localRedirectTargetPID = (DWORD)config.ProcessId;
     request->localRedirectContext = redirect;
     request->localRedirectContextSize = sizeof(*redirect);
 
@@ -118,16 +181,24 @@ static NTSTATUS NTAPI Notify(
     return STATUS_SUCCESS;
 }
 
-static void Stop(void)
+static void StopLocked(void)
 {
-    Config.Port = 0;
+    PublishActiveConfig(NULL);
     if (Engine != NULL) {
         FwpmEngineClose0(Engine);
         Engine = NULL;
     }
+    RtlZeroMemory(&Config, sizeof(Config));
 }
 
-static NTSTATUS AddObjects(void)
+static void Stop(void)
+{
+    ExAcquireFastMutex(&ControlLock);
+    StopLocked();
+    ExReleaseFastMutex(&ControlLock);
+}
+
+static NTSTATUS AddObjectsLocked(void)
 {
     FWPM_SESSION0 session = {0};
     FWPM_SUBLAYER0 sublayer = {0};
@@ -142,7 +213,7 @@ static NTSTATUS AddObjects(void)
     if (Engine != NULL) {
         return STATUS_DEVICE_BUSY;
     }
-    if (Config.Port == 0 || Config.ProcessId == 0) {
+    if (!IsValidConfig(&Config)) {
         return STATUS_INVALID_DEVICE_STATE;
     }
     session.flags = FWPM_SESSION_FLAG_DYNAMIC;
@@ -153,7 +224,7 @@ static NTSTATUS AddObjects(void)
     }
     status = FwpmTransactionBegin0(Engine, 0);
     if (!NT_SUCCESS(status)) {
-        Stop();
+        StopLocked();
         return status;
     }
 
@@ -194,15 +265,17 @@ static NTSTATUS AddObjects(void)
             goto abort;
         }
     }
+    /* Publish before commit so newly activated filters never see an empty config. */
+    PublishActiveConfig(&Config);
     status = FwpmTransactionCommit0(Engine);
     if (!NT_SUCCESS(status)) {
-        Stop();
+        StopLocked();
     }
     return status;
 
 abort:
     FwpmTransactionAbort0(Engine);
-    Stop();
+    StopLocked();
     return status;
 }
 
@@ -210,19 +283,30 @@ static NTSTATUS Dispatch(PDEVICE_OBJECT device, PIRP irp)
 {
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
     NTSTATUS status = STATUS_SUCCESS;
+    TUNLESS_CONFIG config;
 
     UNREFERENCED_PARAMETER(device);
     switch (stack->MajorFunction) {
     case IRP_MJ_DEVICE_CONTROL:
+        ExAcquireFastMutex(&ControlLock);
         if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_TUNLESS_CONFIG &&
-            stack->Parameters.DeviceIoControl.InputBufferLength >= sizeof(Config) &&
+            stack->Parameters.DeviceIoControl.InputBufferLength == sizeof(config) &&
+            stack->Parameters.DeviceIoControl.OutputBufferLength == 0 &&
             Engine == NULL) {
-            RtlCopyMemory(&Config, irp->AssociatedIrp.SystemBuffer, sizeof(Config));
-        } else if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_TUNLESS_START) {
-            status = AddObjects();
+            RtlCopyMemory(&config, irp->AssociatedIrp.SystemBuffer, sizeof(config));
+            if (IsValidConfig(&config)) {
+                Config = config;
+            } else {
+                status = STATUS_INVALID_PARAMETER;
+            }
+        } else if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_TUNLESS_START &&
+                   stack->Parameters.DeviceIoControl.InputBufferLength == 0 &&
+                   stack->Parameters.DeviceIoControl.OutputBufferLength == 0) {
+            status = AddObjectsLocked();
         } else {
             status = STATUS_INVALID_DEVICE_REQUEST;
         }
+        ExReleaseFastMutex(&ControlLock);
         break;
     case IRP_MJ_CLEANUP:
         Stop();
@@ -239,16 +323,22 @@ static NTSTATUS Dispatch(PDEVICE_OBJECT device, PIRP irp)
 static void Unload(PDRIVER_OBJECT driver)
 {
     UNICODE_STRING link = RTL_CONSTANT_STRING(L"\\DosDevices\\Tunless");
+    NTSTATUS status;
 
     Stop();
-    if (RedirectHandle != NULL) {
-        FwpsRedirectHandleDestroy0(RedirectHandle);
+    if (Callout6 != 0) {
+        status = FwpsCalloutUnregisterById0(Callout6);
+        NT_ASSERT(NT_SUCCESS(status));
+        Callout6 = 0;
     }
     if (Callout4 != 0) {
-        FwpsCalloutUnregisterById0(Callout4);
+        status = FwpsCalloutUnregisterById0(Callout4);
+        NT_ASSERT(NT_SUCCESS(status));
+        Callout4 = 0;
     }
-    if (Callout6 != 0) {
-        FwpsCalloutUnregisterById0(Callout6);
+    if (RedirectHandle != NULL) {
+        FwpsRedirectHandleDestroy0(RedirectHandle);
+        RedirectHandle = NULL;
     }
     IoDeleteSymbolicLink(&link);
     IoDeleteDevice(driver->DeviceObject);
@@ -263,6 +353,8 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING registryPath)
     NTSTATUS status;
 
     UNREFERENCED_PARAMETER(registryPath);
+    ExInitializeFastMutex(&ControlLock);
+    KeInitializeSpinLock(&ConfigLock);
     status = IoCreateDeviceSecure(
         driver,
         0,

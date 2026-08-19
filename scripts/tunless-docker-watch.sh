@@ -81,6 +81,10 @@ fi
 while :; do
 	while IFS= read -r id; do
 		[[ -n "$id" ]] || continue
+		[[ "$id" =~ ^[0-9a-f]{12,64}$ ]] || {
+			echo "container engine returned an invalid ID; skipping" >&2
+			continue
+		}
 		selected "$id" || continue
 		pid_file=$state_dir/$id.pid
 		if [[ -r "$pid_file" ]]; then

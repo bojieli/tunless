@@ -23,6 +23,10 @@ EOF
 [[ $# -ge 1 ]] || usage
 container=$1
 shift
+[[ "$container" != -* ]] || {
+	echo "container name or ID must not start with '-'" >&2
+	exit 2
+}
 tunless_args=("$@")
 engine=${TUNLESS_CONTAINER_ENGINE:-docker}
 command -v "$engine" >/dev/null 2>&1 || {
@@ -31,12 +35,21 @@ command -v "$engine" >/dev/null 2>&1 || {
 }
 
 container_id=$("$engine" inspect --format '{{.Id}}' "$container")
+[[ "$container_id" =~ ^[0-9a-f]{12,64}$ ]] || {
+	echo "container engine returned an invalid immutable ID: $container_id" >&2
+	exit 1
+}
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 refresh_pid() {
-	local running current
-	running=$("$engine" inspect --format '{{.State.Running}}' "$container")
-	current=$("$engine" inspect --format '{{.State.Pid}}' "$container")
+	local running current current_id
+	read -r current_id running current < <(
+		"$engine" inspect --format '{{.Id}} {{.State.Running}} {{.State.Pid}}' "$container"
+	)
+	[[ "$current_id" == "$container_id" ]] || {
+		echo "container was replaced while starting: $container" >&2
+		exit 1
+	}
 	[[ "$running" == true && "$current" =~ ^[1-9][0-9]*$ ]] || {
 		echo "container is not running: $container" >&2
 		exit 1
@@ -101,11 +114,16 @@ waiter_job=
 bridge_job=
 bridge_dir=
 controller_name=
+controller_state_dir=
+controller_cid_file=
 cleanup() {
 	trap - EXIT HUP INT TERM
 	if [[ -n "$waiter_job" ]]; then kill "$waiter_job" 2>/dev/null || true; fi
-	if [[ "$mode" == desktop && -n "$controller_name" ]]; then
-		"$engine" stop --time 2 "$controller_name" >/dev/null 2>&1 || true
+	if [[ "$mode" == desktop && -r "$controller_cid_file" ]]; then
+		controller_id=$(<"$controller_cid_file")
+		if [[ "$controller_id" =~ ^[0-9a-f]{12,64}$ ]]; then
+			"$engine" stop --time 2 "$controller_id" >/dev/null 2>&1 || true
+		fi
 	elif [[ -n "$relay_job" ]] && kill -0 "$relay_job" 2>/dev/null; then
 		if [[ $(id -u) -eq 0 ]]; then kill "$relay_job" 2>/dev/null || true; else sudo kill "$relay_job" 2>/dev/null || true; fi
 	fi
@@ -116,6 +134,10 @@ cleanup() {
 	if [[ -n "$bridge_dir" ]]; then
 		rm -f -- "$bridge_dir/tunless"
 		rmdir "$bridge_dir" 2>/dev/null || true
+	fi
+	if [[ -n "$controller_state_dir" ]]; then
+		rm -f -- "$controller_cid_file"
+		rmdir "$controller_state_dir" 2>/dev/null || true
 	fi
 }
 trap cleanup EXIT
@@ -209,8 +231,11 @@ else
 	fi
 	refresh_pid
 	controller_name=tunless-${container_id:0:12}-$$
+	controller_state_dir=$(mktemp -d "${TMPDIR:-/tmp}/tunless-controller.XXXXXX")
+	controller_cid_file=$controller_state_dir/cid
 	"$engine" run --rm \
 		--name "$controller_name" \
+		--cidfile "$controller_cid_file" \
 		--label com.bojieli.tunless.container="$container_id" \
 		--privileged \
 		--pid host \
@@ -238,7 +263,7 @@ if [[ "$mode" == native && ${engine##*/} == podman ]]; then
 	exit "$status"
 fi
 
-"$engine" wait "$container" >/dev/null &
+"$engine" wait "$container_id" >/dev/null &
 waiter_job=$!
 
 while kill -0 "$relay_job" 2>/dev/null && kill -0 "$waiter_job" 2>/dev/null; do
