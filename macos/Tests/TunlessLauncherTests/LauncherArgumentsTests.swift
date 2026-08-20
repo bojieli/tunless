@@ -89,3 +89,45 @@ final class LauncherArgumentsTests: XCTestCase {
             ])
     }
 }
+
+extension LauncherArgumentsTests {
+    func testSkipVerifyDefaultsToOff() throws {
+        let arguments = try LauncherArguments(
+            arguments: ["Tunless", "start"], environment: [:])
+        XCTAssertFalse(arguments.skipVerify)
+    }
+
+    func testSkipVerifyFlagIsParsed() throws {
+        let arguments = try LauncherArguments(
+            arguments: ["Tunless", "start", "--skip-verify"], environment: [:])
+        XCTAssertTrue(arguments.skipVerify)
+    }
+
+    func testSkipVerifyAcceptsAssignmentForm() throws {
+        let arguments = try LauncherArguments(
+            arguments: ["Tunless", "start", "--skip-verify=false"], environment: [:])
+        XCTAssertFalse(arguments.skipVerify)
+    }
+
+    func testSkipVerifyReadsEnvironment() throws {
+        let arguments = try LauncherArguments(
+            arguments: ["Tunless", "start"],
+            environment: ["TUNLESS_SKIP_VERIFY": "yes"])
+        XCTAssertTrue(arguments.skipVerify)
+    }
+
+    func testSkipVerifyRejectsNonBooleanEnvironment() {
+        XCTAssertThrowsError(try LauncherArguments(
+            arguments: ["Tunless", "start"],
+            environment: ["TUNLESS_SKIP_VERIFY": "maybe"]))
+    }
+
+    func testSkipVerifyIsAvailableToNonStartActions() throws {
+        // Parsed before the start/check early return, so it never crashes on
+        // commands that carry no configuration.
+        let arguments = try LauncherArguments(
+            arguments: ["Tunless", "status", "--skip-verify"], environment: [:])
+        XCTAssertTrue(arguments.skipVerify)
+        XCTAssertNil(arguments.configuration)
+    }
+}

@@ -51,6 +51,8 @@ struct LauncherArguments: Equatable {
     let action: LauncherAction
     let preset: LauncherPreset?
     let configuration: LauncherConfiguration?
+    /// Skips the post-start DNS verification and its automatic rollback.
+    let skipVerify: Bool
 
     init(
         arguments: [String] = CommandLine.arguments,
@@ -66,6 +68,7 @@ struct LauncherArguments: Equatable {
         var excludeProcesses: [String] = []
         var includeDestinations: [String] = []
         var excludeDestinations: [String] = []
+        var skipVerifyOption: Bool?
 
         func select(_ action: LauncherAction) throws {
             if actionWasSelected && selectedAction != action {
@@ -100,6 +103,7 @@ struct LauncherArguments: Equatable {
             case "--status": try select(.status)
             case "--telemetry": try select(.telemetry)
             case "--disable-dns-override": disableDNSOverride = true
+            case "--skip-verify": skipVerifyOption = true
             case "--preset":
                 presetName = try value(after: index, for: argument)
                 index += 1
@@ -128,6 +132,7 @@ struct LauncherArguments: Equatable {
                     case "--upstream": upstreamOption = pair.value
                     case "--dns-upstream": dnsOption = pair.value
                     case "--disable-dns-override": disableDNSOverride = try Self.boolean(pair.value, name: pair.name)
+                    case "--skip-verify": skipVerifyOption = try Self.boolean(pair.value, name: pair.name)
                     case "--include-process": includeProcesses.append(pair.value)
                     case "--exclude-process": excludeProcesses.append(pair.value)
                     case "--include-destination": includeDestinations.append(pair.value)
@@ -152,6 +157,11 @@ struct LauncherArguments: Equatable {
         } else {
             preset = nil
         }
+
+        if skipVerifyOption == nil, let raw = environment["TUNLESS_SKIP_VERIFY"] {
+            skipVerifyOption = try Self.boolean(raw, name: "TUNLESS_SKIP_VERIFY")
+        }
+        skipVerify = skipVerifyOption ?? false
 
         guard selectedAction == .start || selectedAction == .check else {
             configuration = nil
