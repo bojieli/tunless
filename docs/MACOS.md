@@ -70,6 +70,29 @@ same archive again with `--no-s3-acceleration`. Do not install until that
 complete upload reports `Accepted` and the staple, signature, and Gatekeeper
 checks all pass.
 
+`stapler` fetches the ticket from `api.apple-cloudkit.com`. If the upstream
+proxy answers DNS in fake-IP mode, that name resolves into the fake range
+(`198.18.0.0/15`) instead of its real address, and stapling fails with a
+CloudKit timeout and `Error 68` even though notarization was accepted. Tunless
+capture is not a workaround: its DNS override only applies to flows it
+captures, so the failure appears exactly when capture is stopped, which is the
+normal state while preparing an install. Exempt the host in the upstream's
+fake-IP filter so it always resolves to a real address. For Clash, that is a
+`fake-ip-filter` entry under `dns`:
+
+```yaml
+dns:
+  fake-ip-filter:
+  - api.apple-cloudkit.com
+  - +.apple-dns.net
+```
+
+In Clash Verge this belongs in the active profile's merge layer, or in
+**Settings > DNS** with DNS overwrite enabled; the two paths are exclusive, and
+editing the DNS settings file has no effect while that toggle is off. Confirm
+with `dig +short api.apple-cloudkit.com`, which must return a public address
+rather than a `198.18.` one.
+
 ## Running
 
 For a provisioned team, build Release normally, put `Tunless.app` in
