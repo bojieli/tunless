@@ -20,9 +20,6 @@ targets:
       configs:
         Release:
           ENABLE_HARDENED_RUNTIME: YES
-          CODE_SIGN_STYLE: Manual
-          CODE_SIGN_IDENTITY: Developer ID Application
-          PROVISIONING_PROFILE_SPECIFIER: "Mac Team Direct Provisioning Profile: com.bojieli.tunless.Tunless"
     info:
       path: App/Info.plist
       properties:
@@ -65,9 +62,6 @@ targets:
       configs:
         Release:
           ENABLE_HARDENED_RUNTIME: YES
-          CODE_SIGN_STYLE: Manual
-          CODE_SIGN_IDENTITY: Developer ID Application
-          PROVISIONING_PROFILE_SPECIFIER: "Mac Team Direct Provisioning Profile: com.bojieli.tunless.TunlessProxy"
     entitlements:
       path: Extension/TunlessProxy.entitlements
       properties:

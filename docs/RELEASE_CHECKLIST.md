@@ -55,7 +55,10 @@ qualified. Link each completed item to a run, commit, or measurement.
 ## Explicit external platform gates
 
 - [ ] macOS Developer ID entitlements, activation, notarization, staple, and
-      clean-machine runtime qualification complete
+      clean-machine runtime qualification complete. Signing and notarization
+      are automated in `.github/workflows/macos-release.yml`, which uploads the
+      verified bundle as an artifact without publishing a release; see
+      [macOS notes](MACOS.md).
 - [ ] Windows WDK driver build/signing, Driver Verifier, Windows host/container
       runtime, coexistence, and rollback qualification complete. Production
       driver signing is deferred by decision for this phase: the project holds

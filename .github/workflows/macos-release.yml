@@ -112,7 +112,7 @@ jobs:
           done
 
           install_profile() {
-            local b64="$1" label="$2" tmp uuid name
+            local b64="$1" label="$2" var="$3" tmp uuid name dest
             tmp="$(mktemp "$RUNNER_TEMP/profile.XXXXXX")"
             printf '%s' "$b64" | openssl base64 -d -A -out "$tmp"
             uuid="$(security cms -D -i "$tmp" | plutil -extract UUID raw -o - -)"
@@ -121,19 +121,24 @@ jobs:
                        "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
               cp "$tmp" "$dir/$uuid.provisionprofile"
             done
+            dest="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$uuid.provisionprofile"
             rm -f "$tmp"
+            echo "PROFILE_${var}_PATH=$dest" >> "$GITHUB_ENV"
             echo "Installed $label profile '$name' ($uuid)"
           }
 
-          install_profile "$PROFILE_APP" app
-          install_profile "$PROFILE_EXT" extension
+          install_profile "$PROFILE_APP" app APP
+          install_profile "$PROFILE_EXT" extension EXT
 
       - name: Generate Xcode project
         run: xcodegen generate --spec macos/project.yml
 
-      - name: Archive Release build
+      - name: Archive Release build (unsigned)
         run: |
           set -euo pipefail
+          # Signing is deferred to scripts/macos-sign.sh: xcodebuild's manual
+          # signing path rejects Xcode-managed profiles, and the team's only
+          # valid Direct profiles are Xcode-managed.
           xcodebuild archive \
             -project macos/Tunless.xcodeproj \
             -scheme Tunless \
@@ -142,25 +147,41 @@ jobs:
             -archivePath "$RUNNER_TEMP/Tunless.xcarchive" \
             ARCHS="x86_64 arm64" \
             ONLY_ACTIVE_ARCH=NO \
-            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
+            CODE_SIGNING_ALLOWED=NO
 
-      - name: Export Developer ID bundle
+      - name: Sign with Developer ID
         run: |
           set -euo pipefail
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/Tunless.xcarchive" \
-            -exportPath "$RUNNER_TEMP/export" \
-            -exportOptionsPlist macos/ExportOptions.plist
-          ls -la "$RUNNER_TEMP/export"
+          mkdir -p "$RUNNER_TEMP/export"
+          APP="$RUNNER_TEMP/export/Tunless.app"
+          rm -rf "$APP"
+          cp -R "$RUNNER_TEMP/Tunless.xcarchive/Products/Applications/Tunless.app" "$APP"
+
+          identity="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+          test -n "$identity" \
+            || { echo "no Developer ID Application identity in the keychain" >&2; exit 1; }
+
+          bash scripts/macos-sign.sh \
+            --app "$APP" \
+            --identity "$identity" \
+            --app-profile "$PROFILE_APP_PATH" \
+            --ext-profile "$PROFILE_EXT_PATH" \
+            --keychain "$KEYCHAIN_PATH"
 
       - name: Verify signature and entitlements
         run: |
           set -euo pipefail
           APP="$RUNNER_TEMP/export/Tunless.app"
-          SYSEX="$APP/Contents/Library/SystemExtensions/com.bojieli.tunless.TunlessProxy.systemextension"
-
           test -d "$APP" || { echo "Tunless.app missing from export" >&2; exit 1; }
-          test -d "$SYSEX" || { echo "TunlessProxy.systemextension missing from app" >&2; exit 1; }
+
+          # PRODUCT_NAME carries the full bundle id, so match by suffix instead
+          # of hardcoding the .systemextension file name.
+          SYSEX="$(find "$APP/Contents/Library/SystemExtensions" \
+            -maxdepth 1 -name '*.systemextension' -print -quit 2>/dev/null)"
+          test -n "$SYSEX" && test -d "$SYSEX" \
+            || { echo "no .systemextension embedded in Tunless.app" >&2; exit 1; }
+          echo "system extension: $SYSEX"
 
           echo "--- app signature ---"
           codesign --verify --deep --strict --verbose=2 "$APP"
@@ -214,12 +235,12 @@ jobs:
           output="$(xcrun notarytool submit "$ZIP" \
             --key "$KEY_PATH" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID" \
             --wait --timeout 30m 2>&1)"
-          status=$?
+          submit_status=$?
           set -e
           echo "$output"
 
           submission_id="$(printf '%s\n' "$output" | awk '/^ *id: /{print $2; exit}')"
-          if [ $status -ne 0 ] || ! printf '%s\n' "$output" | grep -q 'status: Accepted'; then
+          if [ $submit_status -ne 0 ] || ! printf '%s\n' "$output" | grep -q 'status: Accepted'; then
             echo "Notarization did not succeed; fetching the notary log." >&2
             if [ -n "$submission_id" ]; then
               xcrun notarytool log "$submission_id" \
@@ -228,7 +249,19 @@ jobs:
             exit 1
           fi
 
-          xcrun stapler staple "$APP"
+          # Ticket propagation to the CloudKit endpoint can lag briefly after
+          # acceptance, so retry the staple before giving up.
+          for attempt in 1 2 3 4 5; do
+            if xcrun stapler staple "$APP"; then
+              break
+            fi
+            if [ "$attempt" = 5 ]; then
+              echo "stapling failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "staple attempt $attempt failed; retrying in 30s"
+            sleep 30
+          done
           xcrun stapler validate "$APP"
 
       - name: Gatekeeper assessment

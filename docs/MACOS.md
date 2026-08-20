@@ -34,7 +34,9 @@ configuration to an active provider.
 
 ## Build
 
-Build without signing for code/test validation:
+Signed release builds are produced by CI; see
+[Signing and notarization](#signing-and-notarization). Build without signing
+for code/test validation:
 
 ```console
 cd macos
@@ -48,10 +50,77 @@ xcodebuild -project macos/Tunless.xcodeproj -scheme Tunless \
 
 ## Signing and notarization
 
-After producing a correctly signed Release bundle, notarize and verify the
-exact bundle that will be installed. `store-credentials` prompts for the
-app-specific password and stores it in the login Keychain; never put that
-password in the command line or repository:
+Release signing and notarization run on GitHub Actions
+(`.github/workflows/macos-release.yml`), triggered by a `v*` tag push or
+manually via `workflow_dispatch`. The job builds a universal Release archive,
+signs it, notarizes it, staples the ticket, and uploads the verified bundle as
+a build artifact. It never publishes a release.
+
+The workflow needs these repository secrets:
+
+| Secret | Contents |
+| --- | --- |
+| `APPLE_DEVELOPER_ID_P12` | base64 PKCS#12 with the Developer ID Application certificate and key |
+| `APPLE_DEVELOPER_ID_P12_PASSWORD` | password for that PKCS#12 |
+| `APPLE_PROVISIONING_PROFILE_APP` | base64 `.provisionprofile` for `com.bojieli.tunless.Tunless` |
+| `APPLE_PROVISIONING_PROFILE_EXT` | base64 `.provisionprofile` for `com.bojieli.tunless.TunlessProxy` |
+| `APPLE_API_KEY_P8` | App Store Connect API private key, PEM text |
+| `APPLE_API_KEY_ID` | key id for that private key |
+| `APPLE_API_ISSUER_ID` | issuer id for that private key |
+| `APPLE_TEAM_ID` | Apple Developer team identifier |
+
+The certificate is imported into an ephemeral keychain created under
+`RUNNER_TEMP` with a random password, and the keychain, decoded key material,
+and installed profiles are deleted in an `always()` cleanup step.
+
+Signing is done by `scripts/macos-sign.sh` rather than
+`xcodebuild -exportArchive`, so the archive step runs with
+`CODE_SIGNING_ALLOWED=NO`. The reason is that `xcodebuild` under
+`CODE_SIGN_STYLE=Manual` refuses a profile marked `IsXcodeManaged`, and the
+team's only valid Developer ID Direct profiles carry that flag; automatic
+signing is not an option because it needs an interactive Apple ID session.
+`codesign` applies no such restriction. The script embeds each profile as
+`Contents/embedded.provisionprofile`, merges the
+`com.apple.application-identifier` and `com.apple.developer.team-identifier`
+values read from the profile into a copy of the project's entitlements, and
+signs the system extension before the app so the outer seal covers the inner
+one. It refuses to sign when a profile does not authorize the bundle
+identifier it was passed for.
+
+Entitlements are merged with `PlistBuddy`, which treats `:` as its keypath
+separator. `plutil -extract` and `plutil -insert` cannot be used here: they
+treat `.` as a separator, so a dotted entitlement key such as
+`com.apple.developer.system-extension.install` is read as a nested path.
+
+The workflow then asserts a Developer ID authority, the hardened runtime flag,
+and the required entitlements on both bundles; submits the zipped app to the
+notary service with `notarytool submit --wait`, dumping the notary log on
+failure; staples with a bounded retry because ticket propagation can lag
+acceptance; and finishes with `stapler validate`, `codesign --verify --deep
+--strict`, and `spctl --assess`.
+
+To sign a local build the same way, archive unsigned and invoke the script
+directly:
+
+```console
+xcodegen generate --spec macos/project.yml
+xcodebuild archive -project macos/Tunless.xcodeproj -scheme Tunless \
+  -configuration Release -destination 'generic/platform=macOS' \
+  -archivePath /tmp/Tunless.xcarchive \
+  ARCHS="x86_64 arm64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO
+cp -R /tmp/Tunless.xcarchive/Products/Applications/Tunless.app /tmp/Tunless.app
+scripts/macos-sign.sh --app /tmp/Tunless.app \
+  --identity 'Developer ID Application: NAME (TEAM)' \
+  --app-profile APP.provisionprofile \
+  --ext-profile EXT.provisionprofile
+```
+
+### Notarizing by hand
+
+Prefer the workflow. When notarizing manually, verify the exact bundle that
+will be installed. `store-credentials` prompts for the app-specific password
+and stores it in the login Keychain; never put that password in the command
+line or repository:
 
 ```console
 xcrun notarytool store-credentials tunless-notary \
