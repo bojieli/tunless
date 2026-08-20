@@ -20,12 +20,15 @@ targets:
       configs:
         Release:
           ENABLE_HARDENED_RUNTIME: YES
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Developer ID Application
+          PROVISIONING_PROFILE_SPECIFIER: "Mac Team Direct Provisioning Profile: com.bojieli.tunless.Tunless"
     info:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: tunless
         CFBundleShortVersionString: 1.0.8
-        CFBundleVersion: "9"
+        CFBundleVersion: "10"
         LSMinimumSystemVersion: "15.0"
         LSUIElement: true
     entitlements:
@@ -48,7 +51,7 @@ targets:
         CFBundleDisplayName: tunless transparent proxy
         CFBundlePackageType: SYSX
         CFBundleShortVersionString: 1.0.8
-        CFBundleVersion: "9"
+        CFBundleVersion: "10"
         NetworkExtension:
           NEProviderClasses:
             com.apple.networkextension.app-proxy: $(PRODUCT_MODULE_NAME).TransparentProxyProvider
@@ -62,6 +65,9 @@ targets:
       configs:
         Release:
           ENABLE_HARDENED_RUNTIME: YES
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Developer ID Application
+          PROVISIONING_PROFILE_SPECIFIER: "Mac Team Direct Provisioning Profile: com.bojieli.tunless.TunlessProxy"
     entitlements:
       path: Extension/TunlessProxy.entitlements
       properties:
