@@ -187,6 +187,9 @@ connections are not handed back to Clash through Tunless:
   --exclude-destination 10.0.0.0/8 \
   --exclude-destination 172.16.0.0/12 \
   --exclude-destination 192.168.0.0/16 \
+  --exclude-destination 127.0.0.0/8 \
+  --exclude-destination ::1/128 \
+  --exclude-destination 169.254.0.0/16 \
   --exclude-destination fc00::/7 \
   --exclude-destination fe80::/10
 ```
@@ -204,6 +207,9 @@ enabling capture. The equivalent fully manual command is:
   --exclude-destination 10.0.0.0/8 \
   --exclude-destination 172.16.0.0/12 \
   --exclude-destination 192.168.0.0/16 \
+  --exclude-destination 127.0.0.0/8 \
+  --exclude-destination ::1/128 \
+  --exclude-destination 169.254.0.0/16 \
   --exclude-destination fc00::/7 \
   --exclude-destination fe80::/10
 ```
@@ -217,6 +223,85 @@ range. Add the local, link-local, multicast, or other destination prefixes that
 must remain directly reachable on the host's network. Matching
 `--include-process` and `--include-destination` flags narrow capture to an
 explicit allowlist when exclusions are not the right shape.
+
+### Deploying without losing the network
+
+Enabling capture moves every matching flow onto the SOCKS5 upstream at once,
+and the DNS override redirects every captured port-53 flow to the configured
+resolver through that same upstream. If the upstream cannot carry DNS, name
+resolution stops host-wide the moment capture starts, and the host cannot
+resolve the addresses needed to diagnose it. Two guards make that outcome
+recoverable, and both are on by default.
+
+**Before capture.** `check` and `start` both prove the upstream can actually
+relay DNS, not merely that it speaks SOCKS5. A correct greeting says nothing
+about whether the upstream will relay a query to the resolver, so the probe
+opens SOCKS5 CONNECT to the configured resolver, sends a real query, and
+requires a well-formed response. `start` refuses to enable capture when that
+fails. Any response code counts, including `NXDOMAIN` and `SERVFAIL`, because
+the probe is testing reachability rather than whether a name exists.
+
+UDP is probed separately through UDP ASSOCIATE and reported without blocking
+the start, because upstreams commonly relay DNS over TCP while refusing UDP.
+That combination is usable but degraded: captured UDP queries fail and
+applications have to retry over TCP. `check` reports it in the `dns` object:
+
+```console
+/Applications/Tunless.app/Contents/MacOS/Tunless \
+  check --preset clash-verge --upstream 127.0.0.1:7897
+```
+
+```json
+{
+  "ok": true,
+  "detail": "SOCKS5 negotiation passed; DNS relays over TCP and UDP",
+  "dns": { "tcpRelayWorks": true, "udpRelayWorks": true }
+}
+```
+
+**After capture.** Preflight tests the upstream directly, which does not prove
+the assembled datapath resolves: the provider also has to be in the path with
+its rules loaded. So `start` resolves a name through the live datapath after
+capture is enabled, and if that fails it disables capture automatically and
+exits non-zero, leaving the host on its previous working path. A rolled-back
+start reports what happened rather than claiming success:
+
+```console
+Tunless: capture started but DNS did not resolve through it; rolling capture
+back so the host keeps working.
+Tunless: capture is off and the previous network path is restored. Run check to
+test the upstream before starting again.
+```
+
+Use `--skip-verify` (or `TUNLESS_SKIP_VERIFY=true`) to suppress the post-start
+check and its rollback. Prefer leaving it on: it is what converts a broken
+deployment into a failed command instead of an unreachable host.
+
+If the upstream genuinely cannot relay DNS and capture is still wanted, start
+with `--disable-dns-override` so each application keeps its own resolver and
+capture no longer touches port 53.
+
+**When the upstream runs a TUN device.** Clash Verge and similar upstreams can
+run their own TUN interface with `auto-route` and `dns-hijack`, which puts a
+second transparent capture layer beneath tunless. Turning both on at once is
+the configuration most likely to stall, because both layers claim port 53: the
+upstream hijacks it while tunless redirects it to the configured resolver.
+
+Fake-IP answers make that failure quiet rather than loud. A fake address from
+the upstream's range is meaningful only to the resolver that minted it, so a
+cached one that outlives its mapping still gets a successful `CONNECT` reply
+and then transfers nothing:
+
+```console
+by domain     cp.cloudflare.com:80   120 bytes in 0.23s
+by fake IP    198.18.57.30:80          0 bytes in 0.21s
+```
+
+Nothing reports an error; connections simply return no data, which reads as a
+stalled network rather than a DNS problem. Keep the upstream's fake-IP range
+out of capture, exclude the loopback and link-local ranges as shown above,
+change one layer at a time, and run `check` between changes rather than after
+both.
 
 ### Telemetry and flow lifecycle
 
@@ -270,6 +355,10 @@ disable capture immediately with:
 ```console
 /Applications/Tunless.app/Contents/MacOS/Tunless stop
 ```
+
+`stop` needs no name resolution: it talks only to the local Network Extension
+preferences, so it still works when DNS is down. Do not try to fix resolution
+first; disable capture, then diagnose with the host back on its previous path.
 
 `stop` stops all running Tunless proxy sessions and persists them as disabled.
 For a stronger reset, `cleanup` also removes every transparent-proxy
