@@ -346,6 +346,23 @@ These dated logs record what was actually run and observed on real hardware.
 They are kept verbatim in substance; they describe specific builds, not
 standing guarantees.
 
+**CI signing and notarization, 2026-08-20.** The
+`macOS signed release` workflow ran on `macos-15` against commit `9e7ac70`
+(run 32327477603). It archived a universal Release bundle unsigned, signed the
+system extension and app with `scripts/macos-sign.sh` using the direct
+Developer ID profiles, and asserted the Developer ID authority, hardened
+runtime, and required entitlements. Notary submission
+`9791c240-a607-40b5-806d-e549d68f0e59` returned `Accepted`, the ticket
+stapled, and `spctl` reported `accepted / source=Notarized Developer ID`. The
+uploaded artifact `Tunless-1.0.8-10.zip`
+(`19c9aaac2cc8dc4b614bef3e89e63a8d3e4ed844576b86b5d5194a55198bd2eb`) was
+downloaded and re-verified off the runner: the checksum matched, `stapler
+validate` accepted the embedded ticket, Gatekeeper accepted it as a notarized
+Developer ID bundle, both Mach-O binaries were `x86_64 arm64`, and the app and
+extension entitlements were identical to installed build 10. This exercised
+signing and notarization only; clean-machine runtime qualification is still
+tracked in the release checklist.
+
 **Build 9 (`1.0.8`), 2026-08-18.** Its 25-test Swift suite, Go suite, and
 unsigned containing-app/system-extension Debug build passed. The universal
 Release app and nested extension were signed with direct Developer ID profiles,
