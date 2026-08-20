@@ -79,7 +79,7 @@ existing proxy, where nodes, subscriptions, and rules stay unchanged.
 | --- | --- | --- |
 | Linux | eBPF cgroup connect/sendmsg/recvmsg and sockops | Host and Docker namespace TCP plus connected UDP4/UDP6 and single-destination unconnected UDP4/UDP6; trusted DNS override is implemented in the shared SOCKS emitter |
 | macOS | `NETransparentProxyProvider` system extension | Recorded notarized development builds pass live trusted-DNS redirection, SOCKS TCP/UDP, HTTP/1.x, HTTP/2, TLS, and concurrency tests; exact-candidate clean-machine qualification remains open |
-| Windows | WFP ALE connect-redirect callout | TCP and TCP DNS override source are implemented; WDK, signing, fuzzing, runtime, and UDP DNS gates are unmet |
+| Windows | WFP ALE connect-redirect callout | TCP and TCP DNS override source are implemented; WDK, fuzzing, runtime, and UDP DNS gates are unmet, and production driver signing is out of scope for this phase |
 
 The portable core includes SOCKS5 TCP/UDP emission, HTTP CONNECT and SOCKS5
 reference inbounds, destination/process capture filters, a real-answer DNS
@@ -163,7 +163,10 @@ On macOS, notarized development builds of the `tunless` Network Extension and
 its small launcher app have passed the recorded live tests, but the exact
 release candidate still requires clean-machine qualification. Presets support
 coexistence with Clash Verge. On Windows, the WFP backend is implemented but
-not yet release-qualified — treat it as source, not a shippable driver. Details:
+not yet release-qualified — treat it as source, not a shippable driver. Loading
+a kernel driver on Windows 10 or later requires a Microsoft signature that this
+project does not obtain in the current phase, so Windows builds are test-signed
+only. Details:
 [macOS notes](docs/MACOS.md) · [Windows notes](docs/WINDOWS.md).
 
 ## Migrate from mihomo TUN

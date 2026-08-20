@@ -41,7 +41,7 @@ the driver's cleanup path closes the dynamic engine session, removing every
 filter. Driver unload also unregisters both callouts and destroys the redirect
 handle.
 
-## Building and signing
+## Building
 
 Build on an isolated Windows 11 driver-development VM with Visual Studio and
 the WDK:
@@ -51,11 +51,57 @@ msbuild windows\driver\tunless.vcxproj /p:Configuration=Release /p:Platform=x64
 go build -o tunless.exe .\cmd\tunless
 ```
 
-The driver must then be catalog-signed/attestation-signed before normal loading
-with Secure Boot. Development tests should use a snapshot-capable VM, install
-the test certificate only in that VM, enable Driver Verifier for `tunless.sys`,
-and run the redirect-context fuzz/conformance suite before any physical-machine
-trial.
+## Driver signing
+
+Windows 10 and later load a kernel-mode driver only when Microsoft itself has
+signed it. `tunless.sys` is kernel-mode by necessity — the WFP
+`ALE_CONNECT_REDIRECT_V4`/`V6` layers have no user-mode equivalent — so this
+constrains every path that captures traffic, not just a packaged installer.
+
+**This project holds no EV certificate and no Partner Center account, and is
+not obtaining either in the current phase.** No signed `tunless.sys` is
+published or planned. Contributors test-sign their own builds for their own
+test machines.
+
+### Test signing
+
+Driver work is done against a WDK-generated test certificate on a
+snapshot-capable VM with `bcdedit /set testsigning on`. This requires no
+purchase and no Microsoft account. Install the test certificate only in that
+VM, enable Driver Verifier for `tunless.sys`, and run the redirect-context
+fuzz/conformance suite before any physical-machine trial. Do not enable test
+signing on a machine you depend on.
+
+### What production signing would require
+
+Recorded so the cost is visible before anyone plans around it, not as work in
+progress:
+
+| Step | Requirement |
+| --- | --- |
+| Partner Center registration | EV code signing certificate from one of Microsoft's listed CAs |
+| Key storage | EV private keys must live in a FIPS 140-2 Level 2 HSM or token |
+| Submission | Sign the CAB with a registered certificate and upload it to Partner Center |
+| Signature | Microsoft attestation-signs and returns the driver; that signature is the one Windows enforces |
+| Windows Server | Rejects attestation-signed drivers; Server support would require full HLK/WHQL |
+
+Two details are easy to get backwards. The EV certificate is an identity gate
+for the *account*: Microsoft's registration prerequisites state you need it to
+register and "don't need to sign your driver with it." And Azure Artifact
+Signing (formerly Trusted Signing) is not a substitute — it issues no EV
+certificates and does not sign kernel-mode drivers, which Microsoft documents
+as remaining Partner Center's scope.
+
+Preproduction signing is the intermediate option for a driver that must be
+tested with Secure Boot enabled on provisioned devices. It also runs through
+Partner Center and carries the same EV prerequisite.
+
+Comparable open-source drivers (Wintun, WinFsp, Npcap, OpenVPN tap-windows6)
+all resolve this the same way: the project holds an EV certificate, submits to
+Partner Center, and ships prebuilt signed binaries because downstream builders
+cannot sign for themselves. Adopting that model here would be a governance
+decision — it concentrates release capability in whoever holds the
+certificate — and is deliberately deferred, not assumed.
 
 ## Docker on Windows
 
@@ -86,5 +132,12 @@ Current gate: the Go service cross-compiles, but this environment has no
 Windows/WDK host. The driver has not been compiled, loaded, fuzzed,
 verifier-run, attestation-signed, or tested with Secure Boot. Treat it as
 implementation source, not a shippable driver.
+
+The signing portion of that gate is deferred by decision rather than pending
+work: production signing is out of scope for this phase, as recorded under
+[Driver signing](#driver-signing). The build, load, fuzz, Driver Verifier,
+runtime, coexistence, and rollback portions remain open and are unaffected.
+Windows stays recorded as unsupported; the gate is not weakened to match the
+deferral.
 
 See also: [../README.md](../README.md) · [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)

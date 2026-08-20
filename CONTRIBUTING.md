@@ -23,6 +23,15 @@ bash -n scripts/*.sh
 cd macos && swift test
 ```
 
+Windows driver work needs a Windows 11 VM with Visual Studio and the WDK, and
+is test-signed only: build against a WDK-generated certificate with
+`bcdedit /set testsigning on` in a snapshot-capable VM, never on a machine you
+depend on. The project holds no EV certificate and no Partner Center account,
+so no contribution can be production-signed and no signed `tunless.sys` is
+published. Contributions are still welcome on that basis — see the
+[Windows notes](docs/WINDOWS.md) for why the driver cannot be signed any other
+way and what production signing would cost.
+
 Run `./scripts/verify-bpf.sh` before changing the embedded BPF program. On a
 native cgroup-v2 Linux host, run `scripts/integration-linux.sh` (set
 `TUNLESS_BINARY` and `SINGBOX_BINARY` as needed); container changes should also

@@ -57,7 +57,11 @@ qualified. Link each completed item to a run, commit, or measurement.
 - [ ] macOS Developer ID entitlements, activation, notarization, staple, and
       clean-machine runtime qualification complete
 - [ ] Windows WDK driver build/signing, Driver Verifier, Windows host/container
-      runtime, coexistence, and rollback qualification complete
+      runtime, coexistence, and rollback qualification complete. Production
+      driver signing is deferred by decision for this phase: the project holds
+      no EV certificate or Partner Center account, so the signing portion
+      cannot pass and Windows is recorded as unsupported rather than the gate
+      being weakened. See [Windows notes](WINDOWS.md).
 
 ## Evidence snapshot
 

@@ -352,9 +352,10 @@ A kernel-mode callout driver (C) plus a userspace Go service.
   Fail-open.
 - **Cost**: EV code-signing certificate (~$300–600/yr, key on hardware or cloud
   HSM), Microsoft Partner Center enrollment gated on holding that certificate,
-  then attestation signing (free once enrolled, and sufficient — full WHQL is
-  only needed for Windows Update distribution). Attestation-signed drivers load
-  on Windows 10 1607+ with Secure Boot.
+  then attestation signing (free once enrolled, and sufficient for Windows 10/11
+  desktop — full WHQL is needed for Windows Update distribution and for Windows
+  Server, which rejects attestation-signed drivers). Attestation-signed drivers
+  load on Windows 10 1607+ with Secure Boot.
 - **Risk**: a driver defect is a bugcheck, not a crash. This is the only
   component in the project with an irreversible blast radius, and the only one
   with a hard monetary floor. **Deliberately last.**
@@ -500,9 +501,15 @@ stage with a hard monetary floor and the only one that can bugcheck a machine.
   destination, and query/set propagation of opaque redirect records.
 - EV certificate, Partner Center enrollment, attestation signing.
 
+**Status (2026-08-20): not started, and the signing spend is not authorized for
+this phase.** The project holds no EV certificate and no Partner Center
+account, so driver work is test-signed only. See
+[Windows notes](docs/WINDOWS.md).
+
 **Gate**: conformance passes; the driver survives a fuzzing pass at the redirect
 layer without a bugcheck; an attestation-signed build loads on a clean Windows
-11 with Secure Boot enabled.
+11 with Secure Boot enabled. The gate stands as written; deferring the spend
+defers the platform, it does not lower the bar.
 
 ### Stage 5 — optional and deferred
 
