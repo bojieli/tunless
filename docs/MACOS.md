@@ -175,43 +175,24 @@ The launcher verbs are `check`, `start`, `status`, `stop`, `cleanup`, and
 `--cleanup`, and `--telemetry` are still accepted as synonyms of the verbs,
 which is what the bundled recovery script relies on.
 
-When Clash Verge is the upstream, exclude its outbound processes so their
-connections are not handed back to Clash through Tunless:
+With Clash Verge as the upstream, a working start is two commands:
 
 ```console
 /Applications/Tunless.app/Contents/MacOS/Tunless \
   check --preset clash-verge --upstream 127.0.0.1:7897
 /Applications/Tunless.app/Contents/MacOS/Tunless \
-  start --preset clash-verge --upstream 127.0.0.1:7897 \
-  --dns-upstream 1.1.1.1:53 \
-  --exclude-destination 10.0.0.0/8 \
-  --exclude-destination 172.16.0.0/12 \
-  --exclude-destination 192.168.0.0/16 \
-  --exclude-destination 127.0.0.0/8 \
-  --exclude-destination ::1/128 \
-  --exclude-destination 169.254.0.0/16 \
-  --exclude-destination fc00::/7 \
-  --exclude-destination fe80::/10
+  start --preset clash-verge --upstream 127.0.0.1:7897
 ```
 
-The preset is shorthand only for the two known process exclusions below and a
-default upstream of `127.0.0.1:7897`. It performs a SOCKS5 negotiation before
-enabling capture. The equivalent fully manual command is:
+The preset is shorthand for two process exclusions and a default upstream of
+`127.0.0.1:7897`; the equivalent fully manual command is:
 
 ```console
 /Applications/Tunless.app/Contents/MacOS/Tunless start \
   --upstream 127.0.0.1:7897 \
   --dns-upstream 1.1.1.1:53 \
   --exclude-process verge-mihomo \
-  --exclude-process 'io.github.clash-verge-rev.*' \
-  --exclude-destination 10.0.0.0/8 \
-  --exclude-destination 172.16.0.0/12 \
-  --exclude-destination 192.168.0.0/16 \
-  --exclude-destination 127.0.0.0/8 \
-  --exclude-destination ::1/128 \
-  --exclude-destination 169.254.0.0/16 \
-  --exclude-destination fc00::/7 \
-  --exclude-destination fe80::/10
+  --exclude-process 'io.github.clash-verge-rev.*'
 ```
 
 Adjust the port to the active Clash mixed/SOCKS listener. If Xray is also
@@ -219,10 +200,31 @@ running independently, exclude its signing identifier as well. Apply this
 configuration before disabling any existing proxy path, then verify DNS and
 HTTPS and inspect `--telemetry`. DNS entries should show UDP or TCP destination
 port 53, and public answers must not be from Clash's `198.18.0.0/15` fake-IP
-range. Add the local, link-local, multicast, or other destination prefixes that
-must remain directly reachable on the host's network. Matching
-`--include-process` and `--include-destination` flags narrow capture to an
-explicit allowlist when exclusions are not the right shape.
+range. Matching `--include-process` and `--include-destination` flags narrow
+capture to an explicit allowlist when exclusions are not the right shape.
+
+### What capture never claims
+
+Earlier releases asked for eight `--exclude-destination` flags here. That was
+the wrong place for it: every one of them is a flag someone has to remember,
+and forgetting one is discovered only after capture has already taken the host
+off the network — the moment at which it is hardest to fix. Two layers replace
+that list.
+
+**Reserved by the provider, whatever the configuration says.** Loopback, the
+unspecified address, link-local, multicast, and broadcast are the paths a host
+needs in order to stay reachable at all; the SOCKS upstream and the resolver
+the upstream was asked to query are tunless's own datapath. The provider
+refuses to capture any of them, so a forgotten flag, a stale saved
+configuration, or an over-broad `--include-destination` cannot reach them.
+
+**Excluded by default, overridable per prefix.** RFC 1918 and RFC 4193 private
+ranges, RFC 6598 carrier-grade NAT, and the `198.18.0.0/15` fake-IP range are
+excluded unless asked for. These are not reachability-critical the way the
+reserved set is — fronting a private network through a proxy is a legitimate
+configuration — but capturing them is wrong far more often than it is right.
+Naming one with `--include-destination` removes it from the default set;
+`--no-default-exclusions` drops the whole set.
 
 ### Deploying without losing the network
 
@@ -230,8 +232,8 @@ Enabling capture moves every matching flow onto the SOCKS5 upstream at once,
 and the DNS override redirects every captured port-53 flow to the configured
 resolver through that same upstream. If the upstream cannot carry DNS, name
 resolution stops host-wide the moment capture starts, and the host cannot
-resolve the addresses needed to diagnose it. Two guards make that outcome
-recoverable, and both are on by default.
+resolve the addresses needed to diagnose it. Three guards make that outcome
+recoverable, and all three are on by default.
 
 **Before capture.** `check` and `start` both prove the upstream can actually
 relay DNS, not merely that it speaks SOCKS5. A correct greeting says nothing
@@ -277,15 +279,62 @@ Use `--skip-verify` (or `TUNLESS_SKIP_VERIFY=true`) to suppress the post-start
 check and its rollback. Prefer leaving it on: it is what converts a broken
 deployment into a failed command instead of an unreachable host.
 
+**For as long as capture runs.** Both checks above prove DNS worked at one
+instant. Nothing in them covers the upstream that stops resolving an hour
+later, when the proxy is restarted, a node is switched, a TUN device comes up
+beneath it, or the laptop moves to another network. So the provider keeps
+proving it: every 30 seconds it sends a real query along the same path a
+captured port-53 flow takes, and after three consecutive failures it disables
+capture itself and the host returns to its previous path.
+
+The same mechanism closes the gap left by a launcher that never reports back.
+Capture is armed on a probation window when it starts, and a provider that is
+not told resolution works — because the launcher was killed, suspended, or
+disconnected between enabling capture and verifying it — releases the network
+when that window expires rather than holding it indefinitely on an unverified
+claim. A probe that succeeds on its own counts as proof, so a start that
+genuinely works never depends on the launcher surviving.
+
+Link state gates the decision: a host with no usable network fails every probe,
+and releasing capture there would add a manual restart to an outage capture did
+not cause. `--no-health-watchdog` (or `TUNLESS_NO_HEALTH_WATCHDOG=true`) turns
+the watchdog off for a host that would rather keep capture through an outage
+than have it disabled underneath a running workload.
+
+A released capture is visible in `--telemetry` as a `capture` record whose
+event begins with `released:`, and in the system log:
+
+```console
+tunless: releasing capture: name resolution failed 3 times in a row through the upstream
+```
+
 If the upstream genuinely cannot relay DNS and capture is still wanted, start
 with `--disable-dns-override` so each application keeps its own resolver and
 capture no longer touches port 53.
 
 **When the upstream runs a TUN device.** Clash Verge and similar upstreams can
 run their own TUN interface with `auto-route` and `dns-hijack`, which puts a
-second transparent capture layer beneath tunless. Turning both on at once is
-the configuration most likely to stall, because both layers claim port 53: the
-upstream hijacks it while tunless redirects it to the configured resolver.
+second transparent capture layer beneath tunless. Both layers then claim port
+53: the upstream hijacks it while tunless redirects it to the configured
+resolver.
+
+The failure this used to produce is worth naming, because it looks like a dead
+network rather than a proxy problem. Capture rewrites an application's port-53
+flow to the trusted resolver and relays it to the upstream. The upstream dials
+that resolver to answer it. If that dial is captured too, the query is handed
+straight back to the upstream that is waiting on it, and every lookup on the
+host recurses until it times out. Nothing errors, and the recursion consumes
+flows while it runs. Excluding the upstream's process — what `--preset
+clash-verge` does — prevented it, but only for an operator who knew which
+process to name; an unrecognized build, a differently packaged mihomo, or
+sing-box in place of Clash left the loop wide open.
+
+The resolver address is now reserved from capture outright, so the upstream can
+always reach the resolver it was asked to query, whichever proxy it is and
+whether or not its process was named. Process exclusions remain worth setting:
+they also keep the upstream's non-DNS traffic — its subscription fetches and
+its own DoH or DoT resolvers on ports 443 and 853 — from being routed back
+through it.
 
 Fake-IP answers make that failure quiet rather than loud. A fake address from
 the upstream's range is meaningful only to the resolver that minted it, so a
@@ -298,10 +347,10 @@ by fake IP    198.18.57.30:80          0 bytes in 0.21s
 ```
 
 Nothing reports an error; connections simply return no data, which reads as a
-stalled network rather than a DNS problem. Keep the upstream's fake-IP range
-out of capture, exclude the loopback and link-local ranges as shown above,
-change one layer at a time, and run `check` between changes rather than after
-both.
+stalled network rather than a DNS problem. The fake-IP range is excluded by
+default for this reason, and loopback and link-local are reserved outright, so
+what remains is procedural: change one layer at a time, and run `check` between
+changes rather than after both.
 
 ### Telemetry and flow lifecycle
 
@@ -409,6 +458,15 @@ FIFO order. Entries expire after 30 seconds and are capped at 4,096. Set
 `TUNLESS_DNS_UPSTREAM` to choose another trusted resolver. Use
 `--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to preserve the
 original DNS destination while continuing to proxy the flow.
+
+The resolver's own address and port are reserved from capture while the
+override is on, so the upstream can reach it to answer the queries tunless
+rewrote. One consequence is worth stating plainly: an application that itself
+addresses `1.1.1.1:53` is left direct rather than proxied, because from the
+provider's side that flow is indistinguishable from the upstream answering a
+rewritten query. Choosing a resolver address that local applications do not
+query directly avoids the overlap; `--disable-dns-override` removes the
+reservation along with the rewrite.
 
 ## Limitations
 

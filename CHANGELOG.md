@@ -7,6 +7,20 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Added
 
+- A capture floor the configuration cannot reach past: loopback, the
+  unspecified address, link-local, multicast, broadcast, the SOCKS5 upstream,
+  and the trusted resolver's own endpoint are reserved from capture on macOS
+  and Linux. Reserving the resolver ends the DNS recursion that a proxy running
+  its own TUN and DNS hijack produced, without depending on the operator naming
+  the upstream's process.
+- Private, carrier-grade NAT, and `198.18.0.0/15` fake-IP ranges excluded by
+  default on macOS, with `--include-destination` overriding per prefix and
+  `--no-default-exclusions` dropping the set.
+- A macOS capture health watchdog that re-proves name resolution through the
+  live upstream every 30 seconds and disables capture after three consecutive
+  failures, plus a probation window that releases capture when a start is never
+  confirmed. `--no-health-watchdog` opts out.
+
 - Idempotent macOS `stop` and `cleanup` recovery commands, a bounded cleanup
   script bundled in the app, stale-manager removal, Network Extension
   deactivation, and a documented manual disable path for fail-safe recovery.
