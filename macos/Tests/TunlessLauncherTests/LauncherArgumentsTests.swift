@@ -130,4 +130,47 @@ extension LauncherArgumentsTests {
         XCTAssertTrue(arguments.skipVerify)
         XCTAssertNil(arguments.configuration)
     }
+
+    /// Safety that has to be typed is safety that gets forgotten, and the
+    /// destinations below are the ones whose capture takes the LAN, the local
+    /// resolver, or the upstream's own fake-IP answers off the host.
+    func testSafeDestinationExclusionsApplyWithoutBeingAskedFor() throws {
+        let parsed = try LauncherArguments(
+            arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],
+            environment: [:])
+
+        XCTAssertTrue(parsed.usesDefaultExclusions)
+        let excluded = parsed.configuration?.excludeDestinations ?? []
+        for prefix in ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7", "198.18.0.0/15"] {
+            XCTAssertTrue(excluded.contains(prefix), "\(prefix) should be excluded by default")
+        }
+    }
+
+    func testAnExplicitIncludeWinsOverTheDefaultExclusion() throws {
+        let parsed = try LauncherArguments(
+            arguments: [
+                "Tunless", "start", "--upstream", "127.0.0.1:7897",
+                "--include-destination", "10.0.0.0/8",
+            ],
+            environment: [:])
+
+        XCTAssertEqual(parsed.configuration?.includeDestinations, ["10.0.0.0/8"])
+        XCTAssertFalse(parsed.configuration?.excludeDestinations?.contains("10.0.0.0/8") ?? false)
+        XCTAssertTrue(parsed.configuration?.excludeDestinations?.contains("192.168.0.0/16") ?? false)
+    }
+
+    func testDefaultExclusionsCanBeTurnedOff() throws {
+        let parsed = try LauncherArguments(
+            arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897", "--no-default-exclusions"],
+            environment: [:])
+
+        XCTAssertFalse(parsed.usesDefaultExclusions)
+        XCTAssertNil(parsed.configuration?.excludeDestinations)
+
+        let fromEnvironment = try LauncherArguments(
+            arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],
+            environment: ["TUNLESS_NO_DEFAULT_EXCLUSIONS": "true"])
+        XCTAssertFalse(fromEnvironment.usesDefaultExclusions)
+    }
+
 }
