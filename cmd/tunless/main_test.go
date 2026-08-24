@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,5 +125,53 @@ func TestParseUpstreamValidatesAndNormalizesAddress(t *testing.T) {
 				t.Fatalf("address = %q, want %q", client.Address, tt.address)
 			}
 		})
+	}
+}
+
+func TestReservedDestinationsKeepTheDatapathDirect(t *testing.T) {
+	// The loop this prevents: the upstream dials the resolver to answer a
+	// query tunless rewrote, and capturing that dial hands the query back to
+	// the upstream that is waiting on it.
+	reserved, err := reservedDestinations("192.0.2.10:1080", netip.MustParseAddrPort("1.1.1.1:53"), nil)
+	if err != nil {
+		t.Fatalf("reservedDestinations: %v", err)
+	}
+	want := []netip.Prefix{netip.MustParsePrefix("192.0.2.10/32"), netip.MustParsePrefix("1.1.1.1/32")}
+	if len(reserved) != len(want) {
+		t.Fatalf("reserved = %v, want %v", reserved, want)
+	}
+	for i, prefix := range want {
+		if reserved[i] != prefix {
+			t.Fatalf("reserved[%d] = %v, want %v", i, reserved[i], prefix)
+		}
+	}
+}
+
+func TestReservedDestinationsSkipLoopbackAndExplicitIncludes(t *testing.T) {
+	// A loopback upstream is already skipped in the capture path itself.
+	reserved, err := reservedDestinations("127.0.0.1:7897", netip.MustParseAddrPort("1.1.1.1:53"), nil)
+	if err != nil {
+		t.Fatalf("reservedDestinations: %v", err)
+	}
+	if len(reserved) != 1 || reserved[0] != netip.MustParsePrefix("1.1.1.1/32") {
+		t.Fatalf("reserved = %v, want only the resolver", reserved)
+	}
+	// Naming a prefix explicitly is the operator saying they know.
+	reserved, err = reservedDestinations("127.0.0.1:7897", netip.MustParseAddrPort("1.1.1.1:53"), []string{"1.1.1.1/32"})
+	if err != nil {
+		t.Fatalf("reservedDestinations: %v", err)
+	}
+	if len(reserved) != 0 {
+		t.Fatalf("reserved = %v, want none", reserved)
+	}
+}
+
+func TestReservedDestinationsOmitDisabledOverride(t *testing.T) {
+	reserved, err := reservedDestinations("127.0.0.1:7897", netip.AddrPort{}, nil)
+	if err != nil {
+		t.Fatalf("reservedDestinations: %v", err)
+	}
+	if len(reserved) != 0 {
+		t.Fatalf("reserved = %v, want none when DNS override is off", reserved)
 	}
 }
