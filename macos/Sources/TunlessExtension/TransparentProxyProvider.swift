@@ -89,6 +89,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let selected = configurationSnapshot()
         guard selected.captures(
             host: originalDestination.host,
+            port: originalDestination.port,
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier)
         else { return false }
         let routeHost = (tcp.remoteHostname?.isEmpty == false ? tcp.remoteHostname : nil) ?? originalDestination.host
@@ -113,6 +114,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let selected = configurationSnapshot()
         guard selected.captures(
             host: destination.host,
+            port: destination.port,
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier)
         else { return false }
         return launch(flow: flow, operation: { [weak self] in
@@ -537,6 +539,22 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                 if packets.isEmpty { return .applicationEOF("empty-read") }
                 for (originalPayload, endpoint) in packets {
                     guard let originalAddress = Self.address(endpoint) else { continue }
+                    // An unconnected socket admitted on one destination can
+                    // later address a reserved one. Relaying that datagram
+                    // would hand the upstream's own resolver traffic back to
+                    // it, so drop it instead and let the sender retry; the
+                    // admission check cannot see it, because it happens after
+                    // the flow was already accepted.
+                    if configuration.reservedDestination(
+                        host: originalAddress.host, port: originalAddress.port) {
+                        recordCompletion(
+                            flow: flow,
+                            protocolName: "udp-datagram",
+                            destination: originalAddress,
+                            routedDestination: originalAddress,
+                            event: "reserved-destination-dropped")
+                        continue
+                    }
                     let routedAddress = originalPayload.count >= 12
                         ? configuration.routedDestination(for: originalAddress)
                         : originalAddress
