@@ -14,6 +14,11 @@ targets:
     sources:
       - path: App
       - path: Sources/TunlessLauncher
+      # Shared with the extension so both sides frame probe queries the same
+      # way; the app builds the file directly rather than importing a module
+      # the system extension target does not link.
+      - path: Sources/TunlessExtension/DNSProbeMessage.swift
+      - path: Sources/TunlessExtension/ControlMessage.swift
       - path: Resources
         buildPhase: resources
     settings:

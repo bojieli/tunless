@@ -25,6 +25,10 @@ Options:
   --disable-dns-override     Preserve each application's original resolver.
   --skip-verify              Do not verify DNS after start, and do not roll
                              capture back automatically if it fails.
+  --no-default-exclusions    Capture private, CGNAT, and fake-IP ranges, which
+                             are excluded by default.
+  --no-health-watchdog       Keep capture on even after the upstream stops
+                             resolving names.
   --include-process GLOB     Capture a signing identifier (repeatable).
   --exclude-process GLOB     Exclude a signing identifier (repeatable).
   --include-destination CIDR Capture a destination prefix (repeatable).
@@ -39,10 +43,18 @@ Examples:
   Tunless status
   Tunless cleanup
 
+Capture never claims loopback, link-local, multicast, the upstream itself, or
+the resolver the upstream was asked to query. Those are what a host needs to
+stay reachable and what tunless itself relays through, so they are reserved by
+the provider rather than left to an exclusion flag. Private, CGNAT, and fake-IP
+ranges are excluded by default too; --include-destination overrides that per
+prefix.
+
 start refuses to enable capture when the upstream cannot relay DNS, and rolls
 capture back automatically if name resolution does not work once capture is on.
-Both guards exist so a failed deployment cannot leave the host unable to
-resolve names.
+Capture then stays accountable: the provider re-proves resolution on a timer and
+disables capture on its own if that stops working, or if a start is never
+confirmed. Together these mean capture cannot outlive the network it depends on.
 
 Use stop for an ordinary shutdown. Cleanup is the fail-safe recovery command:
 it stops capture, removes every Tunless proxy configuration, and deactivates
@@ -291,7 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                        let session = manager.connection as? NETunnelProviderSession {
                         do {
                             try session.sendProviderMessage(encoded) { _ in
-                                self.reportStarted(configuration)
+                                self.reportStarted(configuration, manager: manager)
                             }
                         } catch {
                             self.fail("update transparent proxy", error: error)
@@ -299,7 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                     } else {
                         do {
                             try manager.connection.startVPNTunnel()
-                            self.reportStarted(configuration)
+                            self.reportStarted(configuration, manager: manager)
                         } catch {
                             self.fail("start transparent proxy", error: error)
                         }
@@ -309,13 +321,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         }
     }
 
-    private func reportStarted(_ configuration: LauncherConfiguration) {
+    private func reportStarted(_ configuration: LauncherConfiguration, manager: NETransparentProxyManager) {
         // Capture is live now. Verify that name resolution still works through
         // the real datapath before declaring success, and roll capture back if
         // it does not. Preflight tested the upstream directly; only this check
         // exercises the provider itself, and a stall here is what leaves a host
         // unable to resolve anything.
         guard !arguments.skipVerify, configuration.dnsHost != nil else {
+            // The provider is holding capture on probation and disables it
+            // unless something confirms resolution. Nothing here is going to,
+            // so say so explicitly rather than letting the window expire under
+            // a start that was asked to skip verification.
+            confirmHealthy(manager)
             announceStarted(configuration)
             return
         }
@@ -324,6 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
             guard let self else { return }
             self.cancelOperationDeadline()
             if resolved {
+                self.confirmHealthy(manager)
                 self.announceStarted(configuration)
                 return
             }
@@ -333,6 +351,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                 to: .standardError)
             self.rollBackAfterFailedVerification()
         }
+    }
+
+    /// Tells the provider that resolution was proved through the live
+    /// datapath, which ends the probation window it armed when capture
+    /// started. Sent best-effort: the launcher exits either way, and a
+    /// provider that never hears it disables capture, which is the safe
+    /// direction to fail in.
+    private func confirmHealthy(_ manager: NETransparentProxyManager) {
+        guard let session = manager.connection as? NETunnelProviderSession else { return }
+        try? session.sendProviderMessage(ControlMessage.confirmHealthy.encoded) { _ in }
     }
 
     private func announceStarted(_ configuration: LauncherConfiguration) {

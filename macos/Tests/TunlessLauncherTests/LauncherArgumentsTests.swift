@@ -173,4 +173,21 @@ extension LauncherArgumentsTests {
         XCTAssertFalse(fromEnvironment.usesDefaultExclusions)
     }
 
+    func testHealthWatchdogIsOnUnlessExplicitlyDisabled() throws {
+        XCTAssertNil(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],
+                environment: [:]).configuration?.disableHealthWatchdog)
+        XCTAssertEqual(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897", "--no-health-watchdog"],
+                environment: [:]).configuration?.disableHealthWatchdog,
+            true)
+        XCTAssertEqual(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],
+                environment: ["TUNLESS_NO_HEALTH_WATCHDOG": "yes"]).configuration?.disableHealthWatchdog,
+            true)
+    }
+
 }

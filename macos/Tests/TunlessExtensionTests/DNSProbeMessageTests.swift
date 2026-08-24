@@ -1,5 +1,5 @@
 import XCTest
-@testable import TunlessLauncher
+@testable import TunlessExtension
 
 final class DNSProbeMessageTests: XCTestCase {
     func testQueryCarriesTransactionIDAndOneQuestion() {

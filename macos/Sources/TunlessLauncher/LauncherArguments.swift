@@ -65,6 +65,7 @@ struct LauncherConfiguration: Codable, Equatable {
     let excludeProcesses: [String]?
     let includeDestinations: [String]?
     let excludeDestinations: [String]?
+    let disableHealthWatchdog: Bool?
 
     var upstreamAddress: String {
         let host = IPv6Address(upstreamHost) == nil ? upstreamHost : "[\(upstreamHost)]"
@@ -97,6 +98,7 @@ struct LauncherArguments: Equatable {
         var excludeDestinations: [String] = []
         var skipVerifyOption: Bool?
         var defaultExclusionsOption: Bool?
+        var disableWatchdogOption: Bool?
 
         func select(_ action: LauncherAction) throws {
             if actionWasSelected && selectedAction != action {
@@ -133,6 +135,7 @@ struct LauncherArguments: Equatable {
             case "--disable-dns-override": disableDNSOverride = true
             case "--skip-verify": skipVerifyOption = true
             case "--no-default-exclusions": defaultExclusionsOption = false
+            case "--no-health-watchdog": disableWatchdogOption = true
             case "--preset":
                 presetName = try value(after: index, for: argument)
                 index += 1
@@ -164,6 +167,8 @@ struct LauncherArguments: Equatable {
                     case "--skip-verify": skipVerifyOption = try Self.boolean(pair.value, name: pair.name)
                     case "--no-default-exclusions":
                         defaultExclusionsOption = !(try Self.boolean(pair.value, name: pair.name))
+                    case "--no-health-watchdog":
+                        disableWatchdogOption = try Self.boolean(pair.value, name: pair.name)
                     case "--include-process": includeProcesses.append(pair.value)
                     case "--exclude-process": excludeProcesses.append(pair.value)
                     case "--include-destination": includeDestinations.append(pair.value)
@@ -262,6 +267,9 @@ struct LauncherArguments: Equatable {
             excludeProcesses.insert(contentsOf: preset.excludedProcesses, at: 0)
         }
 
+        if disableWatchdogOption == nil, let raw = environment["TUNLESS_NO_HEALTH_WATCHDOG"] {
+            disableWatchdogOption = try Self.boolean(raw, name: "TUNLESS_NO_HEALTH_WATCHDOG")
+        }
         if defaultExclusionsOption == nil, let raw = environment["TUNLESS_NO_DEFAULT_EXCLUSIONS"] {
             defaultExclusionsOption = !(try Self.boolean(raw, name: "TUNLESS_NO_DEFAULT_EXCLUSIONS"))
         }
@@ -285,7 +293,8 @@ struct LauncherArguments: Equatable {
             includeProcesses: Self.optionalUnique(includeProcesses),
             excludeProcesses: Self.optionalUnique(excludeProcesses),
             includeDestinations: Self.optionalUnique(includeDestinations),
-            excludeDestinations: Self.optionalUnique(excludeDestinations))
+            excludeDestinations: Self.optionalUnique(excludeDestinations),
+            disableHealthWatchdog: disableWatchdogOption)
     }
 
     private static func optionPair(_ argument: String) -> (name: String, value: String)? {

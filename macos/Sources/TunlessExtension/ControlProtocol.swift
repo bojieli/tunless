@@ -13,7 +13,15 @@ public struct ProviderConfiguration: Codable, Sendable {
 	public var excludeProcesses: [String]?
 	public var includeDestinations: [String]?
 	public var excludeDestinations: [String]?
-    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil) {
+	/// Turns off the provider's own DNS health watchdog.
+	///
+	/// The watchdog is what makes capture give the network back when the
+	/// upstream stops resolving, so this is deliberately awkward to reach: it
+	/// exists for a host that would rather keep capture on through an outage
+	/// than have it disabled underneath a running workload.
+	public var disableHealthWatchdog: Bool?
+
+    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, disableHealthWatchdog: Bool? = nil) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
         self.username = username
@@ -24,6 +32,7 @@ public struct ProviderConfiguration: Codable, Sendable {
 		self.excludeProcesses = excludeProcesses
 		self.includeDestinations = includeDestinations
 		self.excludeDestinations = excludeDestinations
+		self.disableHealthWatchdog = disableHealthWatchdog
     }
 
 	func validated() throws -> ProviderConfiguration {

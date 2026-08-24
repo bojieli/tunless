@@ -9,13 +9,13 @@ import Foundation
 /// including `NXDOMAIN` and `SERVFAIL`. That keeps the probe from depending on
 /// a specific zone staying resolvable, and keeps a filtered answer from being
 /// misread as a broken datapath.
-enum DNSProbeMessage {
+public enum DNSProbeMessage {
     /// Name queried by the probes. It exists only to carry a question section;
     /// the response code is deliberately not inspected.
-    static let probeName = "example.com"
+    public static let probeName = "example.com"
 
     /// Builds an A query for `name` with recursion desired.
-    static func query(name: String = probeName, transactionID: UInt16) -> Data {
+    public static func query(name: String = probeName, transactionID: UInt16) -> Data {
         var message = Data()
         message.append(UInt8(transactionID >> 8))
         message.append(UInt8(transactionID & 0xff))
@@ -38,7 +38,7 @@ enum DNSProbeMessage {
 
     /// True when `data` is a DNS response to the query identified by
     /// `transactionID`. Any response code is accepted; see the type comment.
-    static func isResponse(_ data: Data, transactionID: UInt16) -> Bool {
+    public static func isResponse(_ data: Data, transactionID: UInt16) -> Bool {
         guard data.count >= 12 else { return false }
         let bytes = [UInt8](data.prefix(12))
         let identifier = UInt16(bytes[0]) << 8 | UInt16(bytes[1])
@@ -47,7 +47,7 @@ enum DNSProbeMessage {
     }
 
     /// Frames a query for DNS over TCP, which carries a two-byte length prefix.
-    static func tcpFramed(_ message: Data) -> Data {
+    public static func tcpFramed(_ message: Data) -> Data {
         var framed = Data()
         framed.append(UInt8(message.count >> 8))
         framed.append(UInt8(message.count & 0xff))
@@ -56,7 +56,7 @@ enum DNSProbeMessage {
     }
 
     /// Length of the message that follows a two-byte DNS-over-TCP prefix.
-    static func tcpPayloadLength(_ prefix: Data) -> Int? {
+    public static func tcpPayloadLength(_ prefix: Data) -> Int? {
         guard prefix.count >= 2 else { return nil }
         let bytes = [UInt8](prefix.prefix(2))
         return Int(UInt16(bytes[0]) << 8 | UInt16(bytes[1]))
