@@ -23,6 +23,12 @@ Options:
   --upstream HOST:PORT       SOCKS5 or mixed listener used as the upstream.
   --dns-upstream IP:PORT     Trusted resolver for captured port-53 traffic.
   --disable-dns-override     Preserve each application's original resolver.
+  --skip-verify              Do not verify DNS after start, and do not roll
+                             capture back automatically if it fails.
+  --no-default-exclusions    Capture private, CGNAT, and fake-IP ranges, which
+                             are excluded by default.
+  --no-health-watchdog       Keep capture on even after the upstream stops
+                             resolving names.
   --include-process GLOB     Capture a signing identifier (repeatable).
   --exclude-process GLOB     Exclude a signing identifier (repeatable).
   --include-destination CIDR Capture a destination prefix (repeatable).
@@ -36,6 +42,19 @@ Examples:
   Tunless start --preset clash-verge --upstream 127.0.0.1:7897
   Tunless status
   Tunless cleanup
+
+Capture never claims loopback, link-local, multicast, the upstream itself, or
+the resolver the upstream was asked to query. Those are what a host needs to
+stay reachable and what tunless itself relays through, so they are reserved by
+the provider rather than left to an exclusion flag. Private, CGNAT, and fake-IP
+ranges are excluded by default too; --include-destination overrides that per
+prefix.
+
+start refuses to enable capture when the upstream cannot relay DNS, and rolls
+capture back automatically if name resolution does not work once capture is on.
+Capture then stays accountable: the provider re-proves resolution on a timer and
+disables capture on its own if that stops working, or if a start is never
+confirmed. Together these mean capture cannot outlive the network it depends on.
 
 Use stop for an ordinary shutdown. Cleanup is the fail-safe recovery command:
 it stops capture, removes every Tunless proxy configuration, and deactivates
@@ -87,6 +106,7 @@ private struct CheckReport: Codable {
     let preset: String?
     let upstream: String
     let detail: String
+    let dns: DNSRelayReport?
 }
 
 private struct StatusReport: Codable {
@@ -123,8 +143,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
     func applicationDidFinishLaunching(_ notification: Notification) {
         switch arguments.action {
         case .start:
-            if arguments.preset != nil { performPreflight(startAfterSuccess: true) }
-            else { activateExtension() }
+            // Preflight always runs, preset or not. The documented manual
+            // invocation carries no preset, and it needs the DNS guard just as
+            // much: without it, an upstream that cannot relay DNS is only
+            // discovered after capture has already taken resolution down.
+            performPreflight(startAfterSuccess: true)
         case .check: performPreflight(startAfterSuccess: false)
         case .status: fetchStatus()
         case .stop:
@@ -150,6 +173,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
             self.preflight = nil
             switch result {
             case .success:
+                let dns = checker.dnsReport
+                if let dns, !dns.udpRelayWorks {
+                    // Not fatal: applications can retry over TCP. Say so
+                    // plainly, because it changes what to expect after start.
+                    write("Tunless: \(dns.summary).\n", to: .standardError)
+                }
                 if startAfterSuccess {
                     self.activateExtension()
                 } else {
@@ -157,21 +186,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                         ok: true,
                         preset: self.arguments.preset?.rawValue,
                         upstream: configuration.upstreamAddress,
-                        detail: "SOCKS5 negotiation passed"))
+                        detail: dns.map { "SOCKS5 negotiation passed; \($0.summary)" }
+                            ?? "SOCKS5 negotiation passed; DNS override disabled",
+                        dns: dns))
                     terminate(0)
                 }
             case let .failure(error):
                 if startAfterSuccess {
                     let hint = self.arguments.preset == .clashVerge
                         ? " Start Clash Verge and confirm its mixed/SOCKS port, then retry."
-                        : ""
+                        : " Confirm the upstream is listening and can relay DNS, then retry."
                     write("Tunless: \(error.localizedDescription).\(hint)\n", to: .standardError)
                 } else {
                     self.writeJSON(CheckReport(
                         ok: false,
                         preset: self.arguments.preset?.rawValue,
                         upstream: configuration.upstreamAddress,
-                        detail: error.localizedDescription))
+                        detail: error.localizedDescription,
+                        dns: checker.dnsReport))
                 }
                 terminate(1)
             }
@@ -271,7 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                        let session = manager.connection as? NETunnelProviderSession {
                         do {
                             try session.sendProviderMessage(encoded) { _ in
-                                self.reportStarted(configuration)
+                                self.reportStarted(configuration, manager: manager)
                             }
                         } catch {
                             self.fail("update transparent proxy", error: error)
@@ -279,7 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                     } else {
                         do {
                             try manager.connection.startVPNTunnel()
-                            self.reportStarted(configuration)
+                            self.reportStarted(configuration, manager: manager)
                         } catch {
                             self.fail("start transparent proxy", error: error)
                         }
@@ -289,10 +321,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         }
     }
 
-    private func reportStarted(_ configuration: LauncherConfiguration) {
+    private func reportStarted(_ configuration: LauncherConfiguration, manager: NETransparentProxyManager) {
+        // Capture is live now. Verify that name resolution still works through
+        // the real datapath before declaring success, and roll capture back if
+        // it does not. Preflight tested the upstream directly; only this check
+        // exercises the provider itself, and a stall here is what leaves a host
+        // unable to resolve anything.
+        guard !arguments.skipVerify, configuration.dnsHost != nil else {
+            // The provider is holding capture on probation and disables it
+            // unless something confirms resolution. Nothing here is going to,
+            // so say so explicitly rather than letting the window expire under
+            // a start that was asked to skip verification.
+            confirmHealthy(manager)
+            announceStarted(configuration)
+            return
+        }
+        armOperationDeadline(for: "start verification", seconds: 25)
+        DNSDatapathCheck.run(timeout: 8) { [weak self] resolved in
+            guard let self else { return }
+            self.cancelOperationDeadline()
+            if resolved {
+                self.confirmHealthy(manager)
+                self.announceStarted(configuration)
+                return
+            }
+            write(
+                "Tunless: capture started but DNS did not resolve through it;"
+                    + " rolling capture back so the host keeps working.\n",
+                to: .standardError)
+            self.rollBackAfterFailedVerification()
+        }
+    }
+
+    /// Tells the provider that resolution was proved through the live
+    /// datapath, which ends the probation window it armed when capture
+    /// started. Sent best-effort: the launcher exits either way, and a
+    /// provider that never hears it disables capture, which is the safe
+    /// direction to fail in.
+    private func confirmHealthy(_ manager: NETransparentProxyManager) {
+        guard let session = manager.connection as? NETunnelProviderSession else { return }
+        try? session.sendProviderMessage(ControlMessage.confirmHealthy.encoded) { _ in }
+    }
+
+    private func announceStarted(_ configuration: LauncherConfiguration) {
         let preset = arguments.preset.map { " using \($0.rawValue) preset" } ?? ""
         write("Tunless configured\(preset); SOCKS5 upstream \(configuration.upstreamAddress).\n", to: .standardOutput)
         terminate(0)
+    }
+
+    /// Disables capture after a failed post-start verification, then exits
+    /// non-zero. This is the automatic equivalent of running `stop`.
+    private func rollBackAfterFailedVerification() {
+        armOperationDeadline(for: "rollback")
+        NETransparentProxyManager.loadAllFromPreferences { managers, _ in
+            let owned = (managers ?? []).filter(Self.isTunlessManager)
+            for manager in owned {
+                manager.connection.stopVPNTunnel()
+                manager.isEnabled = false
+            }
+            self.persistRolledBackManagers(owned, at: 0)
+        }
+    }
+
+    private func persistRolledBackManagers(_ managers: [NETransparentProxyManager], at index: Int) {
+        guard index < managers.count else {
+            cancelOperationDeadline()
+            write(
+                "Tunless: capture is off and the previous network path is restored."
+                    + " Run check to test the upstream before starting again.\n",
+                to: .standardError)
+            terminate(1)
+        }
+        managers[index].saveToPreferences { _ in
+            self.persistRolledBackManagers(managers, at: index + 1)
+        }
     }
 
     private func fetchStatus() {

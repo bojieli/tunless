@@ -12,6 +12,31 @@ enum LauncherAction: String, Equatable {
     case version
 }
 
+/// Destination prefixes excluded unless the operator asks otherwise.
+///
+/// These are not reachability-critical the way the provider's reserved
+/// prefixes are — a proxy that fronts a private network is a legitimate
+/// configuration — but capturing them is wrong far more often than it is
+/// right, and getting it wrong takes the LAN, the local resolver, or the
+/// upstream's own fake-IP mapping off the host. Safety belongs in the default,
+/// not in a documented list of flags the operator has to retype; a host that
+/// needs one of these captured can say so with `--include-destination`, which
+/// removes it from this set.
+enum DefaultExclusions {
+    static let destinations = [
+        // RFC 1918 and RFC 4193: the LAN, whose router and resolver are the
+        // path back to a working network when capture goes wrong.
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+        // RFC 6598 carrier-grade NAT, used by many home gateways.
+        "100.64.0.0/10",
+        // The fake-IP range mihomo and sing-box mint answers from. Such an
+        // address is meaningful only to the resolver that issued it, so
+        // proxying it produces a connection that opens and then transfers
+        // nothing.
+        "198.18.0.0/15",
+    ]
+}
+
 enum LauncherPreset: String, Equatable {
     case clashVerge = "clash-verge"
 
@@ -40,6 +65,7 @@ struct LauncherConfiguration: Codable, Equatable {
     let excludeProcesses: [String]?
     let includeDestinations: [String]?
     let excludeDestinations: [String]?
+    let disableHealthWatchdog: Bool?
 
     var upstreamAddress: String {
         let host = IPv6Address(upstreamHost) == nil ? upstreamHost : "[\(upstreamHost)]"
@@ -51,6 +77,10 @@ struct LauncherArguments: Equatable {
     let action: LauncherAction
     let preset: LauncherPreset?
     let configuration: LauncherConfiguration?
+    /// Skips the post-start DNS verification and its automatic rollback.
+    let skipVerify: Bool
+    /// Whether the safe destination defaults were added to the exclusions.
+    let usesDefaultExclusions: Bool
 
     init(
         arguments: [String] = CommandLine.arguments,
@@ -66,6 +96,9 @@ struct LauncherArguments: Equatable {
         var excludeProcesses: [String] = []
         var includeDestinations: [String] = []
         var excludeDestinations: [String] = []
+        var skipVerifyOption: Bool?
+        var defaultExclusionsOption: Bool?
+        var disableWatchdogOption: Bool?
 
         func select(_ action: LauncherAction) throws {
             if actionWasSelected && selectedAction != action {
@@ -100,6 +133,9 @@ struct LauncherArguments: Equatable {
             case "--status": try select(.status)
             case "--telemetry": try select(.telemetry)
             case "--disable-dns-override": disableDNSOverride = true
+            case "--skip-verify": skipVerifyOption = true
+            case "--no-default-exclusions": defaultExclusionsOption = false
+            case "--no-health-watchdog": disableWatchdogOption = true
             case "--preset":
                 presetName = try value(after: index, for: argument)
                 index += 1
@@ -128,6 +164,11 @@ struct LauncherArguments: Equatable {
                     case "--upstream": upstreamOption = pair.value
                     case "--dns-upstream": dnsOption = pair.value
                     case "--disable-dns-override": disableDNSOverride = try Self.boolean(pair.value, name: pair.name)
+                    case "--skip-verify": skipVerifyOption = try Self.boolean(pair.value, name: pair.name)
+                    case "--no-default-exclusions":
+                        defaultExclusionsOption = !(try Self.boolean(pair.value, name: pair.name))
+                    case "--no-health-watchdog":
+                        disableWatchdogOption = try Self.boolean(pair.value, name: pair.name)
                     case "--include-process": includeProcesses.append(pair.value)
                     case "--exclude-process": excludeProcesses.append(pair.value)
                     case "--include-destination": includeDestinations.append(pair.value)
@@ -153,8 +194,14 @@ struct LauncherArguments: Equatable {
             preset = nil
         }
 
+        if skipVerifyOption == nil, let raw = environment["TUNLESS_SKIP_VERIFY"] {
+            skipVerifyOption = try Self.boolean(raw, name: "TUNLESS_SKIP_VERIFY")
+        }
+        skipVerify = skipVerifyOption ?? false
+
         guard selectedAction == .start || selectedAction == .check else {
             configuration = nil
+            usesDefaultExclusions = false
             return
         }
 
@@ -220,6 +267,22 @@ struct LauncherArguments: Equatable {
             excludeProcesses.insert(contentsOf: preset.excludedProcesses, at: 0)
         }
 
+        if disableWatchdogOption == nil, let raw = environment["TUNLESS_NO_HEALTH_WATCHDOG"] {
+            disableWatchdogOption = try Self.boolean(raw, name: "TUNLESS_NO_HEALTH_WATCHDOG")
+        }
+        if defaultExclusionsOption == nil, let raw = environment["TUNLESS_NO_DEFAULT_EXCLUSIONS"] {
+            defaultExclusionsOption = !(try Self.boolean(raw, name: "TUNLESS_NO_DEFAULT_EXCLUSIONS"))
+        }
+        usesDefaultExclusions = defaultExclusionsOption ?? true
+        if usesDefaultExclusions {
+            // An explicit include wins: naming a prefix is the operator saying
+            // they want it captured, and a default must not silently override
+            // what was asked for.
+            let requested = Set(includeDestinations)
+            excludeDestinations.append(
+                contentsOf: DefaultExclusions.destinations.filter { !requested.contains($0) })
+        }
+
         configuration = LauncherConfiguration(
             upstreamHost: upstreamHost,
             upstreamPort: UInt16(parsedPort),
@@ -230,7 +293,8 @@ struct LauncherArguments: Equatable {
             includeProcesses: Self.optionalUnique(includeProcesses),
             excludeProcesses: Self.optionalUnique(excludeProcesses),
             includeDestinations: Self.optionalUnique(includeDestinations),
-            excludeDestinations: Self.optionalUnique(excludeDestinations))
+            excludeDestinations: Self.optionalUnique(excludeDestinations),
+            disableHealthWatchdog: disableWatchdogOption)
     }
 
     private static func optionPair(_ argument: String) -> (name: String, value: String)? {

@@ -180,6 +180,14 @@ func run() error {
 	if filter.ExcludeDestinations, err = prefixes(excludeDst); err != nil {
 		return err
 	}
+	reserved, err := reservedDestinations(client.Address, client.DNSOverride, includeDst)
+	if err != nil {
+		return err
+	}
+	if len(reserved) > 0 {
+		filter.ExcludeDestinations = append(filter.ExcludeDestinations, reserved...)
+		logger.Info("reserving datapath destinations from capture", "destinations", reserved)
+	}
 	var backend tunless.Backend
 	coreFilter := filter
 	if backendName == "auto" {
@@ -489,6 +497,53 @@ func cgroupPathFromProc(data []byte) (string, error) {
 		return path.Join("/sys/fs/cgroup", strings.TrimPrefix(relative, "/")), nil
 	}
 	return "", errors.New("container does not have a cgroup-v2 entry")
+}
+
+// reservedDestinations returns the addresses capture must leave direct because
+// tunless itself relays through them.
+//
+// The upstream is the obvious one: handing traffic aimed at the proxy back to
+// the proxy is a loop with no exit. The trusted resolver is the subtle one, and
+// it is what takes DNS down host-wide. Capture rewrites every port-53 flow to
+// that resolver and relays it to the upstream; the upstream then dials the
+// resolver itself, and if that dial is captured too, the query is handed back
+// to the upstream that is waiting on it. Nothing errors — every lookup on the
+// host simply recurses until it times out, which reads as a dead network rather
+// than as a proxy loop.
+//
+// Excluding the upstream process is the usual advice, but it means knowing
+// which process to name, and being wrong is only discovered once resolution is
+// already gone. The destinations are known from the configuration, so reserve
+// those instead. An explicit --include-destination for the same prefix is left
+// alone: naming it is the operator saying they know.
+func reservedDestinations(upstream string, dnsTarget netip.AddrPort, included []string) ([]netip.Prefix, error) {
+	requested, err := prefixes(included)
+	if err != nil {
+		return nil, err
+	}
+	var reserved []netip.Prefix
+	add := func(addr netip.Addr) {
+		if !addr.IsValid() || addr.IsLoopback() {
+			// Loopback is already skipped in the capture path itself.
+			return
+		}
+		prefix := netip.PrefixFrom(addr.Unmap(), addr.Unmap().BitLen())
+		for _, existing := range append(append([]netip.Prefix{}, requested...), reserved...) {
+			if existing == prefix {
+				return
+			}
+		}
+		reserved = append(reserved, prefix)
+	}
+	if host, _, splitErr := net.SplitHostPort(upstream); splitErr == nil {
+		if addr, parseErr := netip.ParseAddr(host); parseErr == nil {
+			add(addr)
+		}
+	}
+	if dnsTarget.IsValid() {
+		add(dnsTarget.Addr())
+	}
+	return reserved, nil
 }
 
 func parseUpstream(value string) (*socks5.Client, error) {

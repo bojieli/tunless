@@ -13,8 +13,15 @@ public struct ProviderConfiguration: Codable, Sendable {
 	public var excludeProcesses: [String]?
 	public var includeDestinations: [String]?
 	public var excludeDestinations: [String]?
+	/// Turns off the provider's own DNS health watchdog.
+	///
+	/// The watchdog is what makes capture give the network back when the
+	/// upstream stops resolving, so this is deliberately awkward to reach: it
+	/// exists for a host that would rather keep capture on through an outage
+	/// than have it disabled underneath a running workload.
+	public var disableHealthWatchdog: Bool?
 
-    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil) {
+    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, disableHealthWatchdog: Bool? = nil) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
         self.username = username
@@ -25,6 +32,7 @@ public struct ProviderConfiguration: Codable, Sendable {
 		self.excludeProcesses = excludeProcesses
 		self.includeDestinations = includeDestinations
 		self.excludeDestinations = excludeDestinations
+		self.disableHealthWatchdog = disableHealthWatchdog
     }
 
 	func validated() throws -> ProviderConfiguration {
@@ -40,11 +48,57 @@ public struct ProviderConfiguration: Codable, Sendable {
 		return self
 	}
 
-	func captures(host: String, signingIdentifier: String) -> Bool {
+	func captures(host: String, port: UInt16, signingIdentifier: String) -> Bool {
+		if reservedDestination(host: host, port: port) { return false }
 		if Self.matchesAny(signingIdentifier, patterns: excludeProcesses ?? []) || Self.matchesAnyPrefix(host, prefixes: excludeDestinations ?? []) { return false }
 		if let patterns = includeProcesses, !patterns.isEmpty, !Self.matchesAny(signingIdentifier, patterns: patterns) { return false }
 		if let prefixes = includeDestinations, !prefixes.isEmpty, !Self.matchesAnyPrefix(host, prefixes: prefixes) { return false }
 		return true
+	}
+
+	/// Destinations capture must never claim, whatever the configuration says.
+	///
+	/// Every operator-facing exclusion is a flag someone has to remember, and
+	/// the documented list is eight of them. A missing one is not discovered
+	/// until capture has already taken the host off the network, which is the
+	/// point at which it is hardest to fix. These paths are therefore reserved
+	/// by the provider itself, so a forgotten flag, a stale saved
+	/// configuration, or an over-broad `--include-destination` cannot reach
+	/// them. They fall into two groups: the addresses a host needs in order to
+	/// stay reachable at all, and the two addresses tunless itself relays
+	/// through.
+	func reservedDestination(host: String, port: UInt16) -> Bool {
+		// Sending traffic aimed at the proxy back into the proxy is the loop in
+		// its simplest form; the upstream is datapath, not traffic.
+		if Self.sameHost(host, upstreamHost) { return true }
+		// The resolver this provider rewrites captured port-53 flows to. When
+		// the upstream dials it to answer one of those rewritten queries, that
+		// flow must go direct: capturing it hands the query back to the same
+		// upstream that is waiting on it, and every DNS lookup on the host
+		// recurses instead of resolving. This is what a name-based process
+		// exclusion is trying to prevent, without depending on the operator
+		// naming the right process.
+		if let dnsHost, let dnsPort, port == dnsPort, Self.sameHost(host, dnsHost) { return true }
+		return Self.matchesAnyPrefix(host, prefixes: Self.reservedPrefixes)
+	}
+
+	/// Loopback and unspecified addresses mean nothing on the far side of a
+	/// proxy. Link-local carries DHCP fallback, mDNS, and router discovery, and
+	/// multicast and broadcast are not routable through SOCKS at all: proxying
+	/// any of them removes reachability rather than adding a route.
+	static let reservedPrefixes = [
+		"127.0.0.0/8", "0.0.0.0/32", "169.254.0.0/16", "224.0.0.0/4", "255.255.255.255/32",
+		"::1/128", "::/128", "fe80::/10", "ff00::/8",
+	]
+
+	/// Compares two destinations as addresses when both parse, and as text
+	/// otherwise, so a hostname upstream still matches itself.
+	private static func sameHost(_ lhs: String, _ rhs: String) -> Bool {
+		if let left = IPv4Address(lhs)?.rawValue ?? IPv6Address(lhs)?.rawValue,
+		   let right = IPv4Address(rhs)?.rawValue ?? IPv6Address(rhs)?.rawValue {
+			return left == right
+		}
+		return lhs.caseInsensitiveCompare(rhs) == .orderedSame
 	}
 
 	func routedDestination(for destination: SOCKSAddress) -> SOCKSAddress {

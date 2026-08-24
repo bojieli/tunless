@@ -36,6 +36,13 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     private var activeFlows: [UUID: ActiveFlow] = [:]
     private var stopping = false
     private let lock = NSLock()
+    private var health = CaptureHealth()
+    private var healthTimer: DispatchSourceTimer?
+    private var pathMonitor: NWPathMonitor?
+    private var pathIsSatisfied = true
+    private let healthQueue = DispatchQueue(label: "com.bojieli.tunless.capture-health")
+    /// How often the provider re-proves that the upstream still resolves.
+    private static let healthIntervalSeconds = 30
 
     public override func startProxy(options: [String: Any]? = nil, completionHandler: @escaping (Error?) -> Void) {
         guard
@@ -62,10 +69,108 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             NENetworkRule(destinationNetworkEndpoint: .hostPort(host: "::2", port: anyPort), prefix: 1, protocol: .any),
             NENetworkRule(destinationNetworkEndpoint: .hostPort(host: "8000::1", port: anyPort), prefix: 1, protocol: .any),
         ]
-        setTunnelNetworkSettings(settings, completionHandler: completionHandler)
+        setTunnelNetworkSettings(settings) { [weak self] error in
+            if error == nil { self?.startHealthWatchdog() }
+            completionHandler(error)
+        }
+    }
+
+    /// Starts the watchdog that keeps capture accountable for the network it
+    /// took over.
+    ///
+    /// A provider that dies is harmless: the flows it was holding go direct
+    /// again. A provider that stays up while its upstream stops resolving is
+    /// not, because every name lookup on the host now fails through it, and a
+    /// host that cannot resolve cannot fetch, install, or read its way to the
+    /// fix. So capture is treated as a claim that has to keep being true: it
+    /// is armed on a probation window the launcher must confirm, then re-proved
+    /// on a timer, and handed back automatically when the proof stops holding.
+    private func startHealthWatchdog() {
+        guard configurationSnapshot().disableHealthWatchdog != true else { return }
+        lock.lock()
+        health.arm(at: Date())
+        lock.unlock()
+
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            self.lock.lock()
+            self.pathIsSatisfied = path.status == .satisfied
+            self.lock.unlock()
+        }
+        monitor.start(queue: healthQueue)
+        pathMonitor = monitor
+
+        let timer = DispatchSource.makeTimerSource(queue: healthQueue)
+        timer.schedule(
+            deadline: .now() + .seconds(Self.healthIntervalSeconds),
+            repeating: .seconds(Self.healthIntervalSeconds))
+        timer.setEventHandler { [weak self] in self?.runHealthCheck() }
+        timer.resume()
+        healthTimer = timer
+    }
+
+    /// Records a probe result under the lock. Kept out of the async caller so
+    /// the lock is never held across a suspension point.
+    private func observeHealth(succeeded: Bool, pathSatisfied: Bool) -> CaptureHealth.Decision {
+        lock.lock()
+        defer { lock.unlock() }
+        return health.observe(succeeded: succeeded, pathSatisfied: pathSatisfied, at: Date())
+    }
+
+    private func stopHealthWatchdog() {
+        healthTimer?.cancel()
+        healthTimer = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+    }
+
+    private func runHealthCheck() {
+        lock.lock()
+        let selected = configuration
+        let satisfied = pathIsSatisfied
+        let probation = health.probationDecision(at: Date())
+        let stoppingNow = stopping
+        lock.unlock()
+        guard !stoppingNow else { return }
+        if case let .release(reason) = probation {
+            release(reason)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let succeeded = await DNSHealthProbe.run(configuration: selected)
+            if case let .release(reason) = self.observeHealth(
+                succeeded: succeeded, pathSatisfied: satisfied) {
+                self.release(reason)
+            }
+        }
+    }
+
+    /// Gives the network back. Stopping the tunnel is what un-captures the
+    /// host, so this is the recovery, not merely the report of a problem.
+    private func release(_ reason: String) {
+        lock.lock()
+        guard !stopping else {
+            lock.unlock()
+            return
+        }
+        stopping = true
+        lock.unlock()
+        appendTelemetry(FlowTelemetry(
+            protocolName: "capture",
+            destination: configurationSnapshot().upstreamHost,
+            routedDestination: nil,
+            hostname: nil,
+            signingIdentifier: "tunless",
+            timestamp: Date(),
+            event: "released: \(reason)"))
+        NSLog("tunless: releasing capture: %@", reason)
+        cancelProxyWithError(CaptureReleased(reason: reason))
     }
 
     public override func stopProxy(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        stopHealthWatchdog()
         lock.lock()
         stopping = true
         let records = Array(activeFlows.values)
@@ -89,6 +194,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let selected = configurationSnapshot()
         guard selected.captures(
             host: originalDestination.host,
+            port: originalDestination.port,
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier)
         else { return false }
         let routeHost = (tcp.remoteHostname?.isEmpty == false ? tcp.remoteHostname : nil) ?? originalDestination.host
@@ -113,6 +219,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let selected = configurationSnapshot()
         guard selected.captures(
             host: destination.host,
+            port: destination.port,
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier)
         else { return false }
         return launch(flow: flow, operation: { [weak self] in
@@ -127,6 +234,16 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             telemetry.removeAll(keepingCapacity: true)
             lock.unlock()
             completionHandler?(try? JSONEncoder().encode(snapshot))
+            return
+        }
+        if let control = ControlMessage.decode(messageData) {
+            switch control {
+            case .confirmHealthy:
+                lock.lock()
+                health.confirm()
+                lock.unlock()
+                completionHandler?(Data([1]))
+            }
             return
         }
         guard
@@ -537,6 +654,22 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                 if packets.isEmpty { return .applicationEOF("empty-read") }
                 for (originalPayload, endpoint) in packets {
                     guard let originalAddress = Self.address(endpoint) else { continue }
+                    // An unconnected socket admitted on one destination can
+                    // later address a reserved one. Relaying that datagram
+                    // would hand the upstream's own resolver traffic back to
+                    // it, so drop it instead and let the sender retry; the
+                    // admission check cannot see it, because it happens after
+                    // the flow was already accepted.
+                    if configuration.reservedDestination(
+                        host: originalAddress.host, port: originalAddress.port) {
+                        recordCompletion(
+                            flow: flow,
+                            protocolName: "udp-datagram",
+                            destination: originalAddress,
+                            routedDestination: originalAddress,
+                            event: "reserved-destination-dropped")
+                        continue
+                    }
                     let routedAddress = originalPayload.count >= 12
                         ? configuration.routedDestination(for: originalAddress)
                         : originalAddress
@@ -800,5 +933,13 @@ actor DNSResponseMap {
         copy[copy.startIndex] = UInt8(identifier >> 8)
         copy[copy.index(after: copy.startIndex)] = UInt8(identifier & 0xff)
         return copy
+    }
+}
+
+/// Reported when the provider hands the network back on its own.
+struct CaptureReleased: LocalizedError {
+    let reason: String
+    var errorDescription: String? {
+        "tunless disabled capture to keep the host reachable: " + reason
     }
 }
