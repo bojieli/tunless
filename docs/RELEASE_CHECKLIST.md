@@ -54,8 +54,14 @@ qualified. Link each completed item to a run, commit, or measurement.
       no-proxy-environment applications
 - [x] Linux unconnected UDP sockets that alternate destinations fail safely or
       preserve per-datagram attribution in a current-kernel live test
-- [x] Rootful Podman and selected CRI/Kubernetes behavior are tested or marked
-      experimental; rootless limitation is documented
+- [ ] Rootful Podman and selected CRI/Kubernetes behavior are tested or marked
+      experimental; rootless limitation is documented. Reopened 2026-08-25:
+      `podman rm --force` on an attached container hung past the harness's
+      120-second guard in two of five runs, described under [gates not
+      demonstrated](MEASUREMENTS.md#gates-not-demonstrated). Removing an
+      attached container is an ordinary operator action, so either the hang is
+      understood and fixed, or rootful Podman ships marked experimental with
+      this named
 - [ ] Linux capture soaked for at least 48 hours on a host doing ordinary work
       with `scripts/tunless-linux-soak.sh`, and its summary reports no
       unprotected interval, no unexplained controller restart, and no silent
