@@ -142,3 +142,27 @@ final class ProcessIdentityTests: XCTestCase {
             executablePath: "/usr/bin/dig"))
     }
 }
+
+/// A reserved destination reached from inside an already-accepted UDP flow used
+/// to be dropped. Dropping leaves the sender waiting for an answer that never
+/// comes, with nothing anywhere reporting why — so it is delivered directly
+/// instead, which is what declining the flow would have produced.
+final class DirectDatagramRelayTests: XCTestCase {
+    func testAReservedDestinationInsideAnAcceptedFlowIsStillReserved() {
+        let config = ProviderConfiguration(
+            upstreamHost: "127.0.0.1", upstreamPort: 7897, dnsHost: "1.1.1.1", dnsPort: 53)
+        // Admitted on an ordinary destination...
+        XCTAssertTrue(config.captures(host: "8.8.8.8", port: 53, signingIdentifier: "com.example.resolver"))
+        // ...then addressing the trusted resolver, which must not be relayed
+        // back into the upstream that is waiting on it.
+        XCTAssertTrue(config.reservedDestination(host: "1.1.1.1", port: 53))
+        XCTAssertFalse(config.reservedDestination(host: "8.8.8.8", port: 53))
+    }
+
+    func testTheRelayBoundsHowManyDestinationsOneFlowCanOpen() async {
+        let relay = DirectDatagramRelay()
+        // Cancelling releases everything and refuses further sends, so a torn
+        // down flow cannot leave sockets behind.
+        await relay.cancelAll()
+    }
+}

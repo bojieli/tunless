@@ -541,6 +541,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                 using: .udp)
             let dnsResponses = DNSResponseMap(maxEntries: 4096, ttlSeconds: 30)
             let deadline = InactivityDeadline(timeoutSeconds: 120)
+            let direct = DirectDatagramRelay()
+            defer { Task { await direct.cancelAll() } }
             datagrams.start(queue: .global(qos: .userInitiated))
             event = await withTaskGroup(of: UDPPumpResult.self) { group -> String in
                 group.addTask {
@@ -549,7 +551,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                         connection: datagrams,
                         configuration: configuration,
                         dnsResponses: dnsResponses,
-                        deadline: deadline)
+                        deadline: deadline,
+                        direct: direct)
                 }
                 group.addTask {
                     await self.udpToApp(
@@ -776,7 +779,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         connection: NWConnection,
         configuration: ProviderConfiguration,
         dnsResponses: DNSResponseMap,
-        deadline: InactivityDeadline
+        deadline: InactivityDeadline,
+        direct: DirectDatagramRelay
     ) async -> UDPPumpResult {
         while !Task.isCancelled {
             do {
@@ -785,19 +789,24 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                 for (originalPayload, endpoint) in packets {
                     guard let originalAddress = Self.address(endpoint) else { continue }
                     // An unconnected socket admitted on one destination can
-                    // later address a reserved one. Relaying that datagram
-                    // would hand the upstream's own resolver traffic back to
-                    // it, so drop it instead and let the sender retry; the
-                    // admission check cannot see it, because it happens after
-                    // the flow was already accepted.
+                    // later address a reserved one, after the admission check
+                    // has already run. Relaying that datagram would hand the
+                    // upstream its own resolver traffic back, so it must not go
+                    // through the SOCKS path — but dropping it is not the
+                    // alternative. A reserved destination is one capture would
+                    // have declined, and declining means the datagram goes
+                    // direct, so send it direct: out of the extension, which is
+                    // not itself captured, with the reply written back into the
+                    // flow. That is what the sender would have got if the
+                    // socket had opened on this destination in the first place.
                     if configuration.reservedDestination(
                         host: originalAddress.host, port: originalAddress.port) {
-                        recordCompletion(
-                            flow: flow,
-                            protocolName: "udp-datagram",
-                            destination: originalAddress,
-                            routedDestination: originalAddress,
-                            event: "reserved-destination-dropped")
+                        await direct.send(
+                            originalPayload,
+                            to: originalAddress,
+                            from: flow,
+                            deadline: deadline)
+                        record(flow: flow, destination: originalAddress, routedDestination: originalAddress)
                         continue
                     }
                     let routedAddress = originalPayload.count >= 12
