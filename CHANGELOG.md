@@ -26,6 +26,23 @@ use ISO 8601. The repository has not made a public release yet.
 - macOS health probing over both DNS transports, gated on what preflight
   observed, so an upstream that stops relaying UDP no longer looks healthy to a
   TCP-only probe.
+- A Linux soak harness (`scripts/tunless-linux-soak.sh`) that ticks on its own
+  schedule, resolves a name from inside the captured cgroup, and asserts that
+  capture is claiming flows while it does. It records every unprotected
+  interval, every controller restart systemd performed quietly, and every
+  silent hole where the host stopped ticking at all, and summarises them at the
+  end. Linux is the platform this project calls generally available and the
+  only thing watching it over time was a connection stress test against the
+  portable core; a 48-hour run is now a release gate, as it already was on
+  macOS.
+- A live dual-stack destination-filter suite
+  (`scripts/integration-linux-dualstack.sh`, wired into the privileged Linux
+  workflow) that drives one AF_INET6 socket at an IPv4 destination through an
+  attached cgroup program and asserts what the filters actually did: the flow
+  is captured and reported unmapped, an IPv4 exclusion prefix covers the mapped
+  form, and an include list naming only an unrelated prefix declines to capture
+  it. Those three behaviors were fixed with userspace unit tests, which cannot
+  say which map the kernel consults.
 - A macOS soak harness (`scripts/tunless-macos-soak.sh`) that asserts
   resolution and capture state across sleeps, wakes, and network changes, plus
   release gates for a 48-hour soak and for surviving an app deletion while

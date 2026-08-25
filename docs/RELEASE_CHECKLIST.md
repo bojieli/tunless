@@ -31,8 +31,16 @@ qualified. Link each completed item to a run, commit, or measurement.
 
 - [x] Race, vet, static analysis, fuzz smoke, 10,000-connection stress, soak, and
       malformed-input suites pass
-- [x] Linux exact embedded BPF object is reproducible and verifier/runtime-tested
-      on x86-64 current kernel and ARM64 kernel 5.10
+- [ ] Linux exact embedded BPF object is reproducible and verifier/runtime-tested
+      on x86-64 current kernel and ARM64 kernel 5.10. The current-kernel half is
+      demonstrated on every push; the 5.10 half is not. Its evidence is the
+      Lima ARM64 guest from 2026-08-17/19, which predates the upstream and
+      resolver reservation, the capture floor, the both-family filter change,
+      the DNS override work, and the dual-stack decode fix, and the hosted
+      `kernel-5-10` job is gated behind `workflow_dispatch` with
+      `run_kernel_5_10: true` and has been skipped in every recent run. The
+      floor is a compatibility claim about the strictest verifier this project
+      supports; re-run it on the candidate commit before the tag
 - [ ] TCP/UDP WAN, upstream restart, overload, controller crash, stale PID,
       container stop/recreate, and fail-open recovery pass. Checked once, then
       invalidated: reserving the resolver from capture pointed this suite's
@@ -46,6 +54,15 @@ qualified. Link each completed item to a run, commit, or measurement.
       preserve per-datagram attribution in a current-kernel live test
 - [x] Rootful Podman and selected CRI/Kubernetes behavior are tested or marked
       experimental; rootless limitation is documented
+- [ ] Linux capture soaked for at least 48 hours on a host doing ordinary work
+      with `scripts/tunless-linux-soak.sh`, and its summary reports no
+      unprotected interval, no unexplained controller restart, and no silent
+      hole. Linux is the platform this release calls generally available, and
+      until this harness existed the only thing watching it over time was a
+      connection stress test against the portable core: load, not duration, and
+      not the eBPF datapath. The defect class that motivated the macOS gate —
+      a host that keeps resolving while capture has quietly stopped carrying
+      anything — is not macOS-specific
 - [ ] macOS capture soaked for at least 48 hours across sleeps, wakes, and a
       network change with `scripts/tunless-macos-soak.sh`, and its summary
       reports no unresolved interval and no unexplained not-capturing interval.
@@ -63,6 +80,13 @@ qualified. Link each completed item to a run, commit, or measurement.
       112.82 MB/s captured against 113.13 direct (0.27% below) and 1.35
       CPU-seconds per GB at ~10 MB resident, on kernel 6.8.0-111. Confirm on the
       tagged commit before the tag is signed
+
+- [ ] Every dated entry in [MEASUREMENTS.md](MEASUREMENTS.md) that backs a
+      README claim names the tagged commit, or is re-taken against it. The tree
+      has been moving faster than the evidence: the throughput figures, the
+      container matrix, and the kernel-floor run each describe a tree that no
+      longer exists, and a measurement that predates a datapath change is not
+      evidence for the code being tagged
 
 ## Release scope
 
