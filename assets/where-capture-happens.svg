@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 700" width="1240" height="700" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="A diagram of the operating system network stack showing two possible capture points. Tunless captures at the socket layer, where the destination is still the hostname the application asked for and the calling process is known. A TUN device captures further down at the routing table, where only packets and IP addresses remain, so it must fabricate DNS answers or sniff TLS to recover the hostname.">
+  <defs>
+    <marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#2563EB"/>
+    </marker>
+    <marker id="a-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#94A3B8"/>
+    </marker>
+    <marker id="a-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#C2410C"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="700" rx="0" fill="#FBFCFE"/>
+
+  <text x="620" y="48" text-anchor="middle" font-size="27" font-weight="700" fill="#0F172A">Two places you can catch a connection</text>
+  <text x="620" y="78" text-anchor="middle" font-size="17" fill="#64748B">The lower you go, the less the kernel can still tell you about it.</text>
+
+  <!-- ============ the stack, centre column ============ -->
+  <rect x="455" y="112" width="330" height="66" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <text x="620" y="140" text-anchor="middle" font-size="18" font-weight="600" fill="#0F172A">An application</text>
+  <text x="620" y="163" text-anchor="middle" font-size="14.5" fill="#64748B">curl, a browser, a container, an agent</text>
+
+  <line x1="620" y1="180" x2="620" y2="212" stroke="#94A3B8" stroke-width="2.5" marker-end="url(#a-grey)"/>
+
+  <!-- socket layer: where tunless sits -->
+  <rect x="425" y="216" width="390" height="86" rx="12" fill="#EFF6FF" stroke="#2563EB" stroke-width="3"/>
+  <text x="620" y="246" text-anchor="middle" font-size="18.5" font-weight="700" fill="#1D4ED8">The socket layer</text>
+  <text x="620" y="270" text-anchor="middle" font-size="14.5" fill="#1E40AF">connect() and sendmsg() pass through here</text>
+  <text x="620" y="291" text-anchor="middle" font-size="14.5" font-weight="600" fill="#2563EB">tunless catches it here</text>
+
+  <line x1="620" y1="304" x2="620" y2="336" stroke="#94A3B8" stroke-width="2.5" marker-end="url(#a-grey)"/>
+
+  <rect x="455" y="340" width="330" height="52" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <text x="620" y="372" text-anchor="middle" font-size="17" fill="#334155">The kernel's TCP/IP stack</text>
+
+  <line x1="620" y1="394" x2="620" y2="426" stroke="#94A3B8" stroke-width="2.5" marker-end="url(#a-grey)"/>
+
+  <!-- routing table: where TUN sits -->
+  <rect x="425" y="430" width="390" height="86" rx="12" fill="#FFF7ED" stroke="#C2410C" stroke-width="3"/>
+  <text x="620" y="460" text-anchor="middle" font-size="18.5" font-weight="700" fill="#9A3412">The routing table</text>
+  <text x="620" y="484" text-anchor="middle" font-size="14.5" fill="#9A3412">by now it is only packets</text>
+  <text x="620" y="505" text-anchor="middle" font-size="14.5" font-weight="600" fill="#C2410C">a TUN device catches it here</text>
+
+  <line x1="620" y1="518" x2="620" y2="550" stroke="#94A3B8" stroke-width="2.5" marker-end="url(#a-grey)"/>
+
+  <rect x="455" y="554" width="330" height="52" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <text x="620" y="586" text-anchor="middle" font-size="17" fill="#334155">The network card</text>
+
+  <!-- ============ left: what tunless still knows ============ -->
+  <line x1="425" y1="259" x2="372" y2="259" stroke="#2563EB" stroke-width="2.5" marker-end="url(#a-blue)"/>
+  <rect x="40" y="180" width="330" height="172" rx="12" fill="#FFFFFF" stroke="#93C5FD" stroke-width="2"/>
+  <text x="64" y="210" font-size="15.5" font-weight="700" fill="#1D4ED8">What is still on the table here</text>
+
+  <text x="64" y="240" font-size="14" fill="#64748B">where it is going</text>
+  <text x="64" y="262" font-size="15" font-weight="600" fill="#0F172A" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">github.com:443</text>
+
+  <text x="64" y="290" font-size="14" fill="#64748B">who asked for it</text>
+  <text x="64" y="312" font-size="15" font-weight="600" fill="#0F172A" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">/usr/bin/curl</text>
+
+  <text x="64" y="334" font-size="13.5" fill="#2563EB">the name, not a guess at it</text>
+
+  <!-- ============ right: what TUN has lost ============ -->
+  <line x1="815" y1="473" x2="868" y2="473" stroke="#C2410C" stroke-width="2.5" marker-end="url(#a-amber)"/>
+  <rect x="870" y="394" width="330" height="172" rx="12" fill="#FFFFFF" stroke="#FDBA74" stroke-width="2"/>
+  <text x="894" y="424" font-size="15.5" font-weight="700" fill="#9A3412">What is left by the time you get here</text>
+
+  <text x="894" y="454" font-size="14" fill="#64748B">where it is going</text>
+  <text x="894" y="476" font-size="15" font-weight="600" fill="#0F172A" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">140.82.116.4:443</text>
+
+  <text x="894" y="504" font-size="14" fill="#64748B">who asked for it</text>
+  <text x="894" y="526" font-size="15" font-weight="600" fill="#94A3B8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">—</text>
+
+  <text x="894" y="548" font-size="13.5" fill="#C2410C">the name is gone; it has to be recovered</text>
+
+  <!-- ============ the consequence ============ -->
+  <rect x="870" y="576" width="330" height="96" rx="12" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="2"/>
+  <text x="894" y="604" font-size="15" font-weight="700" fill="#B91C1C">So a TUN device has to invent things</text>
+  <text x="894" y="628" font-size="14" fill="#7F1D1D">hand out fake addresses to learn the name</text>
+  <text x="894" y="650" font-size="14" fill="#7F1D1D">or read the TLS handshake to guess it</text>
+
+  <rect x="40" y="372" width="330" height="96" rx="12" fill="#F0FDF4" stroke="#86EFAC" stroke-width="2"/>
+  <text x="64" y="400" font-size="15" font-weight="700" fill="#15803D">So tunless does not have to</text>
+  <text x="64" y="424" font-size="14" fill="#166534">it passes the real name straight to your proxy</text>
+  <text x="64" y="446" font-size="14" fill="#166534">and leaves DNS and the routing table alone</text>
+</svg>

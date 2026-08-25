@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 640" width="1240" height="640" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="A diagram of the path a connection takes. An unmodified application makes an ordinary socket call. Tunless catches it at the socket layer, applies its filters and its trusted DNS override, and hands it to an existing proxy as plain SOCKS5 with the hostname intact. The proxy keeps its own nodes, subscriptions and routing rules. If tunless stops running, connections go straight out as if it had never been installed.">
+  <defs>
+    <marker id="w-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#2563EB"/>
+    </marker>
+    <marker id="w-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="640" fill="#FBFCFE"/>
+
+  <text x="620" y="46" text-anchor="middle" font-size="27" font-weight="700" fill="#0F172A">What happens to one connection</text>
+  <text x="620" y="76" text-anchor="middle" font-size="17" fill="#64748B">Nothing is configured in the application, and nothing changes in your proxy.</text>
+
+  <!-- 1. application -->
+  <rect x="56" y="128" width="220" height="130" rx="14" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <text x="166" y="162" text-anchor="middle" font-size="18" font-weight="700" fill="#0F172A">The application</text>
+  <text x="166" y="190" text-anchor="middle" font-size="14" fill="#64748B">no proxy setting,</text>
+  <text x="166" y="210" text-anchor="middle" font-size="14" fill="#64748B">no environment variable,</text>
+  <text x="166" y="230" text-anchor="middle" font-size="14" fill="#64748B">no idea any of this</text>
+  <text x="166" y="250" text-anchor="middle" font-size="14" fill="#64748B">is happening</text>
+
+  <text x="314" y="180" text-anchor="middle" font-size="12.5" fill="#64748B">connect()</text>
+  <line x1="282" y1="196" x2="346" y2="196" stroke="#94A3B8" stroke-width="2.5" marker-end="url(#w-slate)"/>
+
+  <!-- 2. tunless -->
+  <rect x="352" y="118" width="274" height="150" rx="14" fill="#EFF6FF" stroke="#2563EB" stroke-width="3"/>
+  <text x="489" y="152" text-anchor="middle" font-size="18" font-weight="700" fill="#1D4ED8">tunless</text>
+  <text x="489" y="178" text-anchor="middle" font-size="13.5" fill="#1E40AF">catches it at the socket layer</text>
+  <line x1="376" y1="192" x2="602" y2="192" stroke="#BFDBFE" stroke-width="1.5"/>
+  <text x="489" y="212" text-anchor="middle" font-size="13.5" fill="#1E40AF">decides whether to take it</text>
+  <text x="489" y="232" text-anchor="middle" font-size="13.5" fill="#1E40AF">sends DNS somewhere you trust</text>
+  <text x="489" y="252" text-anchor="middle" font-size="13.5" fill="#1E40AF">keeps the hostname intact</text>
+
+  <text x="664" y="180" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2563EB">SOCKS5</text>
+  <line x1="632" y1="196" x2="696" y2="196" stroke="#2563EB" stroke-width="2.5" marker-end="url(#w-blue)"/>
+
+  <!-- 3. proxy -->
+  <rect x="702" y="118" width="274" height="150" rx="14" fill="#FFFFFF" stroke="#0F766E" stroke-width="2.5"/>
+  <text x="839" y="152" text-anchor="middle" font-size="18" font-weight="700" fill="#0F172A">Your proxy, untouched</text>
+  <text x="839" y="178" text-anchor="middle" font-size="13.5" fill="#64748B">mihomo, sing-box, anything</text>
+  <line x1="726" y1="192" x2="952" y2="192" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text x="839" y="212" text-anchor="middle" font-size="13.5" fill="#334155">your nodes</text>
+  <text x="839" y="232" text-anchor="middle" font-size="13.5" fill="#334155">your subscriptions</text>
+  <text x="839" y="252" text-anchor="middle" font-size="13.5" fill="#334155">your routing rules</text>
+
+  <line x1="982" y1="196" x2="1036" y2="196" stroke="#94A3B8" stroke-width="2.5" marker-end="url(#w-slate)"/>
+
+  <!-- 4. internet -->
+  <rect x="1042" y="156" width="150" height="80" rx="14" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <text x="1117" y="190" text-anchor="middle" font-size="17" font-weight="700" fill="#0F172A">The internet</text>
+  <text x="1117" y="214" text-anchor="middle" font-size="13.5" fill="#64748B">via your node</text>
+
+  <!-- the point about hostnames -->
+  <rect x="352" y="300" width="624" height="94" rx="12" fill="#F0FDF4" stroke="#86EFAC" stroke-width="2"/>
+  <text x="376" y="328" font-size="15" font-weight="700" fill="#15803D">The hostname survives the whole trip</text>
+  <text x="376" y="352" font-size="14" fill="#166534">Your proxy is handed <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-weight="600">github.com:443</tspan>, so a domain rule matches the way it</text>
+  <text x="376" y="372" font-size="14" fill="#166534">always did. Nothing had to be faked to get it there.</text>
+
+  <!-- fail-open -->
+  <rect x="46" y="434" width="1148" height="150" rx="14" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2"/>
+  <text x="70" y="466" font-size="17" font-weight="700" fill="#0F172A">And if tunless stops?</text>
+  <text x="70" y="492" font-size="14.5" fill="#475569">Nothing waits on it. The kernel owns the capture, so when the process goes away the capture goes with it and the next</text>
+  <text x="70" y="514" font-size="14.5" fill="#475569">connection takes the ordinary route out. Crash it, kill it, uninstall it — the machine keeps working.</text>
+
+  <rect x="70" y="530" width="238" height="38" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text x="189" y="555" text-anchor="middle" font-size="14" fill="#334155">The application</text>
+  <line x1="310" y1="549" x2="360" y2="549" stroke="#94A3B8" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#w-slate)"/>
+  <rect x="362" y="530" width="238" height="38" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="481" y="555" text-anchor="middle" font-size="14" fill="#94A3B8">tunless — not running</text>
+  <line x1="602" y1="549" x2="652" y2="549" stroke="#94A3B8" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#w-slate)"/>
+  <rect x="654" y="530" width="238" height="38" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text x="773" y="555" text-anchor="middle" font-size="14" fill="#334155">straight out, as before</text>
+  <text x="912" y="555" font-size="13.5" fill="#64748B">no route left behind to clean up</text>
+</svg>

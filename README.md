@@ -13,95 +13,103 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
-`tunless` captures local TCP and UDP flows at the socket layer and hands them to
-an ordinary SOCKS5 listener. Applications keep using normal sockets; your
-existing mihomo or sing-box instance keeps its nodes, subscriptions, and routing
-rules.
+You already run mihomo or sing-box. The nodes work, the rules are tuned, the
+subscription updates itself. The annoying part is getting your applications to
+actually use any of it.
 
-## Why tunless?
+Some of them read `HTTPS_PROXY`. Plenty never look, and those go straight out
+without telling you. So you turn on TUN mode, because it catches everything —
+and now your resolver hands out addresses from `198.18.0.0/15` that mean nothing
+to anyone but the proxy that minted them, your routing table has been rewritten
+by something that cannot put it back, and if that process dies you find out by
+losing the network.
 
-To make unmodified applications use a proxy today, you get two options — and
-both have structural problems.
+`tunless` is the third option. It catches connections one layer higher, at the
+socket, before they have turned into packets. Up there the kernel still knows
+the hostname the application asked for and which program asked, so there is
+nothing to reconstruct and nothing to fake. It hands what it catches to the
+proxy you already run, as ordinary SOCKS5.
 
-**TUN mode** captures packets, not sockets. To bridge packets back to
-application-level rules, it has to fake things:
+<p align="center">
+  <img src="assets/why-tunless.svg" alt="Three ways to send an unmodified application through a proxy. Asking each application to use proxy settings works only when it cooperates, and many do not. A TUN device catches all of them but must hand out fake addresses and rewrite the routing table. Catching the connection at the socket layer catches all of them without faking anything." width="880">
+</p>
 
-- **Forged DNS answers (fake IP)** — leaks into DoH-aware apps, caches,
-  WebRTC, and logs, and needs `fake-ip-filter` exception lists to stop
-  breaking things.
-- **Trivially detectable** — fake answers come from a reserved range
-  (`198.18.0.0/15`), so any application that inspects its own DNS (coding
-  agents' SSRF guardrails, region checks) can tell it is being proxied; apps
-  with their own resolver (DoH) bypass the mapping entirely.
-- **SNI sniffing** — the second bridge from packets to hostnames, and ECH is
-  removing it.
-- **Global route hijack** — `auto-route` rewrites the routing table; a routing
-  table entry has no owner, so a crash leaves your networking broken.
-- **A second TCP/IP stack** in userspace, alongside the kernel's.
+## Why one layer higher changes everything
 
-**Explicit HTTP/SOCKS proxy settings** only work if every application plays
-along:
+A TUN device is handed packets. By that point the name you typed is gone — all
+that is left is an address and a port. But your proxy's rules are written about
+names, so the name has to come back somehow, and there are only two ways to do
+that. Either answer DNS with a made-up address and remember which name you gave
+it out for, or read the TLS handshake on the way past and hope the hostname is
+still in the clear.
 
-- **Support is opt-in per app** — environment variables like `HTTPS_PROXY`
-  and the system proxy setting are just conventions; every application must
-  implement and honor them itself.
-- **Many applications don't** — plenty of tools never read proxy settings at
-  all, so their traffic bypasses the proxy silently. This gap is the entire
-  reason TUN mode exists.
+Both work most of the time. Both also explain the failures people actually hit:
+a made-up address that outlives the mapping behind it connects fine and then
+transfers nothing, and encrypted client hello is quietly removing the second
+option.
 
-`tunless` takes a third path: capture at the **socket layer**, where the
-operating system still knows the real destination and the real process:
+At the socket layer none of that is necessary, because nothing has been thrown
+away yet.
 
-- **No fabricated DNS answers** — names resolve normally, to real addresses.
-- **No route table mutation** — there is nothing to roll back after a crash.
-- **No second TCP/IP stack** — flows stay on the kernel's own sockets.
-- **Fail-open by construction** — capture state is owned by the kernel
-  (unpinned `bpf_link`, dynamic WFP session, system-extension lifecycle); if
-  `tunless` dies, new traffic goes direct. Tested with SIGKILL, not asserted.
-- **Keep your proxy stack** — `tunless` only replaces the inbound; nodes,
-  subscriptions, and rules stay in mihomo/sing-box.
+<p align="center">
+  <img src="assets/where-capture-happens.svg" alt="The operating system network stack with two capture points marked. At the socket layer the destination is still github.com:443 and the calling process is known. At the routing table only 140.82.116.4:443 remains and the process is unknown, so a TUN device must fabricate DNS answers or read the TLS handshake to recover the name." width="880">
+</p>
 
-The full design rationale is in [BLUEPRINT.md](BLUEPRINT.md).
+That is the whole idea. The rest follows from it:
+
+- Names resolve to real addresses, so nothing leaks a fake one into a cache, a
+  log, or an application that checks its own DNS.
+- The routing table is never touched, so there is nothing to roll back and
+  nothing left pointing at a device that no longer exists.
+- Flows stay on the kernel's own sockets. There is no second TCP/IP stack in
+  userspace reimplementing what the kernel already does.
+- If `tunless` stops, connections go out the normal way. The kernel owns the
+  capture, so killing the process releases it. We test that with `SIGKILL`
+  rather than claiming it.
+- Your proxy keeps its job. `tunless` replaces the inbound, not the rules.
+
+If you want the longer argument, including what was rejected and why, that is
+in [BLUEPRINT.md](BLUEPRINT.md).
 
 ## How it works
 
 <p align="center">
-  <img src="assets/architecture.svg" alt="Architecture: applications make ordinary socket calls; tunless captures flows at the OS socket layer and hands them with their real addresses to the tunless core, which emits plain SOCKS5 to your existing mihomo or sing-box proxy; rules and nodes stay downstream" width="720">
+  <img src="assets/how-it-works.svg" alt="The path one connection takes. An unmodified application makes an ordinary socket call, tunless catches it at the socket layer, applies its filters and trusted DNS override, and hands it to an existing proxy as plain SOCKS5 with the hostname intact. If tunless stops running, the connection goes out normally instead." width="880">
 </p>
 
-Applications make ordinary socket calls. The capture point lives inside the
-operating system's socket layer — eBPF cgroup hooks on Linux, a Network
-Extension on macOS, WFP on Windows — so every flow keeps its real destination
-and its calling process. `tunless` emits those flows as plain SOCKS5 to your
-existing proxy, where nodes, subscriptions, and rules stay unchanged.
+An application calls `connect()` the way it always has. The capture point lives
+inside the operating system's own socket layer — eBPF cgroup hooks on Linux, a
+Network Extension on macOS, WFP on Windows — so the flow arrives with its real
+destination and its calling process still attached. `tunless` decides whether
+to take it, sends port-53 traffic to a resolver you chose, and emits the rest as
+plain SOCKS5. Your proxy sees a normal SOCKS5 client.
 
-| Platform | Capture mechanism | Implementation status |
+| Platform | How it captures | Where it stands |
 | --- | --- | --- |
-| Linux | eBPF cgroup connect/sendmsg/recvmsg and sockops | Host and Docker namespace TCP plus connected UDP4/UDP6 and single-destination unconnected UDP4/UDP6; trusted DNS override is implemented in the shared SOCKS emitter |
-| macOS | `NETransparentProxyProvider` system extension | Recorded notarized development builds pass live trusted-DNS redirection, SOCKS TCP/UDP, HTTP/1.x, HTTP/2, TLS, and concurrency tests, and capture stands aside on its own when the upstream stops resolving; exact-candidate clean-machine qualification remains open |
-| Windows | WFP ALE connect-redirect callout | TCP and TCP DNS override source are implemented; WDK, fuzzing, runtime, and UDP DNS gates are unmet, and production driver signing is out of scope for this phase |
+| Linux | eBPF cgroup connect/sendmsg/recvmsg and sockops | TCP and UDP over both address families, on the host and inside container namespaces. Unconnected UDP is single-destination on purpose; see the note under [migration](#migrate-from-mihomo-tun). |
+| macOS | `NETransparentProxyProvider` system extension | Notarized builds pass the recorded live suites, and capture stands aside on its own if the upstream stops resolving. Clean-machine qualification of the exact candidate is still open. |
+| Windows | WFP ALE connect-redirect callout | Source only. The driver has never been built by a WDK, loaded, or run under Driver Verifier, and it is not signed. Treat it as a design, not a download. |
 
-The three platforms ship at different maturities, and the first release says so
+The three platforms ship at different maturities and the first release says so
 on its face: **Linux is generally available, macOS is beta, and Windows is
-source only** — its driver is implemented but unqualified and unsigned, so it
-is not a shippable artifact. See
+source only.** See
 [what the first release covers](docs/RELEASING.md#what-the-first-release-covers).
 
-The portable core includes SOCKS5 TCP/UDP emission, HTTP CONNECT and SOCKS5
-reference inbounds, destination/process capture filters, a real-answer DNS
-observer, and two opt-in process-metadata transports.
+The portable core does the SOCKS5 work for all three: TCP and UDP emission,
+HTTP CONNECT and SOCKS5 reference inbounds, capture filters, a DNS observer that
+watches real answers, and two optional ways to pass process identity downstream.
 
-Measured overhead is within **0.4% of direct throughput** (inside WAN
-run-to-run spread), at roughly 2.8% of one core and ~9 MB RSS. Every number is
-recorded with its host and date in
-[measurements and release gates](docs/MEASUREMENTS.md) — demonstrated, not
-assumed.
+Capture costs about a quarter of a percent of throughput. On a steady link,
+112.82 MB/s captured against 113.13 MB/s direct, at 1.35 CPU-seconds and about
+10 MB of memory per gigabyte relayed. Every number in this repository is written
+down with the machine and the date it came from, in
+[measurements and release gates](docs/MEASUREMENTS.md).
 
 ## Quick start (Linux)
 
-Requirements: cgroup v2, kernel 5.7 or newer, and privileges to load and attach
-BPF programs. The intended 5.10 floor and a current 6.8 kernel have both passed
-the verifier and live runtime suite.
+You need cgroup v2, kernel 5.7 or newer, and enough privilege to load and attach
+BPF programs. Kernels 5.10, 6.1 and 6.8 have all been through the verifier and
+the live runtime suite here.
 
 ```console
 make
@@ -120,9 +128,10 @@ TUNLESS_DNS_UPSTREAM=1.1.1.1:53
 Packages install this optional environment file as root-owned mode `0600`
 because an upstream URL may contain SOCKS credentials.
 
-Run mihomo/sing-box as a system service outside `user.slice`. The `tunless`
-unit itself runs in `system.slice`; this cgroup separation is loop avoidance,
-not an exception list.
+Run mihomo or sing-box as a system service, outside `user.slice`. The `tunless`
+unit lives in `system.slice` for the same reason. This is not an exception list
+you have to maintain — it is just keeping the proxy out of the scope that gets
+captured, so its own outbound connections do not come straight back to it.
 
 For an isolated scope or development test:
 
@@ -243,35 +252,39 @@ on macOS. Destination, domain, node, and subscription rules remain downstream.
 
 ## Proxying only some applications
 
-Your proxy keeps its rules. Tunless hands the upstream an ordinary SOCKS5
-request carrying the **hostname**, so domain rules, rule-sets, GEOIP, node
-selection, and subscriptions all match exactly as they did — in fact more
-exactly than a TUN carrying a real address, which has only the address to match
-on and falls back to IP rules or SNI sniffing.
+A fair question before installing any of this: does it cost you the routing you
+already set up? Mostly no.
 
-The one thing that does not survive is a `PROCESS-NAME` rule in the proxy:
-SOCKS5 has no field for process identity, so every captured flow looks like it
-came from `tunless`. That is not a loss of capability, because process
-selection moves to where the operating system still knows the answer:
+`tunless` hands your proxy an ordinary SOCKS5 request with the hostname in it,
+so domain rules, rule-sets, GEOIP, node selection and subscriptions all match
+the way they always did. A TUN carrying a real address has only the address to
+work with, so if anything you get *more* precision here, not less.
+
+The exception is a `PROCESS-NAME` rule. SOCKS5 has nowhere to put process
+identity, so every captured flow reaches the proxy looking like it came from
+`tunless`. You do not lose the ability to select by application, though — it
+moves to the place where the operating system still knows the answer:
 
 ```console
-# macOS: capture two applications and leave everything else alone.
-Tunless start --preset clash-verge --upstream 127.0.0.1:7897   --include-process /usr/bin/curl   --include-process com.apple.Safari
+# macOS: capture these two, leave everything else alone.
+Tunless start --preset clash-verge --upstream 127.0.0.1:7897 \
+  --include-process /usr/bin/curl \
+  --include-process com.apple.Safari
 ```
 
-Patterns match a signing identifier, an executable path, or its basename, so
-`--include-process '/opt/homebrew/*/xray'` picks out one program even when the
-toolchain gave it a generic identifier. On Linux the same selection is the
-capture scope itself: run the applications you want proxied inside one cgroup
-and point `--cgroup` at it.
+Patterns match a signing identifier, an executable path, or just the file name,
+so `--include-process '/opt/homebrew/*/xray'` picks out one program even when
+its toolchain left it with a generic identifier that half the binaries on the
+machine share. On Linux the selection *is* the capture scope: put the
+applications you want proxied in one cgroup and point `--cgroup` at it.
 
-Everything not selected never reaches the proxy at all — it goes direct, with
-no rule evaluation and no proxy involvement. That is the difference from TUN
-mode, where every flow enters the proxy and is filtered once inside it.
+Anything you did not select never reaches the proxy at all. No rule evaluation,
+no involvement, straight out. That is the real difference from TUN mode, where
+everything enters the proxy and gets sorted once it is inside.
 
-If you need different applications on *different nodes*, give each group its own
-tunless instance pointed at its own listener on the proxy, and write the
-per-listener rules downstream where node selection already lives.
+Want different applications on different nodes? Run one `tunless` per group,
+each pointed at its own listener on the proxy, and keep the per-listener rules
+downstream where node selection already lives.
 
 Linux unconnected UDP associations are deliberately single-destination. A
 second destination on the same socket fails with a permission error while the
@@ -282,14 +295,27 @@ One edge case remains unsupported: simultaneous unconnected UDP6 sockets using
 `SO_REUSEPORT` to share the exact source endpoint are ambiguous at the redirect
 listener. Avoid shared-source `SO_REUSEPORT` for captured UDP6 workloads.
 
-## Project status
+## Where the project actually is
 
-The repository is preparing an unpublished candidate; **no public release has
-been made**. Reviewable packages, SBOMs, checksums, and OCI output are built
-only by the manual non-publishing workflow described in
-[the release process](docs/RELEASING.md), and the evidence for each release
-gate — including the gates not yet demonstrated — is recorded in
+**Nothing has been released yet.** The code is public so it can be read and
+argued with; that is not the same as being ready to install on a machine you
+care about, and the difference is deliberate.
+
+What holds it up is not a feature list. Almost every serious bug found here so
+far turned up by running the thing for hours, not by running its tests — a
+watchdog that mistook a sleeping laptop for a failing proxy and left a machine
+resolving names unprotected for nine hours is the one that best makes the point.
+Until a long soak stops finding things like that, a release would just be
+handing the next one to somebody else.
+
+Packages, SBOMs, checksums and OCI images are built by a manual workflow that
+cannot publish anything, described in [the release process](docs/RELEASING.md).
+Every gate, including the ones nobody has met yet, is written down in
 [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md).
+
+If you have a Windows machine, the driver there needs somebody who does — the
+open work is listed in
+[the Windows notes](docs/WINDOWS.md#deferred-to-contributors).
 
 ## Documentation
 
@@ -306,14 +332,16 @@ gate — including the gates not yet demonstrated — is recorded in
 
 ## Contributing
 
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the
-development setup (`go test -race ./...`, `go vet`, `swift test`, privileged
-integration suites) and review expectations. Security reports should follow
-[SECURITY.md](SECURITY.md).
+Please do. [CONTRIBUTING.md](CONTRIBUTING.md) has the setup — `go test -race
+./...`, `go vet`, `swift test`, and the privileged integration suites — and what
+review looks like. Found a security problem? [SECURITY.md](SECURITY.md) has the
+private reporting path.
 
-`tunless` is local socket capture, not an IP-forwarding proxy: it does not
-intercept transit traffic from other machines, raw ICMP, ESP, GRE, or arbitrary
-IP protocols, and it is not a VPN, rule engine, proxy protocol collection, GUI,
-or mobile backend.
+One thing worth being clear about before you file an issue: `tunless` captures
+sockets on the machine it runs on. It is not a VPN, not a rule engine, not a
+collection of proxy protocols, not a GUI, and not a mobile backend. It will not
+touch traffic passing through from other machines, or raw ICMP, ESP, GRE and
+friends. Those are not gaps waiting to be filled; they belong to the proxy
+downstream, or to something else entirely.
 
 MIT licensed.
