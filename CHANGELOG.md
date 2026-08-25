@@ -73,6 +73,13 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Fixed
 
+- macOS watchdog pauses no longer error-close UDP flows that the operating
+  system may keep using. A closed flow left `mDNSResponder` sending through a
+  stale resolver socket, where every send failed locally with `EINVAL`; `dig`
+  still worked because it opened a fresh socket while `getaddrinfo`, curl, and
+  applications could hang indefinitely. Existing datagram flows now stay open
+  and route directly while capture stands aside, port-53 flows are exempt from
+  the generic UDP idle expiry, and provider shutdown ends UDP flows cleanly.
 - A `--upstream` given as a hostname is resolved once at startup and pinned to
   the addresses it returned, instead of being resolved again on every flow. The
   per-flow lookup was a loop: tunless normally shares the captured cgroup, so

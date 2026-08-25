@@ -135,6 +135,29 @@ Tunless status
 Note that `status` alone says `connected` either way — a paused session is still
 a live session. The `capture` field is the one that answers the question.
 
+**`dig` works but curl hangs before `Trying`.** These programs do not exercise
+the same macOS resolver path. `dig` opens its own DNS socket; curl and ordinary
+applications call `getaddrinfo`, which asks `mDNSResponder`. An affected older
+Tunless build could error-close an admitted UDP flow when its watchdog paused,
+or expire a quiet port-53 flow after two minutes. `mDNSResponder` retained its
+socket, but later sends failed locally with `EINVAL`, so applications waited
+even though the DNS server had a valid answer. Current builds preserve admitted
+UDP flows across a pause, send them directly until capture resumes, and do not
+idle-expire port-53 flows.
+
+To recover a Mac already in that state, restart the resolver. `mDNSResponder`
+is managed by launchd and comes back immediately; this does not change the DNS
+servers in Network Settings:
+
+```console
+sudo killall mDNSResponder
+curl --connect-timeout 10 -v https://api.anthropic.com/
+```
+
+The second command should print `Host ... was resolved` and then `Trying ...`.
+On an older Tunless build, upgrade before relying on this recovery because the
+next watchdog pause can invalidate the replacement socket again.
+
 ## Can a website tell I am using a proxy?
 
 Not from the DNS answers, which is the usual giveaway. Names resolve to their

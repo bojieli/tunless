@@ -167,6 +167,47 @@ final class DirectDatagramRelayTests: XCTestCase {
     }
 }
 
+/// Regression coverage for a live macOS failure: the watchdog error-closed an
+/// admitted DNS UDP flow, mDNSResponder kept using its socket, and every later
+/// getaddrinfo call waited while the socket's sends failed locally with EINVAL.
+final class DatagramFlowContinuityTests: XCTestCase {
+    private let config = ProviderConfiguration(
+        upstreamHost: "127.0.0.1", upstreamPort: 7897, dnsHost: "1.1.1.1", dnsPort: 53)
+
+    func testDatagramFlowsSurviveAWatchdogPause() {
+        XCTAssertTrue(DatagramFlowContinuity.survivesCapturePause)
+    }
+
+    func testAPausedFlowSendsDirectInsteadOfUsingTheBrokenUpstream() {
+        XCTAssertTrue(DatagramFlowContinuity.routesDirect(
+            capturePaused: true,
+            destination: SOCKSAddress(host: "223.6.6.6", port: 53),
+            configuration: config))
+        XCTAssertTrue(DatagramFlowContinuity.routesDirect(
+            capturePaused: true,
+            destination: SOCKSAddress(host: "203.0.113.10", port: 443),
+            configuration: config))
+    }
+
+    func testAHealthyFlowStillUsesSOCKSUnlessItsDestinationIsReserved() {
+        XCTAssertFalse(DatagramFlowContinuity.routesDirect(
+            capturePaused: false,
+            destination: SOCKSAddress(host: "223.6.6.6", port: 53),
+            configuration: config))
+        XCTAssertTrue(DatagramFlowContinuity.routesDirect(
+            capturePaused: false,
+            destination: SOCKSAddress(host: "1.1.1.1", port: 53),
+            configuration: config))
+    }
+
+    func testLongLivedResolverFlowsDoNotExpireUnderMDNSResponder() {
+        XCTAssertEqual(DatagramFlowContinuity.idleTimeoutSeconds(
+            for: SOCKSAddress(host: "223.6.6.6", port: 53)), 0)
+        XCTAssertEqual(DatagramFlowContinuity.idleTimeoutSeconds(
+            for: SOCKSAddress(host: "203.0.113.10", port: 443)), 120)
+    }
+}
+
 /// A hostname that cannot be carried in a SOCKS5 request is not a reason to
 /// fail the connection — the address is always encodable, and reaching the
 /// destination on IP rules beats not reaching it at all.

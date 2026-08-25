@@ -25,10 +25,12 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     private final class ActiveFlow {
         let flow: NEAppProxyFlow
         let task: Task<Void, Never>
+        let survivesCapturePause: Bool
 
-        init(flow: NEAppProxyFlow, task: Task<Void, Never>) {
+        init(flow: NEAppProxyFlow, task: Task<Void, Never>, survivesCapturePause: Bool) {
             self.flow = flow
             self.task = task
+            self.survivesCapturePause = survivesCapturePause
         }
     }
 
@@ -210,7 +212,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         }
     }
 
-    /// Stops claiming flows and tears down the ones in flight.
+    /// Stops claiming new flows and tears down streams in flight.
     ///
     /// This is a pause, not a shutdown. Declining a flow hands it back to the
     /// kernel, which routes it as though tunless were not installed, so the
@@ -227,10 +229,15 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         }
         let records = Array(activeFlows.values)
         lock.unlock()
-        // Flows already relaying through an upstream that cannot carry them are
-        // not going to recover; closing them lets applications retry, and the
-        // retry goes direct.
-        for record in records {
+        // Streams already relaying through an upstream that cannot carry them
+        // are not going to recover; closing them lets applications retry, and
+        // the retry goes direct. Keep datagram flows alive, though. macOS owns
+        // long-lived UDP resolver sockets and continues using them after a
+        // transparent-proxy flow is error-closed. The subsequent send then
+        // fails locally with EINVAL, so getaddrinfo hangs even though a fresh
+        // `dig` socket works. Their pump observes the paused health state and
+        // carries new datagrams directly until the upstream recovers.
+        for record in records where !record.survivesCapturePause {
             record.flow.closeReadWithError(SOCKSError.closed)
             record.flow.closeWriteWithError(SOCKSError.closed)
             record.task.cancel()
@@ -284,8 +291,12 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let records = Array(activeFlows.values)
         lock.unlock()
         for record in records {
-            record.flow.closeReadWithError(SOCKSError.closed)
-            record.flow.closeWriteWithError(SOCKSError.closed)
+            // UDP sockets, especially mDNSResponder's resolver sockets, can
+            // outlive this provider session. End their flow cleanly so macOS
+            // replaces it instead of retaining an error-poisoned socket.
+            let error: Error? = record.survivesCapturePause ? nil : SOCKSError.closed
+            record.flow.closeReadWithError(error)
+            record.flow.closeWriteWithError(error)
             record.task.cancel()
         }
         Task {
@@ -340,9 +351,12 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
             executablePath: Self.executablePath(auditToken: flow.metaData.sourceAppAuditToken))
         else { return false }
-        return launch(flow: flow, operation: { [weak self] in
-            await self?.handleUDP(flow, initialDestination: destination, configuration: selected)
-        })
+        return launch(
+            flow: flow,
+            survivesCapturePause: DatagramFlowContinuity.survivesCapturePause,
+            operation: { [weak self] in
+                await self?.handleUDP(flow, initialDestination: destination, configuration: selected)
+            })
     }
 
     public override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
@@ -379,7 +393,11 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         completionHandler?(Data([1]))
     }
 
-    private func launch(flow: NEAppProxyFlow, operation: @escaping @Sendable () async -> Void) -> Bool {
+    private func launch(
+        flow: NEAppProxyFlow,
+        survivesCapturePause: Bool = false,
+        operation: @escaping @Sendable () async -> Void
+    ) -> Bool {
         lock.lock()
         guard !stopping else {
             lock.unlock()
@@ -403,7 +421,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             await operation()
             self?.finishFlow(identifier)
         }
-        activeFlows[identifier] = ActiveFlow(flow: flow, task: task)
+        activeFlows[identifier] = ActiveFlow(
+            flow: flow, task: task, survivesCapturePause: survivesCapturePause)
         lock.unlock()
         return true
     }
@@ -545,7 +564,14 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                 port: NWEndpoint.Port(rawValue: relay.port)!,
                 using: .udp)
             let dnsResponses = DNSResponseMap(maxEntries: 4096, ttlSeconds: 30)
-            let deadline = InactivityDeadline(timeoutSeconds: 120)
+            // mDNSResponder keeps its UDP resolver sockets for much longer
+            // than an individual lookup. Expiring the provider flow underneath
+            // one leaves macOS reusing a socket whose proxy flow no longer
+            // exists; its later sends fail with EINVAL instead of opening a new
+            // flow. Ordinary UDP retains the bounded two-minute association.
+            let deadline = InactivityDeadline(
+                timeoutSeconds: DatagramFlowContinuity.idleTimeoutSeconds(
+                    for: initialDestination))
             let direct = DirectDatagramRelay()
             defer { Task { await direct.cancelAll() } }
             datagrams.start(queue: .global(qos: .userInitiated))
@@ -604,15 +630,15 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                     flow.closeWriteWithError(error)
                     return "idle-timeout"
                 case .cancelled:
-                    flow.closeReadWithError(SOCKSError.closed)
-                    flow.closeWriteWithError(SOCKSError.closed)
+                    flow.closeReadWithError(nil)
+                    flow.closeWriteWithError(nil)
                     return "cancelled"
                 }
             }
         } catch is CancellationError {
             event = "cancelled-during-setup"
-            flow.closeReadWithError(SOCKSError.closed)
-            flow.closeWriteWithError(SOCKSError.closed)
+            flow.closeReadWithError(nil)
+            flow.closeWriteWithError(nil)
         } catch {
             event = "setup-error:\(error)"
             flow.closeReadWithError(error)
@@ -793,19 +819,18 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                 if packets.isEmpty { return .applicationEOF("empty-read") }
                 for (originalPayload, endpoint) in packets {
                     guard let originalAddress = Self.address(endpoint) else { continue }
-                    // An unconnected socket admitted on one destination can
-                    // later address a reserved one, after the admission check
-                    // has already run. Relaying that datagram would hand the
-                    // upstream its own resolver traffic back, so it must not go
-                    // through the SOCKS path — but dropping it is not the
-                    // alternative. A reserved destination is one capture would
-                    // have declined, and declining means the datagram goes
-                    // direct, so send it direct: out of the extension, which is
-                    // not itself captured, with the reply written back into the
-                    // flow. That is what the sender would have got if the
-                    // socket had opened on this destination in the first place.
-                    if configuration.reservedDestination(
-                        host: originalAddress.host, port: originalAddress.port) {
+                    // A flow that predates a watchdog pause cannot be handed
+                    // back to the kernel without closing the application's
+                    // socket. Keep it alive and reproduce the direct path here.
+                    // The same route handles an unconnected socket that was
+                    // admitted on one destination and later addresses a
+                    // reserved one. Sending out of the extension is not itself
+                    // captured, and the reply is written back as though the
+                    // flow had never been claimed.
+                    if DatagramFlowContinuity.routesDirect(
+                        capturePaused: decliningFlows(),
+                        destination: originalAddress,
+                        configuration: configuration) {
                         await direct.send(
                             originalPayload,
                             to: originalAddress,
@@ -944,6 +969,33 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         }, onCancel: {
             gate.resume(with: .failure(CancellationError()))
         })
+    }
+}
+
+/// The lifecycle rules that keep a macOS UDP socket usable across capture
+/// transitions.
+///
+/// Network Extension owns the proxy flow, but the application still owns the
+/// socket above it. In particular, mDNSResponder reuses resolver sockets. An
+/// error or idle timeout below one does not make mDNSResponder replace it; the
+/// next send fails with EINVAL. Datagram flows therefore stay admitted while
+/// capture is paused and send directly for that interval, and port-53 flows do
+/// not get the generic association idle timeout.
+enum DatagramFlowContinuity {
+    static let survivesCapturePause = true
+    private static let ordinaryIdleTimeoutSeconds: TimeInterval = 120
+
+    static func idleTimeoutSeconds(for initialDestination: SOCKSAddress) -> TimeInterval {
+        initialDestination.port == 53 ? 0 : ordinaryIdleTimeoutSeconds
+    }
+
+    static func routesDirect(
+        capturePaused: Bool,
+        destination: SOCKSAddress,
+        configuration: ProviderConfiguration
+    ) -> Bool {
+        capturePaused || configuration.reservedDestination(
+            host: destination.host, port: destination.port)
     }
 }
 

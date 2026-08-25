@@ -319,6 +319,15 @@ of upstream trouble does not withdraw that request; staying aside afterwards
 would leave the host resolving names through whatever the network hands it,
 which is the exposure the DNS override exists to remove.
 
+Flows already admitted need separate treatment. TCP streams cannot change
+their route in place, so the provider closes them and lets applications retry
+directly. UDP sockets can outlive a Network Extension transition — notably the
+resolver sockets owned by `mDNSResponder`. The provider therefore leaves their
+flows open and sends new datagrams directly while paused, then returns them to
+SOCKS when the probe succeeds. Error-closing those flows made macOS retain a
+resolver socket whose later sends failed with `EINVAL`, defeating the recovery
+the watchdog was meant to provide.
+
 Sleep is excluded from the evidence. A machine going to sleep tears its network
 down and fails every probe, so the provider suspends the watchdog on
 `NEProvider.sleep()` and ignores probe results for twenty seconds after
@@ -631,6 +640,38 @@ After recovery, `status` should report `enabled: false` or `not-configured`:
 /Applications/Tunless.app/Contents/MacOS/Tunless status
 ```
 
+### `dig` resolves but applications do not
+
+If `dig api.anthropic.com` returns an address while curl remains above its
+progress meter without printing `Host ... was resolved` or `Trying ...`, the
+authoritative record and the configured DNS server are not the missing pieces.
+curl is blocked in the macOS `getaddrinfo` path through `mDNSResponder`; `dig`
+opened a separate socket and did not test that state.
+
+Affected older Tunless builds could leave `mDNSResponder` reusing a UDP socket
+after its transparent-proxy flow was error-closed by a watchdog pause or idle
+expiry. The unified log identifies that state with repeated messages like
+`sending ... failed: [22: Invalid argument]`:
+
+```console
+/usr/bin/log show --last 10m --style compact \
+  --predicate 'process == "mDNSResponder"' | grep 'Invalid argument'
+```
+
+Restart the resolver to discard its stale socket. launchd recreates the daemon
+immediately, and the command does not edit the configured DNS servers:
+
+```console
+sudo killall mDNSResponder
+curl --connect-timeout 10 -v https://api.anthropic.com/
+```
+
+Verify that the PID changed with `pgrep -x mDNSResponder` if necessary. Current
+builds keep admitted UDP flows alive and direct while capture is paused, end
+them cleanly on provider shutdown, and exempt port-53 flows from the ordinary
+two-minute UDP idle limit. Upgrade after recovery; otherwise another pause can
+reproduce the stale resolver state.
+
 ## DNS override
 
 `--dns-upstream` defaults to `1.1.1.1:53`. Tunless redirects captured UDP and
@@ -648,6 +689,12 @@ wrote (RFC 5452). Entries expire after 30 seconds and are capped at 4,096. Set
 `TUNLESS_DNS_UPSTREAM` to choose another trusted resolver. Use
 `--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to preserve the
 original DNS destination while continuing to proxy the flow.
+
+The 30-second expiry above applies to transaction-ID attribution, not to the
+macOS resolver flow. Port-53 UDP flows remain open for the lifetime chosen by
+`mDNSResponder`; applying the generic two-minute UDP association idle timeout
+under that socket can make the next system lookup fail locally instead of
+opening a replacement flow.
 
 The resolver's own address and port are reserved from capture while the
 override is on, so the upstream can reach it to answer the queries tunless

@@ -128,4 +128,7 @@ final class InactivityDeadlineTests:XCTestCase {
 	func testActivityPostponesDeadline()async throws{
 		let deadline=InactivityDeadline(timeoutSeconds:0.03);try await Task.sleep(nanoseconds:20_000_000);await deadline.touch();let started=Date();let expired=await deadline.waitForExpiry();XCTAssertTrue(expired);XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started),0.02)
 	}
+	func testZeroDisablesTheDeadline()async throws{
+		let deadline=InactivityDeadline(timeoutSeconds:0);let waiting=Task{await deadline.waitForExpiry()};try await Task.sleep(nanoseconds:20_000_000);waiting.cancel();let expired=await waiting.value;XCTAssertFalse(expired)
+	}
 }
