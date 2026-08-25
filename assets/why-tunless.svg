@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 660" width="1240" height="660" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="A comparison of three ways to send an unmodified application through a proxy. Asking the application to use proxy settings only works when it cooperates, and many do not. Putting a TUN device underneath everything catches all of them, but has to fabricate DNS answers, rewrite the routing table, and run a second TCP/IP stack. Catching the connection at the socket layer catches all of them too, without faking anything.">
+  <defs>
+    <marker id="y-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="660" fill="#FBFCFE"/>
+
+  <text x="620" y="46" text-anchor="middle" font-size="27" font-weight="700" fill="#0F172A">You have a proxy. Now get your apps to use it.</text>
+  <text x="620" y="76" text-anchor="middle" font-size="17" fill="#64748B">There are three ways to do that. Two of them have a catch.</text>
+
+  <!-- ================= column 1 ================= -->
+  <rect x="46" y="106" width="366" height="396" rx="14" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2"/>
+  <rect x="46" y="106" width="366" height="62" rx="14" fill="#F8FAFC"/>
+  <rect x="46" y="152" width="366" height="16" fill="#F8FAFC"/>
+  <text x="70" y="134" font-size="18" font-weight="700" fill="#0F172A">Ask each app to use it</text>
+  <text x="70" y="157" font-size="13.5" fill="#64748B">HTTPS_PROXY, the system proxy setting</text>
+
+  <text x="70" y="200" font-size="14.5" fill="#15803D">✓</text>
+  <text x="94" y="200" font-size="14.5" fill="#334155">Nothing to install</text>
+
+  <text x="70" y="232" font-size="14.5" fill="#B91C1C">✗</text>
+  <text x="94" y="232" font-size="14.5" fill="#334155">Every app has to opt in, and</text>
+  <text x="94" y="252" font-size="14.5" fill="#334155">plenty of them never do</text>
+
+  <text x="70" y="284" font-size="14.5" fill="#B91C1C">✗</text>
+  <text x="94" y="284" font-size="14.5" fill="#334155">When one ignores it, the traffic</text>
+  <text x="94" y="304" font-size="14.5" fill="#334155">just goes out direct and you</text>
+  <text x="94" y="324" font-size="14.5" fill="#334155">find out afterwards</text>
+
+  <rect x="70" y="352" width="318" height="124" rx="10" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.5"/>
+  <text x="88" y="378" font-size="13.5" font-weight="600" fill="#475569">Where it leaves you</text>
+  <text x="88" y="402" font-size="13.5" fill="#64748B">Fine for the apps that play along.</text>
+  <text x="88" y="422" font-size="13.5" fill="#64748B">This gap is the whole reason the</text>
+  <text x="88" y="442" font-size="13.5" fill="#64748B">next column exists.</text>
+
+  <!-- ================= column 2 ================= -->
+  <rect x="436" y="106" width="366" height="396" rx="14" fill="#FFFFFF" stroke="#FDBA74" stroke-width="2"/>
+  <rect x="436" y="106" width="366" height="62" rx="14" fill="#FFF7ED"/>
+  <rect x="436" y="152" width="366" height="16" fill="#FFF7ED"/>
+  <text x="460" y="134" font-size="18" font-weight="700" fill="#9A3412">Put a TUN under everything</text>
+  <text x="460" y="157" font-size="13.5" fill="#9A3412">a virtual interface plus auto-route</text>
+
+  <text x="460" y="200" font-size="14.5" fill="#15803D">✓</text>
+  <text x="484" y="200" font-size="14.5" fill="#334155">Catches every app, even the</text>
+  <text x="484" y="220" font-size="14.5" fill="#334155">ones that ignore settings</text>
+
+  <text x="460" y="252" font-size="14.5" fill="#B91C1C">✗</text>
+  <text x="484" y="252" font-size="14.5" fill="#334155">Hands out fake addresses to</text>
+  <text x="484" y="272" font-size="14.5" fill="#334155">work out what you asked for</text>
+
+  <text x="460" y="304" font-size="14.5" fill="#B91C1C">✗</text>
+  <text x="484" y="304" font-size="14.5" fill="#334155">Rewrites your routing table,</text>
+  <text x="484" y="324" font-size="14.5" fill="#334155">and nothing owns that entry</text>
+
+  <rect x="460" y="352" width="318" height="124" rx="10" fill="#FFF7ED" stroke="#FED7AA" stroke-width="1.5"/>
+  <text x="478" y="378" font-size="13.5" font-weight="600" fill="#9A3412">Where it leaves you</text>
+  <text x="478" y="402" font-size="13.5" fill="#9A3412">It works, until a fake address</text>
+  <text x="478" y="422" font-size="13.5" fill="#9A3412">outlives its mapping, or the proxy</text>
+  <text x="478" y="442" font-size="13.5" fill="#9A3412">dies with your routes still aimed</text>
+  <text x="478" y="462" font-size="13.5" fill="#9A3412">at a device that is gone.</text>
+
+  <!-- ================= column 3 ================= -->
+  <rect x="826" y="106" width="366" height="396" rx="14" fill="#FFFFFF" stroke="#2563EB" stroke-width="2.5"/>
+  <rect x="826" y="106" width="366" height="62" rx="14" fill="#EFF6FF"/>
+  <rect x="826" y="152" width="366" height="16" fill="#EFF6FF"/>
+  <text x="850" y="134" font-size="18" font-weight="700" fill="#1D4ED8">Catch it at the socket</text>
+  <text x="850" y="157" font-size="13.5" fill="#1E40AF">what tunless does</text>
+
+  <text x="850" y="200" font-size="14.5" fill="#15803D">✓</text>
+  <text x="874" y="200" font-size="14.5" fill="#334155">Catches every app too — same</text>
+  <text x="874" y="220" font-size="14.5" fill="#334155">reach, nothing to configure</text>
+
+  <text x="850" y="252" font-size="14.5" fill="#15803D">✓</text>
+  <text x="874" y="252" font-size="14.5" fill="#334155">Names resolve for real, because</text>
+  <text x="874" y="272" font-size="14.5" fill="#334155">it already knows the name</text>
+
+  <text x="850" y="304" font-size="14.5" fill="#15803D">✓</text>
+  <text x="874" y="304" font-size="14.5" fill="#334155">Leaves your routing table alone,</text>
+  <text x="874" y="324" font-size="14.5" fill="#334155">so there is nothing to undo</text>
+
+  <rect x="850" y="352" width="318" height="124" rx="10" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.5"/>
+  <text x="868" y="378" font-size="13.5" font-weight="600" fill="#1D4ED8">Where it leaves you</text>
+  <text x="868" y="402" font-size="13.5" fill="#1E40AF">The reach of the middle column</text>
+  <text x="868" y="422" font-size="13.5" fill="#1E40AF">without the invention. If it stops,</text>
+  <text x="868" y="442" font-size="13.5" fill="#1E40AF">traffic just goes out normally.</text>
+
+  <!-- ================= bottom line ================= -->
+  <rect x="46" y="530" width="1146" height="106" rx="14" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2"/>
+  <text x="70" y="564" font-size="17" font-weight="700" fill="#0F172A">The part worth keeping either way</text>
+  <text x="70" y="592" font-size="14.5" fill="#475569">tunless is not a replacement for mihomo or sing-box. It replaces the one piece that decides which connections your proxy</text>
+  <text x="70" y="614" font-size="14.5" fill="#475569">sees. Your nodes, your subscriptions and your rules stay exactly where they are, and keep working the way they do now.</text>
+</svg>
