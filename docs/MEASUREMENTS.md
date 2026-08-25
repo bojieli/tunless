@@ -463,6 +463,36 @@ object completed in 41.50 s at 2.53 MB/s with 4.35 s TTFB. This validates the
 RTX-PRO → Mac → proxy WAN topology, not the macOS Network Extension capture
 path.
 
+## Coexistence with an upstream TUN device
+
+Measured 2026-08-25 on the local Apple Silicon Mac against Clash Verge
+(mihomo, `mixed-port: 7897`) with its own TUN interface up: `auto-route: true`,
+`enhanced-mode: fake-ip`, `fake-ip-range: 198.18.0.1/16`, and `utun1024`
+holding the `0.0.0.0/1`-style split of the default route. Tunless build 11 ran
+`start --preset clash-verge --upstream 127.0.0.1:7897` with no other flags.
+
+Capture happens at the socket layer, before the routing table, so a captured
+flow never reaches the route that points at the TUN. Interface byte counters
+on `utun1024` measure that directly. The same 20 MB object was pinned to one
+address with `curl --resolve` and fetched twice: once captured, once with that
+address excluded so it fell through to the routing table.
+
+| Path for the 20 MB object | Bytes across `utun1024` | Throughput |
+| --- | ---: | ---: |
+| Captured by tunless | 3,798 | 15.07 MB/s |
+| Excluded, falls through to the TUN | 42,077,835 | 13.57 MB/s |
+
+The 3,798 bytes are unrelated background traffic; the 42 MB is the payload
+counted on both the inbound and re-emitted sides of the TUN's userspace stack.
+Turning the upstream's TUN off therefore cannot speed up captured traffic: the
+TUN is already not in its path.
+
+Throughput either way sits inside the run-to-run spread of this WAN node.
+Three interleaved runs of the same object gave 15.17, 19.96, and 19.48 MB/s
+captured against 17.34, 24.13, and 19.97 MB/s through the TUN — a spread
+within each path wider than the gap between their medians, so these
+measurements support "no measurable difference", not a ranking.
+
 ## Gates not demonstrated
 
 | Gate | Status / reason |

@@ -301,6 +301,15 @@ not cause. `--no-health-watchdog` (or `TUNLESS_NO_HEALTH_WATCHDOG=true`) turns
 the watchdog off for a host that would rather keep capture through an outage
 than have it disabled underneath a running workload.
 
+Release is final until someone starts capture again. Nothing re-arms it on a
+timer, because re-enabling capture is a privileged change to how every flow on
+the host is routed and should not happen unobserved. The practical consequence
+is that a laptop left running can be found with capture off in the morning if
+its upstream was unreachable for a few minutes overnight — `status` reports
+`disconnected` with `enabled` still true, and `start` puts it back. Prefer that
+to the alternative: capture that re-arms itself is capture that can take the
+network down while nobody is watching.
+
 A released capture is visible in `--telemetry` as a `capture` record whose
 event begins with `released:`, and in the system log:
 
@@ -351,6 +360,48 @@ stalled network rather than a DNS problem. The fake-IP range is excluded by
 default for this reason, and loopback and link-local are reserved outright, so
 what remains is procedural: change one layer at a time, and run `check` between
 changes rather than after both.
+
+### Should the upstream keep its TUN device?
+
+The two layers do not fight over a packet. Capture happens at the socket layer,
+before the routing table, so a flow tunless captures never reaches the route
+that points at the TUN; a flow it does not capture falls through and the TUN
+takes it. Measured on `utun1024`'s own byte counters, a captured 20 MB transfer
+put 3,798 bytes across the upstream's TUN and an excluded one put 42 MB:
+[coexistence with an upstream TUN device](MEASUREMENTS.md#coexistence-with-an-upstream-tun-device).
+
+**Turning the TUN off will not make anything faster.** It is already not in the
+path of captured traffic, and the same measurement found throughput either way
+inside this WAN node's run-to-run spread. Performance is not the reason to
+choose.
+
+The reasons to turn it off are what tunless exists for, and they are all
+consequences of fake IP and the route table:
+
+- **Fake-IP answers disappear.** With the TUN hijacking port 53, anything that
+  reaches its resolver gets an address from `198.18.0.0/15` — meaningful only
+  to the resolver that minted it, and quietly fatal once cached past its
+  mapping. Reserving the trusted resolver from capture means an application
+  that queries it directly falls through to the TUN and gets a fake answer;
+  with no TUN, it gets the real one.
+- **The route table stops being rewritten.** `auto-route` replaces the default
+  route with a split that has no owner, which is the failure tunless is built
+  to avoid: nothing rolls it back if the proxy dies.
+- **Rules keep the domain.** Tunless hands the upstream a hostname, so
+  domain rules match exactly. The TUN path carrying a real address has only the
+  address, so its rules degrade to IP matching or SNI sniffing.
+- **One capture layer to reason about.** `check` and `--telemetry` then
+  describe the whole picture rather than half of it.
+
+The reason to keep it is leak containment. Tunless is fail-open by
+construction: if the extension stops, is uninstalled, or releases capture, new
+flows go direct. With the upstream's TUN up, those flows are still proxied.
+Anything the reserved set and the default exclusions leave direct — loopback,
+link-local, multicast, the LAN, private and CGNAT ranges — is direct on
+purpose, but a host that must never send an unproxied packet wants the TUN
+underneath as a backstop, and should accept fake IP as the price.
+
+Whichever way, change one layer at a time and run `check` between changes.
 
 ### Telemetry and flow lifecycle
 
