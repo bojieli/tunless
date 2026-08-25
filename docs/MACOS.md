@@ -218,6 +218,15 @@ the upstream was asked to query are tunless's own datapath. The provider
 refuses to capture any of them, so a forgotten flag, a stale saved
 configuration, or an over-broad `--include-destination` cannot reach them.
 
+One edge is worth knowing. The upstream is matched as it was written, so an
+`--upstream` given as a hostname is recognized only when a flow names the same
+host; a flow addressed to the IP that name resolves to is not recognized as the
+upstream and is captured like anything else. Nothing on the machine has to
+notice — the provider's own connection to the upstream is never captured — but
+an application pointed at the proxy by address, while tunless was pointed at it
+by name, sends its proxy traffic back through the proxy. Writing `--upstream`
+as an address on both sides avoids it.
+
 **Excluded by default, overridable per prefix.** RFC 1918 and RFC 4193 private
 ranges, RFC 6598 carrier-grade NAT, and the `198.18.0.0/15` fake-IP range are
 excluded unless asked for. These are not reachability-critical the way the

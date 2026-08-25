@@ -573,8 +573,8 @@ func reservedDestinations(upstream []string, dnsTarget netip.AddrPort, included 
 // numeric for exactly this reason, and the upstream is the other half of the
 // same datapath.
 //
-// The address is fixed for the life of the process. A name whose record
-// changes is picked up by restarting, which is a smaller surprise than a
+// What the name resolved to is fixed for the life of the process. A record
+// that changes is picked up by restarting, which is a smaller surprise than a
 // datapath that depends on the traffic it carries.
 func pinUpstreamAddresses(ctx context.Context, address string, lookup func(context.Context, string, string) ([]netip.Addr, error)) ([]string, error) {
 	host, port, err := net.SplitHostPort(address)
