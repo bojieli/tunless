@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -112,21 +113,46 @@ func (o *Observer) Serve(ctx context.Context) error {
 	o.records = make(map[netip.Addr]map[string]time.Time)
 	o.recordCount = 0
 	o.mu.Unlock()
-	addr, err := net.ResolveUDPAddr("udp", o.Listen)
-	if err != nil {
-		return err
+	// The observer answers on UDP and TCP at the same port, and when the
+	// operator asks for an ephemeral one the kernel chooses it for UDP alone.
+	// Nothing reserves that number on the TCP side, so a busy host hands out a
+	// UDP port whose TCP half is already taken and startup fails with "address
+	// already in use" — rarely, and for no reason the operator can act on.
+	// Ask again instead. A fixed port is a request, not a suggestion, so it is
+	// still attempted exactly once and its error still surfaces.
+	requested := o.Listen
+	_, requestedPort, splitErr := net.SplitHostPort(requested)
+	ephemeral := splitErr == nil && requestedPort == "0"
+	attempts := 1
+	if ephemeral {
+		attempts = 8
 	}
-	udp, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		return err
+	var udp *net.UDPConn
+	var tcp net.Listener
+	for attempt := 0; attempt < attempts && tcp == nil; attempt++ {
+		var addr *net.UDPAddr
+		if addr, err = net.ResolveUDPAddr("udp", requested); err != nil {
+			return err
+		}
+		if udp, err = net.ListenUDP("udp", addr); err != nil {
+			return err
+		}
+		candidate := requested
+		if ephemeral {
+			candidate = udp.LocalAddr().String()
+		}
+		if tcp, err = net.Listen("tcp", candidate); err != nil {
+			_ = udp.Close()
+			udp = nil
+			if !ephemeral {
+				return err
+			}
+			continue
+		}
+		o.Listen = candidate
 	}
-	if _, port, splitErr := net.SplitHostPort(o.Listen); splitErr == nil && port == "0" {
-		o.Listen = udp.LocalAddr().String()
-	}
-	tcp, err := net.Listen("tcp", o.Listen)
-	if err != nil {
-		_ = udp.Close()
-		return err
+	if tcp == nil {
+		return fmt.Errorf("DNS observer found no port free for both UDP and TCP in %d attempts: %w", attempts, err)
 	}
 	o.stateMu.Lock()
 	if o.closed {

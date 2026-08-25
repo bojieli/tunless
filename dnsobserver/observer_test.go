@@ -295,7 +295,15 @@ func TestServeReadinessAndCoordinatedEphemeralPort(t *testing.T) {
 	observer := &Observer{Listen: "127.0.0.1:0"}
 	done := make(chan error, 1)
 	go func() { done <- observer.Serve(ctx) }()
-	for deadline := time.Now().Add(time.Second); !observer.Ready(); {
+	for deadline := time.Now().Add(10 * time.Second); !observer.Ready(); {
+		// Serve can fail before readiness, and reporting that as "did not
+		// become ready" hides the only line that says why. This test spent a
+		// while looking like a timing flake for exactly that reason.
+		select {
+		case err := <-done:
+			t.Fatalf("DNS observer stopped before becoming ready: %v", err)
+		default:
+		}
 		if time.Now().After(deadline) {
 			t.Fatal("DNS observer did not become ready")
 		}
@@ -374,5 +382,30 @@ func TestObservedTTLIsBoundedAtBothEnds(t *testing.T) {
 		if got := observedTTL(tt.ttl); got != tt.want {
 			t.Fatalf("observedTTL(%d) = %s, want %s", tt.ttl, got, tt.want)
 		}
+	}
+}
+
+func TestServeReportsAFixedPortConflictInsteadOfMoving(t *testing.T) {
+	// A fixed port is a request, not a suggestion. The retry that covers an
+	// ephemeral collision must not quietly relocate an observer the operator
+	// pinned, and must not swallow the reason it could not start.
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	address := blocker.Addr().String()
+
+	observer := &Observer{Listen: address}
+	err = observer.Serve(context.Background())
+	if err == nil {
+		_ = observer.Close()
+		t.Fatal("a fixed port whose TCP half was taken was accepted")
+	}
+	// Not asserted on the message text: Windows phrases this as "Only one usage
+	// of each socket address ... is normally permitted". The contract is that
+	// the observer refuses and stays put, not how a platform words the refusal.
+	if observer.Listen != address {
+		t.Fatalf("observer moved from the requested %s to %s", address, observer.Listen)
 	}
 }
