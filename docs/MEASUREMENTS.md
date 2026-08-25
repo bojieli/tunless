@@ -565,6 +565,51 @@ throughput and footprint half is still open: those figures need the documented
 Linux host under a real WAN proxy, not a LinuxKit VM behind Docker Desktop, and
 should be re-taken on the tagged tree.
 
+## Linux capture on a third kernel, 2026-08-25
+
+Run on a remote Debian 10 host, kernel `6.1.0-32-amd64`, x86-64, one vCPU,
+cgroup v2, against the current tree. The recorded kernels were 5.10 and 6.8, so
+6.1 is a new data point between them. Capture was scoped to a purpose-made
+cgroup rather than the host's own slices, because the machine runs production
+services whose egress must not move.
+
+- `--check` reported `kernel` pass, `cgroup_v2` pass, and **`bpf_load_attach`
+  pass**: the embedded programs loaded and attached on 6.1. It also reported
+  `loop_avoidance` fail for the default scope, correctly, since tunless would
+  have been inside the cgroup it was capturing.
+- An unmodified `curl` inside the measured cgroup completed real WAN TLS
+  through a direct-mode SOCKS5 downstream on the same host, and tunless
+  recorded the flow. Six flows were captured across the run.
+
+**Throughput over the WAN** could not resolve capture overhead on this link.
+Five interleaved pairs gave 4.84, 0.53, 6.20, 5.52, and 5.89 MB/s captured
+against 3.49, 4.60, 4.71, 0.92, and 1.70 MB/s direct. The spread inside each
+side is an order of magnitude wider than any difference between them, so the
+only honest reading is that this link cannot measure the question.
+
+**Throughput at a rate the WAN cannot reach**, server and client on the host
+with a non-loopback destination so the program still claims the flow, five
+interleaved pairs of 200 MB:
+
+| | Runs (MB/s) | Median |
+| --- | --- | ---: |
+| Captured | 199.2 / 108.9 / 160.2 / 107.3 / 107.8 | 108.9 |
+| Direct | 120.9 / 112.6 / 117.7 / 113.2 / 182.2 | 117.7 |
+
+The medians differ by about 7%, but the origin server here is Python's
+`http.server` on a single vCPU and is itself the noisy component, so this
+bounds the overhead rather than measuring it. It does establish that capture
+sustains roughly 110 MB/s on one vCPU.
+
+**Footprint** is the firmer result: relaying 1 GB captured cost 82 CPU ticks —
+0.82 CPU-seconds per GB — with resident memory between 6.5 and 6.8 MB
+throughout, consistent with the ~9 MB recorded on other hosts.
+
+This does not replace the headline WAN figures, which were taken on a different
+host under a real proxy and still need re-taking on the tagged tree. It does
+show the datapath works on a third kernel with the current tree, and it is the
+first footprint measurement taken under this tree.
+
 ## Gates not demonstrated
 
 | Gate | Status / reason |
