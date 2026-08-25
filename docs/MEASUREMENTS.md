@@ -572,8 +572,8 @@ should be re-taken on the tagged tree.
 | macOS exact release candidate | Builds 8 and 9 provide notarization, staple, Gatekeeper, activation, upgrade, and live-runtime evidence, but the current working tree is newer and has not completed exact-candidate clean-machine qualification. |
 | macOS `remoteHostname` fraction | Activation and representative declined-flow behavior are verified, but a statistically useful fraction still requires a defined realistic app corpus; no number is invented. |
 | macOS HTTP/3 | The installed curl lacks HTTP/3 support. HTTP/1.x, HTTP/2, TLS, DNS UDP/TCP, and non-DNS UDP passed, but no QUIC HTTP client was exercised. |
-| Windows WDK build/runtime/UDP | No Windows+WDK host was available. UDP is intentionally left direct. |
-| Windows verifier/fuzz/attestation/Secure Boot | Requires a Windows test machine, EV/Partner Center identity, and Microsoft attestation. |
+| Windows WDK build/runtime/UDP | Deferred to contributors: the maintainer has no Windows host. UDP is intentionally left direct. The open work is enumerated in [Windows notes](WINDOWS.md#deferred-to-contributors). |
+| Windows verifier/fuzz/attestation/Secure Boot | Deferred to contributors. Requires a Windows test machine, and for signing an EV certificate and Partner Center identity the project does not hold. |
 | Independent five-minute migration | Documentation exists, but no independent first-time user was available. |
 
 These unmet items are release blockers for their respective platform, not

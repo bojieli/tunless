@@ -140,4 +140,38 @@ runtime, coexistence, and rollback portions remain open and are unaffected.
 Windows stays recorded as unsupported; the gate is not weakened to match the
 deferral.
 
+## Deferred to contributors
+
+The maintainer has no Windows host, and no amount of care on Linux or macOS
+substitutes for one: a driver that has never been compiled by the WDK, loaded
+by a kernel, or run under Driver Verifier is source code with a plausible
+shape, and saying otherwise would be the one claim this project cannot back.
+So the Windows gates are deferred to anyone who has the hardware and wants to
+close them, rather than held open indefinitely against a machine that does not
+exist.
+
+What is needed, in the order it becomes useful:
+
+1. **Build.** Compile the callout driver with a current WDK and record the
+   toolchain versions. This alone tells everyone whether the source is
+   buildable, which nobody currently knows.
+2. **Load and run.** Install on a test machine with test-signing enabled,
+   exercise TCP capture against a SOCKS5 upstream, and record what works.
+3. **Driver Verifier.** Run the standard flags across a reboot cycle and
+   record the result, because a callout that faults takes the machine with it.
+4. **UDP.** UDP is intentionally left direct today; capturing it needs design
+   work as well as testing.
+5. **Coexistence and rollback.** Behaviour alongside other WFP filters, and
+   what happens when the service dies with filters installed.
+6. **Signing.** Production signing needs an EV certificate and a Partner
+   Center account with Microsoft attestation. That is an organisational
+   commitment rather than a technical one, and it is the last step, not the
+   first.
+
+Steps 1 through 5 need only a Windows machine and are worth doing on their own:
+each closes a specific unknown and can be contributed independently. Open an
+issue describing what you ran and what happened — including a failure, which is
+more useful than silence. Until at least steps 1 through 3 are recorded by
+somebody, Windows stays documented as unsupported and no binary is published.
+
 See also: [../README.md](../README.md) · [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)

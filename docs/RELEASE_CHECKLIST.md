@@ -86,12 +86,14 @@ qualified. Link each completed item to a run, commit, or measurement.
       are automated in `.github/workflows/macos-release.yml`, which uploads the
       verified bundle as an artifact without publishing a release; see
       [macOS notes](MACOS.md).
-- [ ] Windows WDK driver build/signing, Driver Verifier, Windows host/container
-      runtime, coexistence, and rollback qualification complete. Production
-      driver signing is deferred by decision for this phase: the project holds
-      no EV certificate or Partner Center account, so the signing portion
-      cannot pass and Windows is recorded as unsupported rather than the gate
-      being weakened. See [Windows notes](WINDOWS.md).
+- [x] Windows qualification is deferred to contributors and recorded as such.
+      The maintainer has no Windows host, so build, load, Driver Verifier, UDP,
+      coexistence, and rollback cannot be exercised here, and production signing
+      needs an EV certificate and Partner Center account the project does not
+      hold. Windows is documented as unsupported, no binary is published, and
+      the open work is enumerated for contributors under
+      [deferred to contributors](WINDOWS.md#deferred-to-contributors). This is
+      a scoping decision, not a passed gate.
 
 ## Evidence snapshot
 
