@@ -91,9 +91,10 @@ plain SOCKS5. Your proxy sees a normal SOCKS5 client.
 | Windows | WFP ALE connect-redirect callout | Source only. The driver has never been built by a WDK, loaded, or run under Driver Verifier, and it is not signed. Treat it as a design, not a download. |
 
 The three platforms ship at different maturities and the first release says so
-on its face: **Linux is generally available, macOS is beta, and Windows is
-source only.** See
-[what the first release covers](docs/RELEASING.md#what-the-first-release-covers).
+on its face: **0.1.0 is a preview — Linux is the platform it is meant for,
+macOS is beta, and Windows is source only.** See
+[what the first release covers](docs/RELEASING.md#what-the-first-release-covers)
+and [where the project actually is](#where-the-project-actually-is).
 
 The portable core does the SOCKS5 work for all three: TCP and UDP emission,
 HTTP CONNECT and SOCKS5 reference inbounds, capture filters, a DNS observer that
@@ -309,21 +310,40 @@ listener. Avoid shared-source `SO_REUSEPORT` for captured UDP6 workloads.
 
 ## Where the project actually is
 
-**Nothing has been released yet.** The code is public so it can be read and
-argued with; that is not the same as being ready to install on a machine you
-care about, and the difference is deliberate.
+**0.1.0 is a preview.** It is released so it can be installed, read and argued
+with by people who want to try it — and that is not the same as a version you
+should put on a machine you cannot afford to have surprised. The difference is
+deliberate, and this section says exactly where the line is rather than leaving
+you to find it.
 
-What holds it up is not a feature list. Almost every serious bug found here so
-far turned up by running the thing for hours, not by running its tests — a
-watchdog that mistook a sleeping laptop for a failing proxy and left a machine
-resolving names unprotected for nine hours is the one that best makes the point.
-Until a long soak stops finding things like that, a release would just be
-handing the next one to somebody else.
+What a preview means here is specific. The code is real: Linux capture is
+exercised against a live kernel on every pull request, the destination filters
+are demonstrated against an attached cgroup, artifacts rebuild byte-identically,
+and every performance claim in this file is backed by a dated measurement naming
+the host it ran on. What is missing is duration and breadth of evidence, not
+function.
 
-Packages, SBOMs, checksums and OCI images are built by a manual workflow that
-cannot publish anything, described in [the release process](docs/RELEASING.md).
-Every gate, including the ones nobody has met yet, is written down in
-[docs/MEASUREMENTS.md](docs/MEASUREMENTS.md).
+Three things in particular are worth knowing before you install it:
+
+- **Nobody has soaked it.** Almost every serious bug found here so far turned up
+  by running the thing for hours, not by running its tests — a watchdog that
+  mistook a sleeping laptop for a failing proxy and left a machine resolving
+  names unprotected for nine hours is the one that best makes the point. The
+  harnesses for a 48-hour soak now exist on both platforms. Neither has been
+  run. That class of bug is exactly the class still open.
+- **The kernel floor is unverified on this code.** Capture is tested on current
+  kernels continuously, but the 5.10 evidence predates this release's datapath
+  changes.
+- **Rootful Podman is not reliable.** Podman commands against a container
+  tunless is attached to — removing it, entering it — hang in roughly two runs
+  in five on podman 5.8.4 with netavark. Docker and containerd do not show it.
+  The cause is unknown. Use Docker for now.
+
+Packages, SBOMs, checksums and OCI images are built by a manual workflow,
+described in [the release process](docs/RELEASING.md). Every gate, including
+the ones nobody has met yet, is written down in
+[docs/MEASUREMENTS.md](docs/MEASUREMENTS.md) — read that table before deciding
+this belongs on your machine.
 
 If you have a Windows machine, the driver there needs somebody who does — the
 open work is listed in
