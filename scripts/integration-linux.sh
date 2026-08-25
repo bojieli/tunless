@@ -80,7 +80,10 @@ assert report["ok"] is True, report
 assert {check["name"] for check in report["checks"]} >= {"kernel","cgroup_v2","loop_avoidance","bpf_load_attach","socks5_upstream"}
 PY
 
-"$TUNLESS_BINARY" --backend linux --cgroup "$cgroup" --upstream "$UPSTREAM" --listen 127.0.0.1:0 --status-listen "127.0.0.1:$status_port" --log-level debug >"$work_dir/tunless.log" 2>&1 &
+# Pin the resolver rather than inheriting TUNLESS_DNS_UPSTREAM from whatever
+# the runner exports: it decides which address gets reserved from capture, and
+# the UDP probe below is chosen to be a different one.
+"$TUNLESS_BINARY" --backend linux --cgroup "$cgroup" --upstream "$UPSTREAM" --dns-upstream 1.1.1.1:53 --listen 127.0.0.1:0 --status-listen "127.0.0.1:$status_port" --log-level debug >"$work_dir/tunless.log" 2>&1 &
 tunless_pid=$!
 for _ in {1..50}; do
 	kill -0 "$tunless_pid" 2>/dev/null || {
@@ -127,8 +130,13 @@ def query(transaction):
     labels = b"".join(bytes([len(label)]) + label for label in b"example.com".split(b".")) + b"\0"
     return struct.pack("!HHHHHH", transaction, 0x0100, 1, 0, 0, 0) + labels + struct.pack("!HH", 1, 1)
 
+# Not the configured --dns-upstream. Tunless reserves that address from
+# capture so its own relayed queries cannot come back to it, so a probe aimed
+# there measures the reservation working, not capture working: the datagram
+# goes out direct, no UDP flow is ever recorded, and the recovery assertion
+# below counts zero. Any resolver the controller is not relaying to will do.
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.connect(("1.1.1.1", 53))
+sock.connect(("9.9.9.9", 53))
 sock.settimeout(3)
 sock.send(query(0x7100))
 reply = sock.recv(4096)
