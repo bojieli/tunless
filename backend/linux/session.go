@@ -55,6 +55,30 @@ func reservedCapturePrefixes() []netip.Prefix {
 	}
 }
 
+// withMappedForms returns prefixes plus the IPv4-mapped IPv6 form of every
+// IPv4 one among them.
+//
+// A socket opened as AF_INET6 reaches an IPv4 destination as ::ffff:a.b.c.d,
+// and the capture program matches the address it is handed. Without the mapped
+// form, `--exclude-destination 10.0.0.0/8` would not cover a dual-stack client
+// reaching 10.0.0.1 — the filter would be silently inapplicable to exactly the
+// runtimes that default to one socket for both families, which is where nobody
+// thinks to check.
+func withMappedForms(prefixes []netip.Prefix) []netip.Prefix {
+	result := make([]netip.Prefix, 0, len(prefixes)*2)
+	for _, prefix := range prefixes {
+		result = append(result, prefix)
+		if !prefix.Addr().Is4() {
+			continue
+		}
+		mapped := netip.PrefixFrom(netip.AddrFrom16(prefix.Addr().As16()), prefix.Bits()+96)
+		if mapped.IsValid() {
+			result = append(result, mapped)
+		}
+	}
+	return result
+}
+
 func parseRedirectListenPort(address string) (uint16, error) {
 	if address == "" {
 		return 0, nil

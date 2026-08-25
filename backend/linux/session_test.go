@@ -120,3 +120,56 @@ func TestReservedCapturePrefixesCoverWhatSOCKSCannotCarry(t *testing.T) {
 		}
 	}
 }
+
+func TestWithMappedFormsCoversDualStackSockets(t *testing.T) {
+	got := withMappedForms([]netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("2001:db8::/32"),
+		netip.MustParsePrefix("::ffff:192.0.2.0/120"),
+	})
+	want := []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("::ffff:10.0.0.0/104"),
+		netip.MustParsePrefix("2001:db8::/32"),
+		// Already in mapped form: mapping it again would run past 128 bits.
+		netip.MustParsePrefix("::ffff:192.0.2.0/120"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("withMappedForms = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("withMappedForms[%d] = %s, want %s", i, got[i], want[i])
+		}
+	}
+	// The mapped form has to match what an IPv6 hook is handed for an IPv4
+	// destination, and nothing else.
+	mapped := got[1]
+	if !mapped.Contains(netip.MustParseAddr("::ffff:10.1.2.3")) {
+		t.Fatal("mapped prefix does not contain the mapped form of an address it covers")
+	}
+	if mapped.Contains(netip.MustParseAddr("2001:db8::1")) {
+		t.Fatal("mapped prefix reaches a native IPv6 address")
+	}
+}
+
+func TestReservedPrefixesReachDualStackSockets(t *testing.T) {
+	reserved := withMappedForms(reservedCapturePrefixes())
+	contains := func(value string) bool {
+		addr := netip.MustParseAddr(value)
+		for _, prefix := range reserved {
+			if prefix.Contains(addr) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, value := range []string{"::ffff:169.254.169.254", "::ffff:224.0.0.251", "::ffff:127.0.0.1", "::ffff:255.255.255.255"} {
+		if !contains(value) {
+			t.Fatalf("%s is not reserved from capture", value)
+		}
+	}
+	if contains("::ffff:203.0.113.7") {
+		t.Fatal("an ordinary destination is reserved in mapped form")
+	}
+}

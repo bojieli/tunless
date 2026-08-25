@@ -152,6 +152,12 @@ sudo ./tunless --upstream 127.0.0.1:7890 \
   --exclude-destination fc00::/7
 ```
 
+`--include-destination` is an allowlist for both address families at once, so
+naming only IPv4 prefixes leaves IPv6 direct rather than capturing all of it,
+and a prefix covers a destination however the program reached it — a runtime
+that opens one dual-stack socket for both families is filtered the same as one
+that opens an IPv4 socket.
+
 Some destinations stay direct no matter what the filters say: loopback, the
 unspecified address, link-local — which is where a cloud instance asks about
 itself — and multicast and broadcast. A proxy has no way to carry any of them,

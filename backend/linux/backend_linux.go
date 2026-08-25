@@ -138,19 +138,20 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	v6 := netip.IPv6Loopback().As16()
 	copy(config[4:20], v6[:])
 	binary.BigEndian.PutUint16(config[20:22], port)
-	for _, prefix := range b.Filter.IncludeDestinations {
-		if prefix.Addr().Unmap().Is4() {
-			config[22] = 1
-		} else {
-			config[23] = 1
-		}
+	// An include list is an allowlist, not a per-family one. Both flags go on
+	// together so that a family nobody named matches nothing instead of
+	// everything: asking to capture 203.0.113.0/24 and getting every IPv6
+	// destination along with it is the opposite of narrowing, and it is what
+	// the macOS provider already does with the same flags.
+	if len(b.Filter.IncludeDestinations) > 0 {
+		config[22], config[23] = 1, 1
 	}
 	if err = collection.Maps["config_map"].Put(uint32(0), config); err != nil {
 		collection.Close()
 		cleanup()
 		return nil, fmt.Errorf("configure eBPF: %w", err)
 	}
-	if err = loadPrefixes(collection, "include", b.Filter.IncludeDestinations); err != nil {
+	if err = loadPrefixes(collection, "include", withMappedForms(b.Filter.IncludeDestinations)); err != nil {
 		collection.Close()
 		cleanup()
 		return nil, err
@@ -158,12 +159,12 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 	// The floor goes in before the operator's exclusions and is not reachable
 	// from the configuration: the program consults the exclusion maps before
 	// the inclusion maps, so nothing a filter says can put these back.
-	if err = loadPrefixes(collection, "exclude", reservedCapturePrefixes()); err != nil {
+	if err = loadPrefixes(collection, "exclude", withMappedForms(reservedCapturePrefixes())); err != nil {
 		collection.Close()
 		cleanup()
 		return nil, err
 	}
-	if err = loadPrefixes(collection, "exclude", b.Filter.ExcludeDestinations); err != nil {
+	if err = loadPrefixes(collection, "exclude", withMappedForms(b.Filter.ExcludeDestinations)); err != nil {
 		collection.Close()
 		cleanup()
 		return nil, err
@@ -215,7 +216,9 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 func loadPrefixes(collection *ebpf.Collection, kind string, prefixes []netip.Prefix) error {
 	for _, prefix := range prefixes {
 		prefix = prefix.Masked()
-		addr := prefix.Addr().Unmap()
+		// Deliberately not unmapped: a prefix in IPv4-mapped form describes what
+		// the IPv6 hooks see, and belongs in the IPv6 map at its 128-bit length.
+		addr := prefix.Addr()
 		var key []byte
 		name := kind + "6"
 		if addr.Is4() {

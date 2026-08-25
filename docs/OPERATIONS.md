@@ -56,6 +56,17 @@ long iteration does not hold the backend lock used by live flow correlation.
 Capture diagnostics are cached for one second; polling faster only refreshes
 the lock-free flow counters.
 
+## Destination filters
+
+`--exclude-destination` and `--include-destination` take CIDR prefixes and are
+evaluated in the capture path itself, so an excluded flow stays direct rather
+than being accepted and dropped. Exclusions are evaluated first. An include
+list is an allowlist across both address families: with any `--include-destination`
+present, a destination is captured only if it matches one of them, so naming
+only IPv4 prefixes leaves IPv6 direct. A prefix applies however the program
+reached the destination — a runtime that opens a single dual-stack socket for
+both families sees the same filtering as one that opens an IPv4 socket.
+
 ## Destinations that are never captured
 
 Loopback, the unspecified address, link-local (`169.254.0.0/16`, `fe80::/10`),
