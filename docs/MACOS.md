@@ -426,6 +426,18 @@ underneath as a backstop, and should accept fake IP as the price.
 
 Whichever way, change one layer at a time and run `check` between changes.
 
+### Bounding what one application can consume
+
+`--max-flows` (default 4096, or `TUNLESS_MAX_FLOWS`) caps the flows the
+provider holds at once. Past the ceiling a flow is declined rather than queued,
+which sends it direct — the same outcome as any other declined flow, so the
+application degrades instead of failing. The ceiling exists because macOS
+reports and can terminate an extension that spends too much CPU, and an
+application opening flows faster than the upstream retires them would otherwise
+turn itself into a capture outage for everything else on the host. `status`
+reports the live count and the running rejection total, so a rising rejection
+count identifies which of the two is happening.
+
 ### Soaking a deployment
 
 Every serious defect this project has found surfaced over hours rather than
