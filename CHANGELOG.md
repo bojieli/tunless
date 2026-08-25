@@ -3,7 +3,7 @@
 This project follows semantic versioning after its first public release. Dates
 use ISO 8601. The repository has not made a public release yet.
 
-## Unreleased
+## 0.1.0 — UNRELEASED
 
 ### Added
 
