@@ -16,6 +16,20 @@ use ISO 8601. The repository has not made a public release yet.
 - Private, carrier-grade NAT, and `198.18.0.0/15` fake-IP ranges excluded by
   default on macOS, with `--include-destination` overriding per prefix and
   `--no-default-exclusions` dropping the set.
+- macOS process selection that matches the executable path and its basename as
+  well as the signing identifier, so a rule can name one program even when the
+  toolchain gave it a default identifier shared with unrelated binaries;
+  telemetry carries the executable behind each flow.
+- A macOS flow ceiling (`--max-flows`, default 4096) matching the portable
+  core, so one application cannot push the extension into the CPU budget macOS
+  terminates it for. Rejected flows go direct.
+- macOS health probing over both DNS transports, gated on what preflight
+  observed, so an upstream that stops relaying UDP no longer looks healthy to a
+  TCP-only probe.
+- A macOS soak harness (`scripts/tunless-macos-soak.sh`) that asserts
+  resolution and capture state across sleeps, wakes, and network changes, plus
+  release gates for a 48-hour soak and for surviving an app deletion while
+  capture runs.
 - A macOS capture health watchdog that re-proves name resolution through the
   live upstream every 30 seconds. After three consecutive failures the provider
   stops claiming flows, so they go direct as though tunless were not installed,
