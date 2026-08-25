@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"net/netip"
 	"testing"
+
+	"github.com/bojieli/tunless"
 )
 
 func TestUDPSessionKeySeparatesReusedEndpointsByCookie(t *testing.T) {
@@ -171,5 +173,57 @@ func TestReservedPrefixesReachDualStackSockets(t *testing.T) {
 	}
 	if contains("::ffff:203.0.113.7") {
 		t.Fatal("an ordinary destination is reserved in mapped form")
+	}
+}
+
+func TestDualStackUDPResponseMatchesItsRecord(t *testing.T) {
+	// What the IPv6 connect hook writes for a dual-stack socket reaching an
+	// IPv4 destination: family AF_INET6, address in mapped form.
+	value := make([]byte, 32)
+	copy(value, netip.MustParseAddr("::ffff:203.0.113.7").AsSlice())
+	binary.BigEndian.PutUint16(value[16:18], 9001)
+	value[18] = 10
+	value[19] = originalProtocolUDP | originalProtocolConnected
+	binary.LittleEndian.PutUint32(value[20:24], 4242)
+
+	original, _, _, err := decodeOriginalRecord(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if original != netip.MustParseAddrPort("203.0.113.7:9001") {
+		t.Fatalf("decoded destination = %s, want the IPv4 address it is", original)
+	}
+	// The proxy answers about the address it dialed, which is the IPv4 one. A
+	// reply rejected here is a reply the application never receives.
+	if err = validateUDPResponseRecord(value, netip.MustParseAddrPort("203.0.113.7:9001")); err != nil {
+		t.Fatalf("reply to a dual-stack UDP flow was rejected: %v", err)
+	}
+	if err = validateUDPResponseRecord(value, netip.MustParseAddrPort("[::ffff:203.0.113.7]:9001")); err != nil {
+		t.Fatalf("reply named in mapped form was rejected: %v", err)
+	}
+	if err = validateUDPResponseRecord(value, netip.MustParseAddrPort("198.51.100.8:9001")); err == nil {
+		t.Fatal("a reply from somewhere else was accepted")
+	}
+}
+
+func TestDualStackRecordIsFilteredByAnIPv4Prefix(t *testing.T) {
+	// The userspace filter runs on the decoded destination, and an IPv4 prefix
+	// does not contain a mapped address. Left mapped, an exclusion the operator
+	// wrote would apply to a single-family program and quietly skip the
+	// dual-stack one beside it.
+	value := make([]byte, 32)
+	copy(value, netip.MustParseAddr("::ffff:10.1.2.3").AsSlice())
+	binary.BigEndian.PutUint16(value[16:18], 443)
+	value[18] = 10
+	value[19] = originalProtocolTCP
+	binary.LittleEndian.PutUint32(value[20:24], 4242)
+
+	destination, _, _, err := decodeOriginalRecord(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := tunless.Filter{ExcludeDestinations: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}}
+	if filter.Capture(tunless.Flow{OrigDst: destination}) {
+		t.Fatal("an excluded destination reached over a dual-stack socket was captured")
 	}
 }

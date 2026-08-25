@@ -141,7 +141,12 @@ func decodeOriginalRecord(value []byte) (netip.AddrPort, int32, uint64, error) {
 	if pid == 0 || pid > ^uint32(0)>>1 {
 		return netip.AddrPort{}, 0, 0, errors.New("original-destination record has an invalid PID")
 	}
-	return netip.AddrPortFrom(addr, port), int32(pid), binary.LittleEndian.Uint64(value[24:32]), nil // #nosec G115 -- PID range is checked above
+	// A record written by the IPv6 hooks says AF_INET6 because the socket was,
+	// not because the destination is. A program that opens one socket for both
+	// families reaches 10.0.0.1 as ::ffff:10.0.0.1, and everything downstream —
+	// the address a reply is checked against, the destination a filter matches,
+	// the line an operator reads in the log — means the IPv4 address it is.
+	return netip.AddrPortFrom(addr.Unmap(), port), int32(pid), binary.LittleEndian.Uint64(value[24:32]), nil // #nosec G115 -- PID range is checked above
 }
 
 func decodeOriginalProtocol(value []byte) (protocol byte, connected bool, err error) {
