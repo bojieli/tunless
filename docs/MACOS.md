@@ -426,6 +426,42 @@ underneath as a backstop, and should accept fake IP as the price.
 
 Whichever way, change one layer at a time and run `check` between changes.
 
+### Soaking a deployment
+
+Every serious defect this project has found surfaced over hours rather than
+minutes, on triggers that only a real machine produces: a sleep, a wake, a node
+switch, a network change. A watchdog that mistook a sleeping laptop for a
+failing upstream left a host resolving names unprotected for nine hours, and it
+was noticed by accident rather than by a test. Unit tests cannot see that class
+of bug and neither can a five-minute smoke test.
+
+`scripts/tunless-macos-soak.sh` watches the assembled system on the machine's
+own schedule, asserting on every tick that a name resolves and that capture is
+claiming flows while it does:
+
+```console
+scripts/tunless-macos-soak.sh --interval 60
+```
+
+Leave it running across sleeps and network changes; Ctrl-C prints the summary,
+and `--summary ~/.tunless/soak.jsonl` reprints it later. It reports unresolved
+intervals, not-capturing intervals, and silent holes — stretches with no tick at
+all, which is what a sleeping or wedged host looks like from the outside and is
+itself a finding.
+
+```console
+soak 08-25 10:12 -> 08-27 09:41 (47.5 hours, 2849 ticks)
+  resolved:  2849/2849 ticks (100.00%)
+  capturing: 2841/2849 ticks (99.72%)
+  no UNRESOLVED intervals
+  not-capturing intervals: 1
+     08-26 03:14:02 -> 03:22:11  (8.1 min)  paused: name resolution failed 3 times...
+```
+
+A not-capturing interval is not automatically a failure — capture standing
+aside during a genuine upstream outage is the watchdog working — but every one
+of them should have an explanation, and an unresolved interval never should.
+
 ### Telemetry and flow lifecycle
 
 Every accepted TCP and UDP flow emits a terminal completion record.
