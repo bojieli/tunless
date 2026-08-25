@@ -519,6 +519,16 @@ disable capture immediately with:
 preferences, so it still works when DNS is down. Do not try to fix resolution
 first; disable capture, then diagnose with the host back on its previous path.
 
+**Deleting the app does not stop capture.** Removing `Tunless.app` while
+capture is running leaves the host working — reachability survives, because
+nothing about the deletion breaks the flows the provider is already relaying —
+but the provider keeps capturing, and the binary that could stop it is gone.
+Demonstrated on build 13: 867 flows were captured during the window with no app
+on disk, and `systemextensionsctl` still reported the extension as `activated
+enabled`. Recovery is then System Settings > General > Login Items & Extensions
+> Network Extensions, or reinstalling the app and running `cleanup`. Prefer
+running `cleanup` *before* deleting the app, which is what it is for.
+
 `stop` stops all running Tunless proxy sessions and persists them as disabled.
 For a stronger reset, `cleanup` also removes every transparent-proxy
 configuration owned by Tunless, including stale duplicates left by an

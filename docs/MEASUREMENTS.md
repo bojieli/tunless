@@ -493,6 +493,46 @@ captured against 17.34, 24.13, and 19.97 MB/s through the TUN — a spread
 within each path wider than the gap between their medians, so these
 measurements support "no measurable difference", not a ranking.
 
+## macOS capture on build 13
+
+Measured 2026-08-25 on the local Apple Silicon Mac against Clash Verge
+(`mixed-port: 7897`) with its TUN interface up, using the notarized build 13
+that carries the reserved-destination floor, the health watchdog, the flow
+ceiling, and executable-path process selection. The same 20 MB object was
+pinned to one address with `curl --resolve` and fetched three times each way,
+alternating configuration between batches.
+
+| Path | Runs (B/s) | Median |
+| --- | --- | ---: |
+| Captured by tunless | 12,871,760 / 17,967,224 / 12,854,470 | 12.87 MB/s |
+| Not captured | 11,005,640 / 17,487,760 / 13,112,114 | 13.11 MB/s |
+
+Time to first byte was 0.47–0.54 s either way. The spread within each path is
+wider than the gap between medians, so this supports "no measurable difference
+on this path", not a ranking — the same conclusion the coexistence measurement
+reached, now on the build that added per-flow reserved checks and a ceiling.
+
+Executable-path resolution was exercised on the same build: 69 of 70 captured
+flows resolved their audit token to an executable, and the one that did not was
+a short-lived `curl` that exited before the lookup, which is the documented
+best-effort fallback to the signing identifier.
+
+**Deleting the app while capture runs.** `Tunless.app` was removed from
+`/Applications` with capture live and no `stop` or `cleanup` first. The host
+kept working — `www.debian.org` and `news.ycombinator.com` resolved to real
+addresses, `github.com` returned 200 in 0.51 s, and the LAN gateway stayed
+reachable at 4.6 ms. Capture did not stop: 867 flows were buffered during the
+window and drained after reinstalling, and `systemextensionsctl` still reported
+the extension `activated enabled`. Reachability survives an app deletion;
+capture outlives it, and with the launcher gone the only ways to stop it are
+System Settings or reinstalling the app.
+
+**Provenance of the headline Linux numbers.** The WAN throughput and footprint
+figures above were measured 2026-08-17 on a tree older than the current one.
+The Linux datapath is unchanged since — the reserved-destination work adds
+startup exclusions rather than touching the capture path — but the numbers have
+not been re-taken on the current tree and should be before a Linux tag.
+
 ## Gates not demonstrated
 
 | Gate | Status / reason |

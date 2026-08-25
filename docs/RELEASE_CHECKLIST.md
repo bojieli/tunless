@@ -46,10 +46,14 @@ qualified. Link each completed item to a run, commit, or measurement.
       minutes — a watchdog that mistook a sleeping laptop for a failing
       upstream left a host resolving unprotected for nine hours — and no
       shorter test can see that class of bug
-- [ ] macOS host still resolves after `Tunless.app` is deleted while capture is
+- [x] macOS host still resolves after `Tunless.app` is deleted while capture is
       running, without running `stop` or `cleanup` first. Deleting the app is
       what an ordinary uninstall looks like, and the fail-open claim is only
-      demonstrated if the host survives it
+      demonstrated if the host survives it. Demonstrated on build 13; note that
+      capture keeps running after the deletion, so the documented recovery is
+      System Settings or reinstalling the app
+- [ ] Linux WAN throughput and footprint re-measured on the tagged tree; the
+      published figures predate the current one
 
 ## Artifacts
 
