@@ -166,3 +166,37 @@ final class DirectDatagramRelayTests: XCTestCase {
         await relay.cancelAll()
     }
 }
+
+/// A hostname that cannot be carried in a SOCKS5 request is not a reason to
+/// fail the connection — the address is always encodable, and reaching the
+/// destination on IP rules beats not reaching it at all.
+final class UsableHostnameTests: XCTestCase {
+    func testOrdinaryNamesAreKept() {
+        XCTAssertEqual(SOCKSAddress.usableHostname("github.com"), "github.com")
+        XCTAssertEqual(SOCKSAddress.usableHostname("xn--80ak6aa92e.com"), "xn--80ak6aa92e.com")
+        XCTAssertEqual(SOCKSAddress.usableHostname(String(repeating: "a", count: 255)),
+                       String(repeating: "a", count: 255))
+    }
+
+    func testNamesThatCannotBeFramedFallBack() {
+        // The domain field carries a single length byte.
+        XCTAssertNil(SOCKSAddress.usableHostname(String(repeating: "a", count: 256)))
+        // Multi-byte characters count as bytes, not characters.
+        XCTAssertNil(SOCKSAddress.usableHostname(String(repeating: "é", count: 200)))
+        XCTAssertNil(SOCKSAddress.usableHostname(nil))
+        XCTAssertNil(SOCKSAddress.usableHostname(""))
+    }
+
+    func testNamesADownstreamProxyWouldMisreadFallBack() {
+        XCTAssertNil(SOCKSAddress.usableHostname("exa mple.com"))
+        XCTAssertNil(SOCKSAddress.usableHostname("example.com\u{0}extra"))
+        XCTAssertNil(SOCKSAddress.usableHostname("example.com\n"))
+        XCTAssertNil(SOCKSAddress.usableHostname("example.com\u{7f}"))
+    }
+
+    func testAnEncodableNameStillEncodes() throws {
+        let encoded = try SOCKSAddress(host: "github.com", port: 443).encoded()
+        XCTAssertEqual(encoded.first, 3)
+        XCTAssertEqual(Int(encoded[1]), "github.com".utf8.count)
+    }
+}

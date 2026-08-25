@@ -308,7 +308,12 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
             executablePath: executablePath)
         else { return false }
-        let routeHost = (tcp.remoteHostname?.isEmpty == false ? tcp.remoteHostname : nil) ?? originalDestination.host
+        // Prefer the name the application asked for, but fall back to the
+        // address when that name cannot be carried. A hostname longer than the
+        // SOCKS5 length byte, or one carrying control characters, is not a
+        // reason to fail the connection: the address is always encodable, and
+        // reaching the destination on IP rules beats not reaching it.
+        let routeHost = SOCKSAddress.usableHostname(tcp.remoteHostname) ?? originalDestination.host
         let requestedDestination = SOCKSAddress(host: routeHost, port: originalDestination.port)
         let routedDestination = selected.routedDestination(for: requestedDestination)
         guard launch(flow: flow, operation: { [weak self] in

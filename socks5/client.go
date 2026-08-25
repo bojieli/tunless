@@ -137,9 +137,12 @@ func (c *Client) connect(ctx context.Context, command byte, dst netip.AddrPort, 
 	if !dst.IsValid() || dst.Addr().Zone() != "" || (dst.Port() == 0 && (command != 3 || !dst.Addr().IsUnspecified())) {
 		return nil, netip.AddrPort{}, func() {}, errors.New("SOCKS5 destination is invalid")
 	}
-	if hostname != "" && len(hostname) > 255 {
-		return nil, netip.AddrPort{}, func() {}, errors.New("SOCKS5 hostname exceeds 255 bytes")
-	}
+	// A hostname that cannot be framed is not a reason to fail the flow. The
+	// address is right there and always encodable, and a connection that
+	// reaches its destination on IP rules alone is better than one that does
+	// not happen at all. Only the routing precision is lost, and only for the
+	// unusual names this rejects.
+	hostname = usableHostname(hostname)
 	conn, err := dialContext(ctx, c.Dialer, "tcp", c.Address, redirectRecords)
 	if err != nil {
 		return nil, netip.AddrPort{}, func() {}, fmt.Errorf("dial SOCKS5 upstream: %w", err)
@@ -589,6 +592,26 @@ func readAddr(ctx context.Context, r io.Reader) (netip.AddrPort, error) {
 		return netip.AddrPort{}, errors.New("invalid address")
 	}
 	return netip.AddrPortFrom(addr, binary.BigEndian.Uint16(b[n:])), nil
+}
+
+// usableHostname returns hostname when it can be carried in a SOCKS5 request,
+// and "" when the caller should fall back to the numeric address.
+//
+// SOCKS5 gives the domain field a single length byte, so anything past 255
+// bytes cannot be represented at all. The rest of the check is about what a
+// downstream proxy will do with the value: a name carrying spaces, control
+// bytes, or a NUL either gets rejected or, worse, parsed as something other
+// than what was sent.
+func usableHostname(hostname string) string {
+	if hostname == "" || len(hostname) > 255 {
+		return ""
+	}
+	for i := 0; i < len(hostname); i++ {
+		if hostname[i] <= ' ' || hostname[i] == 0x7f {
+			return ""
+		}
+	}
+	return hostname
 }
 
 func parseAddr(_ context.Context, b []byte) (netip.AddrPort, int, error) {

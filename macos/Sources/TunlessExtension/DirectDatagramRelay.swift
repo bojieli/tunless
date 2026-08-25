@@ -33,6 +33,16 @@ actor DirectDatagramRelay {
     /// outstanding.
     private var writing = false
     private var pending: [(Data, Network.NWEndpoint)] = []
+    /// How many replies may wait for the flow to accept them.
+    ///
+    /// The queue exists because only one write may be outstanding, so a sender
+    /// faster than the flow drains would otherwise grow it without limit and
+    /// turn one busy socket into unbounded memory inside the extension. Past
+    /// this point the oldest reply is dropped: these are datagrams, the sender
+    /// already has to tolerate loss, and dropping the stale one keeps the
+    /// answers that are still worth having.
+    private let maxPending = 64
+    private var droppedReplies = 0
 
     /// Most destinations one flow may reach directly.
     ///
@@ -97,6 +107,10 @@ actor DirectDatagramRelay {
     private func enqueue(_ datagram: (Data, Network.NWEndpoint), into flow: NEAppProxyUDPFlow) {
         guard !cancelled else { return }
         pending.append(datagram)
+        if pending.count > maxPending {
+            pending.removeFirst(pending.count - maxPending)
+            droppedReplies += 1
+        }
         guard !writing else { return }
         writing = true
         drain(into: flow)
