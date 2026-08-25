@@ -71,12 +71,13 @@ qualified. Link each completed item to a run, commit, or measurement.
       preserve per-datagram attribution in a current-kernel live test
 - [ ] Rootful Podman and selected CRI/Kubernetes behavior are tested or marked
       experimental; rootless limitation is documented. Reopened 2026-08-25:
-      `podman rm --force` on an attached container hung past the harness's
-      120-second guard in two of five runs, described under [gates not
-      demonstrated](MEASUREMENTS.md#gates-not-demonstrated). Removing an
-      attached container is an ordinary operator action, so either the hang is
-      understood and fixed, or rootful Podman ships marked experimental with
-      this named
+      podman commands against an attached container hang past the harness's
+      120-second guard in roughly two runs in five — twice `rm --force`, once
+      `exec` — described under [gates not
+      demonstrated](MEASUREMENTS.md#gates-not-demonstrated). Removing or
+      entering an attached container is an ordinary operator action, so either
+      the hang is understood and fixed, or rootful Podman ships marked
+      experimental with this named
 - [ ] Linux capture soaked for at least 48 hours on a host doing ordinary work
       with `scripts/tunless-linux-soak.sh`, and its summary reports no
       unprotected interval, no unexplained controller restart, and no silent
