@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/bojieli/tunless"
+	"github.com/bojieli/tunless/workload"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
@@ -362,7 +363,15 @@ func decodeOriginal(value []byte) (netip.AddrPort, tunless.ProcessInfo, error) {
 		return netip.AddrPort{}, tunless.ProcessInfo{}, err
 	}
 	path, _ := os.Readlink(filepath.Join("/proc", fmt.Sprint(pid), "exe"))
-	return dst, tunless.ProcessInfo{PID: pid, Path: path, CgroupID: cgroupID}, nil
+	// The cgroup is read here rather than resolved from cgroupID because the
+	// BPF hook reports an inode and mapping it back to a path means scanning
+	// the hierarchy, while /proc has the path already. A process that exited
+	// between capture and lookup yields an empty identity, which is the honest
+	// answer and still leaves the flow worth carrying.
+	return dst, tunless.ProcessInfo{
+		PID: pid, Path: path, CgroupID: cgroupID,
+		Workload: workload.FromPID(pid),
+	}, nil
 }
 
 func (b *Backend) lookup(ap netip.AddrPort, proto byte) (uint64, []byte, error) {

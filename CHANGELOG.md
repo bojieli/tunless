@@ -3,6 +3,20 @@
 This project follows semantic versioning after its first public release. Dates
 use ISO 8601.
 
+## Unreleased
+
+### Added
+
+- Per-flow workload attribution on Linux: the cgroup a captured process belongs
+  to is resolved to a Kubernetes pod UID, a container ID, or a systemd unit,
+  and carried alongside the existing process fields. Both cgroup drivers are
+  parsed, because both are deployed and reading one as the other yields a pod
+  UID that looks plausible and matches nothing. The pod's namespace and name
+  are deliberately not derived: they live in the API server, and inventing them
+  would produce a guess a consumer cannot distinguish from a fact. See
+  [docs/FLOW_ATTRIBUTION.md](docs/FLOW_ATTRIBUTION.md) for what is available and
+  on what terms.
+
 ## 0.1.0 — 2026-08-25
 
 Preview release. See
