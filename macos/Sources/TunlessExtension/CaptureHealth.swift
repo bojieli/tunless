@@ -123,7 +123,12 @@ struct CaptureHealth: Equatable {
     /// when the host has no usable network, a failed probe says nothing about
     /// capture, and pausing would only add a recovery step to an outage capture
     /// did not cause.
-    mutating func observe(succeeded: Bool, pathSatisfied: Bool, at now: Date) -> Decision {
+    mutating func observe(
+        succeeded: Bool,
+        detail: String = "no answer",
+        pathSatisfied: Bool,
+        at now: Date
+    ) -> Decision {
         guard !ignoringProbes(at: now) else { return .unchanged }
         guard pathSatisfied else { return .unchanged }
         if succeeded {
@@ -148,7 +153,8 @@ struct CaptureHealth: Equatable {
             return pause("capture never resolved a name within its probation window")
         }
         guard consecutiveFailures >= failuresBeforePause else { return .unchanged }
-        return pause("name resolution failed \(consecutiveFailures) times in a row through the upstream")
+        return pause(
+            "name resolution failed \(consecutiveFailures) times in a row through the upstream: \(detail)")
     }
 
     /// Called on a timer with no probe result, to end probation on its own. A

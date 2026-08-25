@@ -32,8 +32,16 @@ public struct ProviderConfiguration: Codable, Sendable {
 	/// installed. The portable core has enforced the same ceiling from the
 	/// start; this brings the provider in line.
 	public var maxConcurrentFlows: Int?
+	/// Whether preflight proved this upstream relays DNS over UDP.
+	///
+	/// The health watchdog needs to know what "working" looked like at start.
+	/// An upstream that never offered UDP ASSOCIATE is a degraded but documented
+	/// state the operator was warned about; one that offered it and stopped has
+	/// broken the transport nearly every resolver client uses, and a watchdog
+	/// that only probes TCP would call that healthy.
+	public var expectUDPRelay: Bool?
 
-    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil) {
+    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil, expectUDPRelay: Bool? = nil) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
         self.username = username
@@ -46,6 +54,7 @@ public struct ProviderConfiguration: Codable, Sendable {
 		self.excludeDestinations = excludeDestinations
 		self.disableHealthWatchdog = disableHealthWatchdog
 		self.maxConcurrentFlows = maxConcurrentFlows
+		self.expectUDPRelay = expectUDPRelay
     }
 
 	func validated() throws -> ProviderConfiguration {

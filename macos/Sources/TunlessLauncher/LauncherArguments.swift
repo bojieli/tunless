@@ -67,6 +67,17 @@ struct LauncherConfiguration: Codable, Equatable {
     let excludeDestinations: [String]?
     let disableHealthWatchdog: Bool?
     let maxConcurrentFlows: Int?
+    /// Whether preflight proved the upstream relays DNS over UDP. Filled in
+    /// after the probe runs, so the provider's watchdog knows what working
+    /// looked like at start rather than assuming TCP is the whole story.
+    var expectUDPRelay: Bool?
+
+    /// A copy that records what the DNS preflight observed about UDP.
+    func expectingUDPRelay(_ expected: Bool) -> LauncherConfiguration {
+        var copy = self
+        copy.expectUDPRelay = expected
+        return copy
+    }
 
     var upstreamAddress: String {
         let host = IPv6Address(upstreamHost) == nil ? upstreamHost : "[\(upstreamHost)]"
@@ -304,7 +315,8 @@ struct LauncherArguments: Equatable {
             includeDestinations: Self.optionalUnique(includeDestinations),
             excludeDestinations: Self.optionalUnique(excludeDestinations),
             disableHealthWatchdog: disableWatchdogOption,
-            maxConcurrentFlows: maxFlowsOption)
+            maxConcurrentFlows: maxFlowsOption,
+            expectUDPRelay: nil)
     }
 
     private static func optionPair(_ argument: String) -> (name: String, value: String)? {

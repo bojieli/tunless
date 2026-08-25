@@ -123,10 +123,14 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
 
     /// Records a probe result under the lock. Kept out of the async caller so
     /// the lock is never held across a suspension point.
-    private func observeHealth(succeeded: Bool, pathSatisfied: Bool) -> CaptureHealth.Decision {
+    private func observeHealth(outcome: DNSProbeOutcome, pathSatisfied: Bool) -> CaptureHealth.Decision {
         lock.lock()
         defer { lock.unlock() }
-        return health.observe(succeeded: succeeded, pathSatisfied: pathSatisfied, at: Date())
+        return health.observe(
+            succeeded: outcome.healthy,
+            detail: outcome.detail,
+            pathSatisfied: pathSatisfied,
+            at: Date())
     }
 
     private func stopHealthWatchdog() {
@@ -147,8 +151,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         apply(probation)
         Task { [weak self] in
             guard let self else { return }
-            let succeeded = await DNSHealthProbe.run(configuration: selected)
-            self.apply(self.observeHealth(succeeded: succeeded, pathSatisfied: satisfied))
+            let outcome = await DNSHealthProbe.run(configuration: selected)
+            self.apply(self.observeHealth(outcome: outcome, pathSatisfied: satisfied))
         }
     }
 

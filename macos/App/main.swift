@@ -147,6 +147,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
     private var preflight: SOCKSPreflight?
     private var operationDeadline: DispatchSourceTimer?
     private var cleanupPreferenceErrors: [String] = []
+    /// The configuration actually deployed, which carries what preflight
+    /// learned about the upstream on top of what the operator asked for.
+    private var effectiveConfiguration: LauncherConfiguration?
 
     init(arguments: LauncherArguments) {
         self.arguments = arguments
@@ -192,6 +195,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                     write("Tunless: \(dns.summary).\n", to: .standardError)
                 }
                 if startAfterSuccess {
+                    // Hand the provider what preflight observed, so its
+                    // watchdog probes the transports this upstream actually
+                    // offered rather than assuming TCP is the whole story.
+                    self.effectiveConfiguration = configuration.expectingUDPRelay(dns?.udpRelayWorks ?? false)
                     self.activateExtension()
                 } else {
                     self.writeJSON(CheckReport(
@@ -289,7 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
     ) -> OSSystemExtensionRequest.ReplacementAction { .replace }
 
     private func configureProxy() {
-        guard let configuration = arguments.configuration else {
+        guard let configuration = effectiveConfiguration ?? arguments.configuration else {
             write("Tunless: missing start configuration\n", to: .standardError)
             terminate(2)
         }

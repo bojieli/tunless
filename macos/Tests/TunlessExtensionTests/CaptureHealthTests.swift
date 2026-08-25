@@ -181,4 +181,47 @@ final class CaptureHealthTests: XCTestCase {
             CaptureHealthReport(capturing: true, pauseReason: nil, confirmed: false, consecutiveFailures: 0).summary,
             "capturing (unconfirmed)")
     }
+
+    // MARK: - What counts as a failure
+
+    /// The blind spot this closes, hit live: an upstream that relays DNS over
+    /// TCP while refusing UDP ASSOCIATE looks perfectly healthy to a TCP-only
+    /// probe, and is not — nearly every resolver client uses UDP, so captured
+    /// lookups get nothing back while the watchdog reports capturing.
+    func testUDPLossCountsAsAFailureWhenTheUpstreamOfferedUDP() {
+        let lostUDP = DNSProbeOutcome(tcp: true, udp: false)
+        XCTAssertFalse(lostUDP.healthy)
+        XCTAssertTrue(lostUDP.detail.contains("UDP"))
+
+        var health = armed()
+        for _ in 0..<2 {
+            XCTAssertEqual(
+                health.observe(succeeded: lostUDP.healthy, detail: lostUDP.detail, pathSatisfied: true, at: start),
+                .unchanged)
+        }
+        guard case let .pause(reason) = health.observe(
+            succeeded: lostUDP.healthy, detail: lostUDP.detail, pathSatisfied: true, at: start) else {
+            return XCTFail("losing the transport applications resolve over must stand capture aside")
+        }
+        XCTAssertTrue(reason.contains("UDP"), "the reason must name the transport that broke: \(reason)")
+    }
+
+    /// An upstream that never offered UDP is a degraded state the operator was
+    /// warned about at start. Treating it as a failure would stand capture
+    /// aside forever on a host where DNS works over TCP.
+    func testAnUpstreamThatNeverOfferedUDPStaysHealthy() {
+        XCTAssertTrue(DNSProbeOutcome(tcp: true, udp: nil).healthy)
+        XCTAssertEqual(DNSProbeOutcome(tcp: true, udp: nil).detail, "answered")
+    }
+
+    func testLosingTCPIsAFailureWhicheverWayUDPWent() {
+        XCTAssertFalse(DNSProbeOutcome(tcp: false, udp: true).healthy)
+        XCTAssertFalse(DNSProbeOutcome(tcp: false, udp: nil).healthy)
+        XCTAssertEqual(DNSProbeOutcome(tcp: false, udp: true).detail, "no answer over TCP")
+    }
+
+    func testBothTransportsAnsweringIsHealthy() {
+        XCTAssertTrue(DNSProbeOutcome(tcp: true, udp: true).healthy)
+    }
+
 }

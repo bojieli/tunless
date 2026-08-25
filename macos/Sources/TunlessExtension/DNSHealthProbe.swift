@@ -1,52 +1,190 @@
 import Foundation
+import Network
 
-/// Sends one DNS query along the exact path a captured port-53 flow takes.
+/// What one round of health probing observed.
+struct DNSProbeOutcome: Equatable {
+    /// A query relayed over SOCKS5 CONNECT came back.
+    let tcp: Bool
+    /// A query relayed over SOCKS5 UDP ASSOCIATE came back, or nil when UDP
+    /// was not probed because this upstream never offered it.
+    let udp: Bool?
+
+    /// Whether the upstream can still carry the DNS capture depends on.
+    ///
+    /// UDP counts only when the upstream was known to relay it at preflight.
+    /// An upstream that never offered UDP is a documented degraded state the
+    /// operator was warned about at start; one that offered it and stopped is
+    /// a datapath that has broken underneath applications which have no reason
+    /// to retry over TCP.
+    var healthy: Bool { tcp && (udp ?? true) }
+
+    var detail: String {
+        switch (tcp, udp) {
+        case (false, _): return "no answer over TCP"
+        case (true, false?): return "no answer over UDP, which this upstream relayed at preflight"
+        default: return "answered"
+        }
+    }
+}
+
+/// Sends DNS queries along the exact paths a captured port-53 flow takes.
 ///
 /// The check that matters is not "is the upstream listening" — that stays true
 /// while DNS is dead — but "does a query put through this upstream to this
 /// resolver come back". So the probe reuses `SOCKSConnection` and the
 /// configured resolver rather than testing anything of its own: if this
-/// succeeds, a captured TCP port-53 flow would have succeeded too, and if it
-/// fails, resolution on the host is failing in the same way.
+/// succeeds, a captured port-53 flow would have succeeded too, and if it fails,
+/// resolution on the host is failing in the same way.
 ///
-/// TCP rather than UDP, because UDP ASSOCIATE is the part upstreams most often
-/// refuse while still relaying DNS correctly, and a probe that reported that
-/// as a broken datapath would disable capture on a host where DNS works.
+/// Both transports are probed, because they fail independently. An upstream
+/// that relays DNS over TCP while refusing UDP ASSOCIATE looks perfectly
+/// healthy to a TCP-only probe, and is not: applications that resolve over UDP
+/// — which is nearly all of them — get nothing back, and nothing in the system
+/// says why. Probing only the transport that happens to work is how a watchdog
+/// misses the failure it exists to catch.
 enum DNSHealthProbe {
-    static func run(configuration: ProviderConfiguration, timeoutSeconds: TimeInterval = 6) async -> Bool {
+    static func run(
+        configuration: ProviderConfiguration,
+        timeoutSeconds: TimeInterval = 6
+    ) async -> DNSProbeOutcome {
         guard let dnsHost = configuration.dnsHost, let dnsPort = configuration.dnsPort else {
             // Without a DNS override, capture does not touch port 53 and there
             // is no resolver path of ours that can fail.
-            return true
+            return DNSProbeOutcome(tcp: true, udp: nil)
         }
+        let resolver = SOCKSAddress(host: dnsHost, port: dnsPort)
+        let tcp = await probeTCP(configuration: configuration, resolver: resolver, timeoutSeconds: timeoutSeconds)
+        guard configuration.expectUDPRelay == true else {
+            return DNSProbeOutcome(tcp: tcp, udp: nil)
+        }
+        let udp = await probeUDP(configuration: configuration, resolver: resolver, timeoutSeconds: timeoutSeconds)
+        return DNSProbeOutcome(tcp: tcp, udp: udp)
+    }
+
+    /// DNS over TCP, through SOCKS5 CONNECT — the path a captured TCP port-53
+    /// flow takes.
+    private static func probeTCP(
+        configuration: ProviderConfiguration,
+        resolver: SOCKSAddress,
+        timeoutSeconds: TimeInterval
+    ) async -> Bool {
         let transactionID = UInt16.random(in: 1...UInt16.max)
         let connection = SOCKSConnection(configuration: configuration)
-        defer { Task { await connection.cancel() } }
-        do {
-            return try await withThrowingTaskGroup(of: Bool.self) { group in
-                group.addTask {
-                    _ = try await connection.open(
-                        configuration: configuration,
-                        command: 1,
-                        destination: SOCKSAddress(host: dnsHost, port: dnsPort),
-                        timeoutSeconds: timeoutSeconds)
-                    try await connection.send(
-                        DNSProbeMessage.tcpFramed(DNSProbeMessage.query(transactionID: transactionID)))
-                    let prefix = try await connection.receive(2)
-                    guard let length = DNSProbeMessage.tcpPayloadLength(prefix), length > 0 else { return false }
-                    let body = try await connection.receive(min(length, 4096))
-                    return DNSProbeMessage.isResponse(body, transactionID: transactionID)
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                    await connection.cancel()
-                    return false
-                }
-                defer { group.cancelAll() }
-                return try await group.next() ?? false
+        return await withTimeout(timeoutSeconds, onTimeout: { await connection.cancel() }) {
+            defer { Task { await connection.cancel() } }
+            do {
+                _ = try await connection.open(
+                    configuration: configuration,
+                    command: 1,
+                    destination: resolver,
+                    timeoutSeconds: timeoutSeconds)
+                try await connection.send(
+                    DNSProbeMessage.tcpFramed(DNSProbeMessage.query(transactionID: transactionID)))
+                let prefix = try await connection.receive(2)
+                guard let length = DNSProbeMessage.tcpPayloadLength(prefix), length > 0 else { return false }
+                let body = try await connection.receive(min(length, 4096))
+                return DNSProbeMessage.isResponse(body, transactionID: transactionID)
+            } catch {
+                return false
             }
-        } catch {
-            return false
         }
     }
+
+    /// DNS over UDP, through SOCKS5 UDP ASSOCIATE — the path a captured UDP
+    /// port-53 flow takes, and the one nearly every resolver client uses.
+    private static func probeUDP(
+        configuration: ProviderConfiguration,
+        resolver: SOCKSAddress,
+        timeoutSeconds: TimeInterval
+    ) async -> Bool {
+        let transactionID = UInt16.random(in: 1...UInt16.max)
+        let control = SOCKSConnection(configuration: configuration)
+        let datagrams = UnsafeSendableBox<NWConnection?>(nil)
+        return await withTimeout(timeoutSeconds, onTimeout: {
+            await control.cancel()
+            datagrams.value?.cancel()
+        }) {
+            defer {
+                Task { await control.cancel() }
+                datagrams.value?.cancel()
+            }
+            do {
+                var relay = try await control.open(
+                    configuration: configuration,
+                    command: 3,
+                    destination: SOCKSAddress(host: "0.0.0.0", port: 0),
+                    timeoutSeconds: timeoutSeconds)
+                // An unspecified or loopback relay address is only meaningful
+                // relative to the upstream itself, matching how a captured UDP
+                // flow resolves it.
+                if Self.unspecified(relay.host) || (Self.loopback(relay.host) && !Self.loopback(configuration.upstreamHost)) {
+                    relay = SOCKSAddress(host: configuration.upstreamHost, port: relay.port)
+                }
+                guard relay.port > 0, let port = NWEndpoint.Port(rawValue: relay.port) else { return false }
+                let connection = NWConnection(host: NWEndpoint.Host(relay.host), port: port, using: .udp)
+                datagrams.value = connection
+                var packet = Data([0, 0, 0])
+                packet.append(try resolver.encoded())
+                packet.append(DNSProbeMessage.query(transactionID: transactionID))
+                return try await withCheckedThrowingContinuation { continuation in
+                    let gate = AsyncResultGate<Bool>()
+                    guard gate.install(continuation) else { return }
+                    connection.stateUpdateHandler = { state in
+                        switch state {
+                        case .ready:
+                            connection.send(content: packet, completion: .contentProcessed { _ in })
+                            connection.receiveMessage { data, _, _, _ in
+                                guard let data, data.count > 10 else {
+                                    gate.resume(with: .success(false))
+                                    return
+                                }
+                                gate.resume(with: .success(DNSProbeMessage.isResponse(
+                                    data.dropFirst(10), transactionID: transactionID)))
+                            }
+                        case .failed, .cancelled:
+                            gate.resume(with: .success(false))
+                        default:
+                            break
+                        }
+                    }
+                    connection.start(queue: .global(qos: .utility))
+                }
+            } catch {
+                return false
+            }
+        }
+    }
+
+    /// Runs `body`, returning false if it has not finished within the timeout.
+    private static func withTimeout(
+        _ seconds: TimeInterval,
+        onTimeout: @escaping @Sendable () async -> Void,
+        _ body: @escaping @Sendable () async -> Bool
+    ) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group -> Bool in
+            group.addTask { await body() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(max(1, seconds) * 1_000_000_000))
+                await onTimeout()
+                return false
+            }
+            defer { group.cancelAll() }
+            return await group.next() ?? false
+        }
+    }
+
+    private static func unspecified(_ host: String) -> Bool { host == "0.0.0.0" || host == "::" }
+
+    private static func loopback(_ host: String) -> Bool {
+        if let address = IPv4Address(host) { return address.rawValue.first == 127 }
+        if let address = IPv6Address(host) { return address.rawValue == IPv6Address("::1")!.rawValue }
+        return false
+    }
+}
+
+/// Carries a reference across the probe's concurrent tasks. The value is only
+/// ever written before the tasks that read it can run.
+final class UnsafeSendableBox<Value>: @unchecked Sendable {
+    var value: Value
+    init(_ value: Value) { self.value = value }
 }
