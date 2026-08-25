@@ -141,6 +141,27 @@ else
 	ok "would enable (dry run)"
 fi
 
+step "secret scanning"
+# Free on public repositories and off by default. Push protection is the half
+# that matters most: it refuses the commit rather than reporting the leak after
+# it is already in the history, where rotating the secret is the only remedy.
+if [[ $apply == 1 ]]; then
+	if gh api -X PATCH "repos/$repo" \
+		-f 'security_and_analysis[secret_scanning][status]=enabled' \
+		-f 'security_and_analysis[secret_scanning_push_protection][status]=enabled' >/dev/null 2>&1; then
+		state=$(gh api "repos/$repo" -q '.security_and_analysis | .secret_scanning.status + "/" + .secret_scanning_push_protection.status' 2>/dev/null || echo unknown)
+		if [[ $state == enabled/enabled ]]; then
+			ok "scanning and push protection enabled"
+		else
+			bad "secret scanning reports $state"
+		fi
+	else
+		bad "could not enable secret scanning"
+	fi
+else
+	ok "would enable scanning and push protection (dry run)"
+fi
+
 step "public-only analysis"
 cat <<'NEXT'
   CodeQL, dependency review, and Scorecard skip on a private repository, so
