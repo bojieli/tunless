@@ -66,6 +66,7 @@ struct LauncherConfiguration: Codable, Equatable {
     let includeDestinations: [String]?
     let excludeDestinations: [String]?
     let disableHealthWatchdog: Bool?
+    let maxConcurrentFlows: Int?
 
     var upstreamAddress: String {
         let host = IPv6Address(upstreamHost) == nil ? upstreamHost : "[\(upstreamHost)]"
@@ -99,6 +100,7 @@ struct LauncherArguments: Equatable {
         var skipVerifyOption: Bool?
         var defaultExclusionsOption: Bool?
         var disableWatchdogOption: Bool?
+        var maxFlowsOption: Int?
 
         func select(_ action: LauncherAction) throws {
             if actionWasSelected && selectedAction != action {
@@ -136,6 +138,9 @@ struct LauncherArguments: Equatable {
             case "--skip-verify": skipVerifyOption = true
             case "--no-default-exclusions": defaultExclusionsOption = false
             case "--no-health-watchdog": disableWatchdogOption = true
+            case "--max-flows":
+                maxFlowsOption = try Self.flowCeiling(try value(after: index, for: argument))
+                index += 1
             case "--preset":
                 presetName = try value(after: index, for: argument)
                 index += 1
@@ -169,6 +174,7 @@ struct LauncherArguments: Equatable {
                         defaultExclusionsOption = !(try Self.boolean(pair.value, name: pair.name))
                     case "--no-health-watchdog":
                         disableWatchdogOption = try Self.boolean(pair.value, name: pair.name)
+                    case "--max-flows": maxFlowsOption = try Self.flowCeiling(pair.value)
                     case "--include-process": includeProcesses.append(pair.value)
                     case "--exclude-process": excludeProcesses.append(pair.value)
                     case "--include-destination": includeDestinations.append(pair.value)
@@ -267,6 +273,9 @@ struct LauncherArguments: Equatable {
             excludeProcesses.insert(contentsOf: preset.excludedProcesses, at: 0)
         }
 
+        if maxFlowsOption == nil, let raw = environment["TUNLESS_MAX_FLOWS"] {
+            maxFlowsOption = try Self.flowCeiling(raw)
+        }
         if disableWatchdogOption == nil, let raw = environment["TUNLESS_NO_HEALTH_WATCHDOG"] {
             disableWatchdogOption = try Self.boolean(raw, name: "TUNLESS_NO_HEALTH_WATCHDOG")
         }
@@ -294,12 +303,18 @@ struct LauncherArguments: Equatable {
             excludeProcesses: Self.optionalUnique(excludeProcesses),
             includeDestinations: Self.optionalUnique(includeDestinations),
             excludeDestinations: Self.optionalUnique(excludeDestinations),
-            disableHealthWatchdog: disableWatchdogOption)
+            disableHealthWatchdog: disableWatchdogOption,
+            maxConcurrentFlows: maxFlowsOption)
     }
 
     private static func optionPair(_ argument: String) -> (name: String, value: String)? {
         guard argument.hasPrefix("--"), let separator = argument.firstIndex(of: "=") else { return nil }
         return (String(argument[..<separator]), String(argument[argument.index(after: separator)...]))
+    }
+
+    private static func flowCeiling(_ raw: String) throws -> Int {
+        guard let value = Int(raw), value > 0 else { throw LauncherArgumentError.invalidFlowCeiling(raw) }
+        return value
     }
 
     private static func boolean(_ raw: String, name: String) throws -> Bool {
@@ -332,6 +347,7 @@ enum LauncherArgumentError: LocalizedError, Equatable {
     case invalidUpstream(String)
     case invalidDNSUpstream(String)
     case credentialsTooLong
+    case invalidFlowCeiling(String)
 
     var errorDescription: String? {
         switch self {
@@ -344,6 +360,7 @@ enum LauncherArgumentError: LocalizedError, Equatable {
         case let .invalidUpstream(value): return "invalid SOCKS5 upstream \(value); expected host:port or socks5://[user:pass@]host:port"
         case let .invalidDNSUpstream(value): return "invalid DNS upstream \(value); expected a numeric IP:port"
         case .credentialsTooLong: return "SOCKS5 username and password must each be at most 255 bytes"
+        case let .invalidFlowCeiling(value): return "--max-flows must be a positive integer, got \(value)"
         }
     }
 }

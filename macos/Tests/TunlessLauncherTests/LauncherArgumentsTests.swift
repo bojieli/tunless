@@ -190,4 +190,26 @@ extension LauncherArgumentsTests {
             true)
     }
 
+
+    func testFlowCeilingIsOptionalAndValidated() throws {
+        XCTAssertNil(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],
+                environment: [:]).configuration?.maxConcurrentFlows)
+        XCTAssertEqual(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897", "--max-flows", "256"],
+                environment: [:]).configuration?.maxConcurrentFlows,
+            256)
+        XCTAssertEqual(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],
+                environment: ["TUNLESS_MAX_FLOWS": "512"]).configuration?.maxConcurrentFlows,
+            512)
+        XCTAssertThrowsError(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897", "--max-flows=0"],
+                environment: [:]))
+    }
+
 }

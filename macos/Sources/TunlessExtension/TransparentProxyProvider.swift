@@ -41,6 +41,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     private var healthTimer: DispatchSourceTimer?
     private var pathMonitor: NWPathMonitor?
     private var pathIsSatisfied = true
+    private var rejectedFlows: UInt64 = 0
     private let healthQueue = DispatchQueue(label: "com.bojieli.tunless.capture-health")
     /// How often the provider re-proves that the upstream still resolves.
     private static let healthIntervalSeconds = 30
@@ -241,7 +242,9 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             capturing: !health.shouldDeclineFlows,
             pauseReason: health.pauseReason,
             confirmed: health.confirmed,
-            consecutiveFailures: health.consecutiveFailures)
+            consecutiveFailures: health.consecutiveFailures,
+            activeFlows: activeFlows.count,
+            rejectedFlows: rejectedFlows)
         lock.unlock()
         return try? JSONEncoder().encode(snapshot)
     }
@@ -344,6 +347,19 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         lock.lock()
         guard !stopping else {
             lock.unlock()
+            return false
+        }
+        let ceiling = configuration.flowCeiling
+        if activeFlows.count >= ceiling {
+            let total = rejectedFlows &+ 1
+            rejectedFlows = total
+            lock.unlock()
+            // Log the first rejection and powers of two, so a local connection
+            // flood cannot turn the safety limit into an unbounded log flood.
+            if total == 1 || total & (total - 1) == 0 {
+                Self.log.notice(
+                    "flow rejected at the concurrency ceiling \(ceiling, privacy: .public); rejected \(total, privacy: .public) so far. Rejected flows go direct")
+            }
             return false
         }
         let identifier = UUID()

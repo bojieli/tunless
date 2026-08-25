@@ -28,16 +28,37 @@ public struct CaptureHealthReport: Codable, Sendable {
     public let pauseReason: String?
     public let confirmed: Bool
     public let consecutiveFailures: Int
+    /// Flows held right now, and flows turned away at the ceiling since start.
+    /// A rising rejection count is the signal that one application is opening
+    /// flows faster than the upstream retires them.
+    public let activeFlows: Int?
+    public let rejectedFlows: UInt64?
 
-    public init(capturing: Bool, pauseReason: String?, confirmed: Bool, consecutiveFailures: Int) {
+    public init(
+        capturing: Bool,
+        pauseReason: String?,
+        confirmed: Bool,
+        consecutiveFailures: Int,
+        activeFlows: Int? = nil,
+        rejectedFlows: UInt64? = nil
+    ) {
         self.capturing = capturing
         self.pauseReason = pauseReason
         self.confirmed = confirmed
         self.consecutiveFailures = consecutiveFailures
+        self.activeFlows = activeFlows
+        self.rejectedFlows = rejectedFlows
     }
 
     public var summary: String {
-        if capturing { return confirmed ? "capturing" : "capturing (unconfirmed)" }
-        return "paused: " + (pauseReason ?? "reason unavailable")
+        var text: String
+        if capturing {
+            text = confirmed ? "capturing" : "capturing (unconfirmed)"
+        } else {
+            text = "paused: " + (pauseReason ?? "reason unavailable")
+        }
+        if let activeFlows { text += ", \(activeFlows) active" }
+        if let rejectedFlows, rejectedFlows > 0 { text += ", \(rejectedFlows) rejected at the ceiling" }
+        return text
     }
 }

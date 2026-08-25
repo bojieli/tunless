@@ -62,3 +62,34 @@ final class ReservedDestinationTests: XCTestCase {
         XCTAssertFalse(ipv6.captures(host: "2606:4700:4700:0::1111", port: 53, signingIdentifier: "com.example.app"))
     }
 }
+
+/// The provider had no equivalent of the portable core's flow ceiling, so one
+/// application opening flows faster than the upstream retires them could push
+/// the extension into the CPU budget macOS terminates it for — turning a noisy
+/// process into a capture outage for the whole host.
+final class FlowCeilingTests: XCTestCase {
+    func testCeilingDefaultsToThePortableCoreValue() {
+        XCTAssertEqual(ProviderConfiguration(upstreamHost: "127.0.0.1", upstreamPort: 7897).flowCeiling, 4096)
+        XCTAssertEqual(
+            ProviderConfiguration(upstreamHost: "127.0.0.1", upstreamPort: 7897, maxConcurrentFlows: 64).flowCeiling,
+            64)
+    }
+
+    func testAnUnusableCeilingIsRejectedRatherThanSilentlyIgnored() {
+        XCTAssertThrowsError(
+            try ProviderConfiguration(upstreamHost: "127.0.0.1", upstreamPort: 7897, maxConcurrentFlows: 0).validated())
+        XCTAssertNoThrow(
+            try ProviderConfiguration(upstreamHost: "127.0.0.1", upstreamPort: 7897, maxConcurrentFlows: 1).validated())
+    }
+
+    func testHealthReportSurfacesRejectionsSoAFloodIsVisible() {
+        let report = CaptureHealthReport(
+            capturing: true, pauseReason: nil, confirmed: true, consecutiveFailures: 0,
+            activeFlows: 4096, rejectedFlows: 128)
+        XCTAssertEqual(report.summary, "capturing, 4096 active, 128 rejected at the ceiling")
+        let quiet = CaptureHealthReport(
+            capturing: true, pauseReason: nil, confirmed: true, consecutiveFailures: 0,
+            activeFlows: 7, rejectedFlows: 0)
+        XCTAssertEqual(quiet.summary, "capturing, 7 active")
+    }
+}

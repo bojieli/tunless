@@ -29,6 +29,8 @@ Options:
                              are excluded by default.
   --no-health-watchdog       Keep capture on even after the upstream stops
                              resolving names.
+  --max-flows N              Most flows to hold at once (default 4096).
+                             Flows past the ceiling go direct.
   --include-process GLOB     Capture a signing identifier (repeatable).
   --exclude-process GLOB     Exclude a signing identifier (repeatable).
   --include-destination CIDR Capture a destination prefix (repeatable).

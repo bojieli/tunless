@@ -20,8 +20,20 @@ public struct ProviderConfiguration: Codable, Sendable {
 	/// exists for a host that would rather keep capture on through an outage
 	/// than have it disabled underneath a running workload.
 	public var disableHealthWatchdog: Bool?
+	/// Most flows the provider will hold at once.
+	///
+	/// A misbehaving or merely busy application can open flows faster than the
+	/// upstream retires them, and every one of them costs the extension a task
+	/// and a SOCKS connection. macOS reports an extension that spends too much
+	/// CPU and can terminate it, so an unbounded flow rate turns one noisy
+	/// process into a capture outage for the whole host. Rejecting past a
+	/// ceiling degrades that application instead, and a rejected flow is not
+	/// dropped: it goes direct, exactly as it would if tunless were not
+	/// installed. The portable core has enforced the same ceiling from the
+	/// start; this brings the provider in line.
+	public var maxConcurrentFlows: Int?
 
-    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, disableHealthWatchdog: Bool? = nil) {
+    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
         self.username = username
@@ -33,6 +45,7 @@ public struct ProviderConfiguration: Codable, Sendable {
 		self.includeDestinations = includeDestinations
 		self.excludeDestinations = excludeDestinations
 		self.disableHealthWatchdog = disableHealthWatchdog
+		self.maxConcurrentFlows = maxConcurrentFlows
     }
 
 	func validated() throws -> ProviderConfiguration {
@@ -42,6 +55,7 @@ public struct ProviderConfiguration: Codable, Sendable {
 		if let dnsHost, let dnsPort {
 			guard dnsPort > 0, IPv4Address(dnsHost) != nil || IPv6Address(dnsHost) != nil else { throw ConfigurationError.invalidDNSUpstream }
 		}
+		if let maxConcurrentFlows, maxConcurrentFlows < 1 { throw ConfigurationError.invalidFlowCeiling }
 		for prefix in (includeDestinations ?? []) + (excludeDestinations ?? []) {
 			guard Self.validPrefix(prefix) else { throw ConfigurationError.invalidDestinationPrefix(prefix) }
 		}
@@ -101,6 +115,9 @@ public struct ProviderConfiguration: Codable, Sendable {
 		return lhs.caseInsensitiveCompare(rhs) == .orderedSame
 	}
 
+	/// The ceiling actually applied, defaulting to the portable core's.
+	var flowCeiling: Int { maxConcurrentFlows ?? 4096 }
+
 	func routedDestination(for destination: SOCKSAddress) -> SOCKSAddress {
 		guard destination.port == 53, let dnsHost, let dnsPort else { return destination }
 		return SOCKSAddress(host: dnsHost, port: dnsPort)
@@ -153,6 +170,7 @@ enum ConfigurationError: Error, Equatable {
 	case invalidDNSUpstream
 	case credentialsTooLong
 	case invalidDestinationPrefix(String)
+	case invalidFlowCeiling
 }
 
 public struct FlowTelemetry: Codable, Sendable {
