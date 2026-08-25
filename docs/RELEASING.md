@@ -10,6 +10,24 @@ No public release is created by the current automation. The
 It has no tag trigger, package-registry credentials, GitHub Release operation,
 or repository-visibility step.
 
+## What the first release covers
+
+The three platforms are not at the same maturity, and a release that implies
+they are would be the most damaging thing this project could publish. Each one
+ships at the level its evidence supports, stated on the release itself and not
+only in a document a reader may not reach:
+
+| Platform | Ships as | Because |
+| --- | --- | --- |
+| Linux | Generally available | eBPF capture for TCP and UDP over both families, host and container namespaces, a reproducible embedded BPF object verified on the 5.10 floor and a current kernel, and dated throughput and footprint evidence |
+| macOS | Beta | Notarized builds pass the recorded live suites and capture stands aside on its own when the upstream stops resolving, but exact-candidate clean-machine qualification is open and `remoteHostname` and HTTP/3 coverage are not demonstrated |
+| Windows | Source only, not a shippable artifact | The WFP backend is implemented, but WDK build, Driver Verifier, runtime, UDP, fuzzing, and Microsoft attestation gates are all unmet, and loading a driver on Windows 10 or later needs a signature this project does not obtain |
+
+Release notes must carry that table, no Windows binary may be attached to a
+release, and the Windows source must keep saying what it is. A user who
+installs a driver believing it was qualified is the failure this scoping
+exists to prevent.
+
 ## Prepare a candidate
 
 1. Ensure `main` is clean, CI/security/kernel workflows pass, and the version's

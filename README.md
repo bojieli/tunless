@@ -81,6 +81,12 @@ existing proxy, where nodes, subscriptions, and rules stay unchanged.
 | macOS | `NETransparentProxyProvider` system extension | Recorded notarized development builds pass live trusted-DNS redirection, SOCKS TCP/UDP, HTTP/1.x, HTTP/2, TLS, and concurrency tests, and capture stands aside on its own when the upstream stops resolving; exact-candidate clean-machine qualification remains open |
 | Windows | WFP ALE connect-redirect callout | TCP and TCP DNS override source are implemented; WDK, fuzzing, runtime, and UDP DNS gates are unmet, and production driver signing is out of scope for this phase |
 
+The three platforms ship at different maturities, and the first release says so
+on its face: **Linux is generally available, macOS is beta, and Windows is
+source only** — its driver is implemented but unqualified and unsigned, so it
+is not a shippable artifact. See
+[what the first release covers](docs/RELEASING.md#what-the-first-release-covers).
+
 The portable core includes SOCKS5 TCP/UDP emission, HTTP CONNECT and SOCKS5
 reference inbounds, destination/process capture filters, a real-answer DNS
 observer, and two opt-in process-metadata transports.

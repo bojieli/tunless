@@ -55,6 +55,14 @@ qualified. Link each completed item to a run, commit, or measurement.
 - [ ] Linux WAN throughput and footprint re-measured on the tagged tree; the
       published figures predate the current one
 
+## Release scope
+
+- [ ] Release notes state the per-platform maturity from
+      [RELEASING.md](RELEASING.md#what-the-first-release-covers): Linux
+      generally available, macOS beta, Windows source only
+- [ ] No Windows binary or driver is attached to the release, and the Windows
+      documentation still says it is not a shippable artifact
+
 ## Artifacts
 
 - [x] Two clean builds of release binaries/archives/packages are byte-identical
