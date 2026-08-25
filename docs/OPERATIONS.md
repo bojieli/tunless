@@ -56,6 +56,17 @@ long iteration does not hold the backend lock used by live flow correlation.
 Capture diagnostics are cached for one second; polling faster only refreshes
 the lock-free flow counters.
 
+## Destinations that are never captured
+
+Loopback, the unspecified address, link-local (`169.254.0.0/16`, `fe80::/10`),
+multicast, and broadcast are excluded by the capture program itself on Linux
+and by the provider on macOS. SOCKS5 cannot carry any of them: an upstream
+somewhere else cannot answer a router-discovery message, an mDNS query, or a
+cloud instance's request to `169.254.169.254` about itself. Capturing them
+removes reachability instead of adding a route, so no filter can put them back
+— `--include-destination 0.0.0.0/0` included. The upstream and the trusted
+resolver are reserved alongside them, for the loop described below.
+
 ## DNS override
 
 Captured TCP and UDP queries whose original destination port is 53 are sent to

@@ -84,6 +84,12 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Security
 
+- The Linux capture floor now actually covers what the macOS one does. Only
+  loopback was refused outright; link-local, multicast, broadcast, and the
+  unspecified address were left to the operator, so
+  `--include-destination 0.0.0.0/0` — the example in this project's own README
+  — sent mDNS, router discovery, and a cloud instance's queries to
+  169.254.169.254 into the upstream, which cannot answer any of them.
 - Observed address-to-name mappings expire after at most a day, whatever TTL
   the answer carried. A record may claim a century, which is a claim on every
   future tenant of a recycled address rather than a statement about freshness.

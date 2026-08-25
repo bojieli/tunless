@@ -155,6 +155,14 @@ func (b *Backend) Start(ctx context.Context) (<-chan tunless.Flow, error) {
 		cleanup()
 		return nil, err
 	}
+	// The floor goes in before the operator's exclusions and is not reachable
+	// from the configuration: the program consults the exclusion maps before
+	// the inclusion maps, so nothing a filter says can put these back.
+	if err = loadPrefixes(collection, "exclude", reservedCapturePrefixes()); err != nil {
+		collection.Close()
+		cleanup()
+		return nil, err
+	}
 	if err = loadPrefixes(collection, "exclude", b.Filter.ExcludeDestinations); err != nil {
 		collection.Close()
 		cleanup()

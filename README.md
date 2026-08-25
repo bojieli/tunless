@@ -152,6 +152,12 @@ sudo ./tunless --upstream 127.0.0.1:7890 \
   --exclude-destination fc00::/7
 ```
 
+Some destinations stay direct no matter what the filters say: loopback, the
+unspecified address, link-local — which is where a cloud instance asks about
+itself — and multicast and broadcast. A proxy has no way to carry any of them,
+so capturing them loses the traffic rather than routing it, and
+`--include-destination 0.0.0.0/0` above is wide enough to swallow all of them.
+
 Captured queries whose original destination port is 53 are sent to the numeric
 `--dns-upstream` through SOCKS5 by default, with query IDs randomly
 translated per outstanding request. Use `--disable-dns-override` to retain each application's

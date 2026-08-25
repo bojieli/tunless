@@ -87,3 +87,36 @@ func TestConnectedUDPMarkerAndResponseValidation(t *testing.T) {
 		t.Fatal("response from a different source was accepted")
 	}
 }
+
+func TestReservedCapturePrefixesCoverWhatSOCKSCannotCarry(t *testing.T) {
+	reserved := reservedCapturePrefixes()
+	contains := func(value string) bool {
+		addr := netip.MustParseAddr(value)
+		for _, prefix := range reserved {
+			if prefix.Contains(addr) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, value := range []string{
+		"127.0.0.1", "127.9.9.9", "0.0.0.0",
+		"169.254.1.1", "169.254.169.254", // link-local, including cloud metadata
+		"224.0.0.251", "239.255.255.250", "255.255.255.255",
+		"::1", "::", "fe80::1", "ff02::fb",
+	} {
+		if !contains(value) {
+			t.Fatalf("%s is not reserved from capture", value)
+		}
+	}
+	for _, value := range []string{"1.1.1.1", "192.168.1.5", "203.0.113.7", "2001:db8::1", "fc00::1"} {
+		if contains(value) {
+			t.Fatalf("%s is reserved from capture, but only the datapath and unroutable paths belong in the floor", value)
+		}
+	}
+	for _, prefix := range reserved {
+		if prefix != prefix.Masked() {
+			t.Fatalf("reserved prefix %s is not in canonical masked form", prefix)
+		}
+	}
+}
