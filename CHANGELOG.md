@@ -84,6 +84,13 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Security
 
+- Both DNS forwarding paths now check that a datagram answers the query before
+  treating it as the answer: the transaction ID has to match and the response
+  bit has to be set. Previously the first datagram to reach the socket was
+  returned, so a forged one — cheap for anyone who can guess an ephemeral port
+  — consumed the exchange and the real answer arrived to a closed socket. The
+  observer's own recording already held replies to this standard; the
+  forwarding path did not.
 - The private DNS transaction ID that replaces an application's own while a
   port-53 query is routed to the trusted resolver is now drawn at random on
   both macOS and the portable emitter. It was counted out from zero, which

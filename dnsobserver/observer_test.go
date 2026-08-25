@@ -2,6 +2,7 @@ package dnsobserver
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net"
 	"net/netip"
@@ -321,5 +322,40 @@ func TestCloseBeforeServePreventsStart(t *testing.T) {
 	}
 	if err := observer.Serve(context.Background()); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Serve after Close = %v, want net.ErrClosed", err)
+	}
+}
+
+func TestDirectExchangeWaitsForTheAnswerToItsOwnQuery(t *testing.T) {
+	upstream, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	answer := func(id uint16, marker byte) []byte {
+		message := make([]byte, 12)
+		binary.BigEndian.PutUint16(message[:2], id)
+		message[2] = 0x80
+		message[11] = marker
+		return message
+	}
+	go func() {
+		buffer := make([]byte, 512)
+		_, peer, readErr := upstream.ReadFromUDPAddrPort(buffer)
+		if readErr != nil {
+			return
+		}
+		// Something that arrived from the resolver's address but answers a
+		// different question, then the reply this query is waiting for.
+		_, _ = upstream.WriteToUDPAddrPort(answer(0x9999, 0xaa), peer)
+		_, _ = upstream.WriteToUDPAddrPort(answer(0x1234, 0xbb), peer)
+	}()
+
+	observer := &Observer{Upstream: upstream.LocalAddr().String()}
+	reply, err := observer.exchangeUDP(context.Background(), answer(0x1234, 0))
+	if err != nil {
+		t.Fatalf("exchangeUDP: %v", err)
+	}
+	if len(reply) != 12 || binary.BigEndian.Uint16(reply[:2]) != 0x1234 || reply[11] != 0xbb {
+		t.Fatalf("reply = %x, want the answer to transaction 0x1234", reply)
 	}
 }

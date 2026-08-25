@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bojieli/tunless/internal/dnswire"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -258,8 +259,16 @@ func (o *Observer) exchangeUDP(ctx context.Context, query []byte) ([]byte, error
 		return nil, err
 	}
 	buf := make([]byte, 65535)
-	n, err := conn.Read(buf)
-	return append([]byte(nil), buf[:n]...), err
+	for {
+		n, readErr := conn.Read(buf)
+		if readErr != nil {
+			return append([]byte(nil), buf[:n]...), readErr
+		}
+		if !dnswire.AnswersQuery(query, buf[:n]) {
+			continue
+		}
+		return append([]byte(nil), buf[:n]...), nil
+	}
 }
 func (o *Observer) serveTCP(ctx context.Context, client net.Conn) {
 	defer client.Close()

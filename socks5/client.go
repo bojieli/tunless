@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bojieli/tunless"
+	"github.com/bojieli/tunless/internal/dnswire"
 )
 
 type Client struct {
@@ -510,6 +511,9 @@ func (c *Client) ExchangeDNSUDP(ctx context.Context, destination netip.AddrPort,
 		}
 		source, used, parseErr := parseAddr(ctx, buffer[3:n])
 		if parseErr != nil || !sameAddrPort(source, destination) {
+			continue
+		}
+		if !dnswire.AnswersQuery(query, buffer[3+used:n]) {
 			continue
 		}
 		return append([]byte(nil), buffer[3+used:n]...), nil
