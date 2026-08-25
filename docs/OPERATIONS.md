@@ -151,6 +151,12 @@ minutes. Any transferred byte or datagram refreshes the relevant deadline.
 that intentionally remain silent indefinitely; doing so also removes the
 automatic completion bound for a peer that never closes.
 
+The macOS provider exempts UDP port-53 flows from that two-minute association
+limit. `mDNSResponder` owns and reuses those sockets; expiring the Network
+Extension flow underneath one can leave later system lookups failing locally
+instead of opening a replacement flow. DNS transaction attribution remains
+separately bounded to 30 seconds and 4,096 outstanding entries.
+
 The three large Linux LRU maps reserve kernel memory at load time. Consult the
 measured memlock footprint in `MEASUREMENTS.md` before dense multi-container
 deployment; each namespace controller owns independent maps.
