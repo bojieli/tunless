@@ -45,9 +45,11 @@ qualified. Link each completed item to a run, commit, or measurement.
       container stop/recreate, and fail-open recovery pass. Checked once, then
       invalidated: reserving the resolver from capture pointed this suite's
       connected-UDP probe at an address that is no longer captured, so it
-      failed on every run from 2026-08-24 onward and the UDP half of the
-      evidence has not been re-demonstrated since. Re-check only on a green run
-      of the fixed suite against the candidate commit
+      failed on every run from 2026-08-24 onward. The fixed suite is green
+      again and the evidence is recorded under [Linux privileged WAN, UDP
+      recovery, and container matrix](MEASUREMENTS.md#linux-privileged-wan-udp-recovery-and-container-matrix-2026-08-25);
+      what remains is that it names a development commit rather than the
+      candidate. Re-check on a green run against the candidate commit
 - [x] Docker native Linux and Docker Desktop macOS tests cover unmodified,
       no-proxy-environment applications
 - [x] Linux unconnected UDP sockets that alternate destinations fail safely or
