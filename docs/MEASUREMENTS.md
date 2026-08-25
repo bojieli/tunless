@@ -658,6 +658,7 @@ commit, but they no longer rest on a tree that has since changed.
 
 | Gate | Status / reason |
 | --- | --- |
+| Linux destination filters after the family-consistency change | The reserved capture floor, IPv4-mapped prefix coverage, and the both-family include list are unit-tested in userspace and have not been exercised against an attached cgroup program. The include/exclude policy evidence recorded under [Functional gates demonstrated](#functional-gates-demonstrated) predates them and does not cover the new behavior. |
 | macOS exact release candidate | Builds 8 and 9 provide notarization, staple, Gatekeeper, activation, upgrade, and live-runtime evidence, but the current working tree is newer and has not completed exact-candidate clean-machine qualification. |
 | macOS `remoteHostname` fraction | Activation and representative declined-flow behavior are verified, but a statistically useful fraction still requires a defined realistic app corpus; no number is invented. |
 | macOS HTTP/3 | The installed curl lacks HTTP/3 support. HTTP/1.x, HTTP/2, TLS, DNS UDP/TCP, and non-DNS UDP passed, but no QUIC HTTP client was exercised. |
