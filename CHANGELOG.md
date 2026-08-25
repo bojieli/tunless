@@ -73,6 +73,12 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Security
 
+- The private DNS transaction ID that replaces an application's own while a
+  port-53 query is routed to the trusted resolver is now drawn at random on
+  both macOS and the portable emitter. It was counted out from zero, which
+  handed every rewritten query an ID an off-path attacker could predict —
+  exactly the guesswork RFC 5452 randomization exists to prevent, removed by
+  the rewrite rather than by the application.
 - Exact cgroup/container identity validation, privilege separation, fail-open
   BPF lifecycle, bounded flow concurrency, full-history secret scanning,
   public-release gates for CodeQL, dependency review, and provenance

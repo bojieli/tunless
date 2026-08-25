@@ -994,14 +994,21 @@ actor DNSResponseMap {
     }
 
     private var entries: [UInt16: Entry] = [:]
-    private var nextID: UInt16 = 0
     private var nextPrune = Date.distantPast
     private let maxEntries: Int
     private let ttlSeconds: TimeInterval
+    private let randomIdentifier: @Sendable () -> UInt16
 
-    init(maxEntries: Int = 4096, ttlSeconds: TimeInterval = 30) {
+    init(
+        maxEntries: Int = 4096,
+        ttlSeconds: TimeInterval = 30,
+        randomIdentifier: @escaping @Sendable () -> UInt16 = {
+            UInt16.random(in: UInt16.min ... UInt16.max)
+        }
+    ) {
         self.maxEntries = maxEntries
         self.ttlSeconds = ttlSeconds
+        self.randomIdentifier = randomIdentifier
     }
 
     func prepare(query: Data, original: SOCKSAddress, routed: SOCKSAddress) -> Data {
@@ -1045,11 +1052,28 @@ actor DNSResponseMap {
 
     func outstandingCount() -> Int { entries.count }
 
+    /// Picks the private transaction ID a rewritten query will carry.
+    ///
+    /// The ID has to be drawn at random, not counted out. A resolver client
+    /// picks its own ID unpredictably so that an attacker who cannot see the
+    /// query cannot forge an answer to it (RFC 5452); rewriting replaces that
+    /// ID with this one, so anything less than the same unpredictability hands
+    /// every captured lookup on the machine a weaker answer than it would have
+    /// had unproxied.
     private func allocateID() -> UInt16? {
-        for _ in 0 ... UInt16.max {
-            let candidate = nextID
-            nextID &+= 1
+        // Outstanding queries are bounded far below the 16-bit space, so the
+        // first draw is almost always free.
+        for _ in 0 ..< 8 {
+            let candidate = randomIdentifier()
             if entries[candidate] == nil { return candidate }
+        }
+        // Reached only when the space is unusually crowded. Walk upward from a
+        // random start rather than from zero, so even the fallback does not
+        // settle into a sequence someone can follow.
+        var candidate = randomIdentifier()
+        for _ in 0 ... UInt16.max {
+            if entries[candidate] == nil { return candidate }
+            candidate &+= 1
         }
         return nil
     }

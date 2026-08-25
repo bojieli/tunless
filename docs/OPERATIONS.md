@@ -61,7 +61,9 @@ the lock-free flow counters.
 Captured TCP and UDP queries whose original destination port is 53 are sent to
 the numeric `--dns-upstream` through SOCKS5 by default. UDP query IDs are
 translated per outstanding request and restored with the original resolver
-source on reply, so reused IDs and out-of-order responses are unambiguous. Use
+source on reply, so reused IDs and out-of-order responses are unambiguous. The
+translated ID is drawn at random, keeping the off-path spoofing resistance the
+application's own random ID was there to provide. Use
 `--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to retain each
 application's original resolver. `--flow-idle-timeout` and
 `--udp-idle-timeout` bound abandoned flows; zero disables the corresponding

@@ -153,8 +153,8 @@ sudo ./tunless --upstream 127.0.0.1:7890 \
 ```
 
 Captured queries whose original destination port is 53 are sent to the numeric
-`--dns-upstream` through SOCKS5 by default, with query IDs translated per
-outstanding request. Use `--disable-dns-override` to retain each application's
+`--dns-upstream` through SOCKS5 by default, with query IDs randomly
+translated per outstanding request. Use `--disable-dns-override` to retain each application's
 original resolver.
 
 ### Containers and virtual machines

@@ -633,7 +633,9 @@ resolver it originally addressed, preserving connected-datagram semantics.
 Tunless assigns a private transaction ID to each outstanding UDP query, then
 restores the application's original ID and resolver endpoint on reply. This
 prevents concurrent reused IDs and out-of-order responses from being matched by
-FIFO order. Entries expire after 30 seconds and are capped at 4,096. Set
+FIFO order. That private ID is drawn at random rather than counted out, so a
+rewritten query is no easier to answer falsely than the one the application
+wrote (RFC 5452). Entries expire after 30 seconds and are capped at 4,096. Set
 `TUNLESS_DNS_UPSTREAM` to choose another trusted resolver. Use
 `--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to preserve the
 original DNS destination while continuing to proxy the flow.
