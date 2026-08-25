@@ -38,7 +38,24 @@ command -v timeout >/dev/null 2>&1 || {
 }
 
 engine_command() {
-	timeout --signal=TERM --kill-after=10s "${engine_timeout}s" "$engine" "$@"
+	local status=0
+	timeout --signal=TERM --kill-after=10s "${engine_timeout}s" "$engine" "$@" || status=$?
+	# A teardown that hangs instead of failing is the shape of a container whose
+	# network namespace something still holds open, and exit 124 on its own says
+	# only that the clock ran out. Observed once on a hosted runner during
+	# `rm --force`, green on the next run, cause unestablished. Print what was
+	# holding things when it happens, so the next occurrence is diagnosable
+	# rather than another bare timeout. The diagnostics get their own short
+	# clock: a wedged engine must not hang the reporting too.
+	if [[ $status -eq 124 ]]; then
+		{
+			echo "engine command timed out after ${engine_timeout}s: $engine $*"
+			timeout 15 "$engine" ps --all 2>&1 | head -20 || true
+			timeout 15 ps -eo pid,ppid,stat,etime,args 2>&1 | grep -E "[t]unless|[c]onmon" | head -20 || true
+			timeout 15 bpftool link show 2>&1 | head -20 || true
+		} >&2
+	fi
+	return "$status"
 }
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/tunless-container-integration.XXXXXX")
