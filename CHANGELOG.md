@@ -97,6 +97,14 @@ use ISO 8601. The repository has not made a public release yet.
   applications could hang indefinitely. Existing datagram flows now stay open
   and route directly while capture stands aside, port-53 flows are exempt from
   the generic UDP idle expiry, and provider shutdown ends UDP flows cleanly.
+- The DNS observer no longer fails to start when the kernel hands it an
+  ephemeral UDP port whose TCP half is already taken. It answers on both
+  transports at one port number, and asking the kernel for an ephemeral UDP
+  port reserves nothing on the TCP side, so `--dns-listen 127.0.0.1:0` failed
+  with `bind: address already in use` on a busy host — rarely, unpredictably,
+  and for no reason an operator could act on. The coordinated bind is retried
+  up to eight times. A fixed port is still attempted exactly once, so a pinned
+  observer reports the conflict rather than moving somewhere nobody asked for.
 - A `--upstream` given as a hostname is resolved once at startup and pinned to
   the addresses it returned, instead of being resolved again on every flow. The
   per-flow lookup was a loop: tunless normally shares the captured cgroup, so
