@@ -22,10 +22,13 @@ reproducing these runs would be using the same hosts.
 ## Headline results
 
 - WAN throughput: the transparent eBPF path (captured process → tunless →
-  mihomo) finished within ~0.4% of direct throughput — median 25.83 MB/s
+  proxy) finished within ~0.4% of direct throughput — median 25.83 MB/s
   versus 25.93 MB/s across five 100 MiB downloads, 0.4% longer by total
   time — well inside the run-to-run WAN spread. Raw runs and method:
-  [WAN download results](#wan-download-results).
+  [WAN download results](#wan-download-results). Re-taken on the current tree
+  at a higher rate and a steadier link: 112.82 MB/s captured against 113.13
+  direct, 0.27% below, in
+  [Linux WAN throughput and footprint on the current tree](#linux-wan-throughput-and-footprint-on-the-current-tree-2026-08-25).
 - Footprint: during those transfers `tunless` used about 2.8% of one core
   (0.57 CPU seconds over 20.48 s aggregate wall time), process RSS moved from
   8,996 KiB to 9,012 KiB (~9 MB), and the three preallocated 65,536-entry LRU
@@ -609,6 +612,47 @@ This does not replace the headline WAN figures, which were taken on a different
 host under a real proxy and still need re-taking on the tagged tree. It does
 show the datapath works on a third kernel with the current tree, and it is the
 first footprint measurement taken under this tree.
+
+## Linux WAN throughput and footprint on the current tree, 2026-08-25
+
+Re-taken on RTX-PRO, Ubuntu 22.04.5, kernel `6.8.0-111-generic`, x86-64, 32
+vCPUs, cgroup v2, with the current tree. This is the re-measurement the earlier
+figures needed: those were taken 2026-08-17 on an older tree, and the headline
+claim should not rest on a build that no longer exists.
+
+Method as before, with two changes forced by the environment. The target is
+`cachefly.cachefly.net/100mb.test`, because `speed.cloudflare.com` answers 403
+from this host. The address is pinned with `curl --resolve` so no DNS leaves the
+captured cgroup: the downstream is a direct-mode TCP-only SOCKS5 server, and a
+captured UDP lookup through it would fail and be counted as capture overhead.
+Capture is scoped to a purpose-made cgroup, and captured and direct runs are
+interleaved so link drift cannot masquerade as overhead.
+
+| Run | Captured (MB/s) | Direct (MB/s) |
+| ---: | ---: | ---: |
+| 1 | 112.77 | 112.71 |
+| 2 | 112.92 | 113.32 |
+| 3 | 112.82 | 112.89 |
+| 4 | 112.82 | 113.13 |
+| 5 | 112.53 | 113.22 |
+| **Median** | **112.82** | **113.13** |
+
+Captured throughput is **0.27% below direct**, and total time 0.30% longer
+(0.9294 s against 0.9266 s median). Every one of the ten runs landed between
+112.5 and 113.3 MB/s, so unlike the earlier WAN figures this link is stable
+enough for the difference to mean something.
+
+**Footprint**, measured separately over ten captured 100 MB downloads with the
+process selected by executable name — matching the command line also matches
+the `sudo` wrapper, whose CPU is nil and would understate the cost to nothing:
+
+- 135 CPU ticks for 1,000 MB relayed, or **1.35 CPU-seconds per GB**
+- Resident memory 9,936 KiB rising to 10,732 KiB, about **10 MB**, in line with
+  the ~9 MB recorded previously
+
+Together with the datapath evidence on kernel 6.1, this closes re-measuring
+Linux on the current tree. The figures should still be confirmed on the tagged
+commit, but they no longer rest on a tree that has since changed.
 
 ## Gates not demonstrated
 

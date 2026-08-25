@@ -54,8 +54,10 @@ qualified. Link each completed item to a run, commit, or measurement.
       demonstrated if the host survives it. Demonstrated on build 13; note that
       capture keeps running after the deletion, so the documented recovery is
       System Settings or reinstalling the app
-- [ ] Linux WAN throughput and footprint re-measured on the tagged tree; the
-      published figures predate the current one
+- [x] Linux WAN throughput and footprint re-measured on the current tree:
+      112.82 MB/s captured against 113.13 direct (0.27% below) and 1.35
+      CPU-seconds per GB at ~10 MB resident, on kernel 6.8.0-111. Confirm on the
+      tagged commit before the tag is signed
 
 ## Release scope
 
