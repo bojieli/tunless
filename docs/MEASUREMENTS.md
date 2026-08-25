@@ -542,6 +542,29 @@ The Linux datapath is unchanged since — the reserved-destination work adds
 startup exclusions rather than touching the capture path — but the numbers have
 not been re-taken on the current tree and should be before a Linux tag.
 
+## Linux datapath on the current tree
+
+Measured 2026-08-25 on Docker Desktop for macOS (server 27.3.1, kernel
+6.10.14-linuxkit, ARM64, cgroup v2), running
+`scripts/integration-docker-desktop.sh` against the current tree with sing-box
+in direct mode as the SOCKS upstream.
+
+The suite passed end to end: three controller attachments across two containers
+and one recreated instance, six TCP flows, thirty-nine UDP flows, real WAN TLS
+returning the host's own exit address, DNS over the SOCKS association with the
+reply presented as coming from the resolver the application addressed, and
+correct rejection of a second, ambiguous destination on an unconnected UDP
+socket — twenty accepted and twenty rejected across forty alternating sends.
+
+The run also exercised the startup reservation added for the loop this project
+found on macOS: the controller logged `reserving datapath destinations from
+capture` for the configured resolver, confirming the Linux side applies it.
+
+This closes the datapath half of re-measuring Linux on the current tree. The
+throughput and footprint half is still open: those figures need the documented
+Linux host under a real WAN proxy, not a LinuxKit VM behind Docker Desktop, and
+should be re-taken on the tagged tree.
+
 ## Gates not demonstrated
 
 | Gate | Status / reason |

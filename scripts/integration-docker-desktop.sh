@@ -87,10 +87,10 @@ tls.sendall(b"GET / HTTP/1.1\r\nHost: icanhazip.com\r\nConnection: close\r\n\r\n
 resp=http.client.HTTPResponse(tls); resp.begin(); assert resp.status==200
 wan=resp.read().decode().strip(); assert ipaddress.ip_address(wan).version==4
 q=struct.pack("!HHHHHH",0x7441,0x0100,1,0,0,0)+b"\x07example\x03com\x00"+struct.pack("!HH",1,1)
-s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(10); s.sendto(q,("1.1.1.1",53))
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(10); s.sendto(q,("9.9.9.9",53))
 try: s.sendto(q,("8.8.8.8",53)); raise AssertionError("ambiguous second UDP destination was accepted")
 except OSError as e: assert e.errno in (errno.EPERM,errno.EACCES),e
-r,peer=s.recvfrom(4096); assert peer==("1.1.1.1",53),peer
+r,peer=s.recvfrom(4096); assert peer==("9.9.9.9",53),peer
 assert r[:2]==b"\x74\x41"
 deadline=time.monotonic()+5
 while True:
@@ -100,17 +100,17 @@ while True:
   if time.monotonic()>=deadline: raise TimeoutError("unconnected UDP state did not turn over")
   time.sleep(.1)
 r,peer=s.recvfrom(4096); assert peer==("8.8.8.8",53),peer
-c=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); c.settimeout(10); c.connect(("1.1.1.1",53)); c.send(q); r=c.recv(4096)
+c=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); c.settimeout(10); c.connect(("9.9.9.9",53)); c.send(q); r=c.recv(4096)
 assert r[:2]==b"\x74\x41"
 m=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); m.settimeout(10); expected=set(); rejected=0
 for i in range(40):
- transaction=0x7500+i; query=struct.pack("!H",transaction)+q[2:]; destination=("1.1.1.1" if i%2==0 else "8.8.8.8",53)
+ transaction=0x7500+i; query=struct.pack("!H",transaction)+q[2:]; destination=("9.9.9.9" if i%2==0 else "8.8.8.8",53)
  try: m.sendto(query,destination); expected.add(transaction)
  except OSError as e:
   assert e.errno in (errno.EPERM,errno.EACCES),e; rejected+=1
 assert len(expected)==20 and rejected==20,(len(expected),rejected)
 for _ in range(20):
- response,peer=m.recvfrom(4096); assert peer==("1.1.1.1",53),peer; expected.remove(struct.unpack("!H",response[:2])[0])
+ response,peer=m.recvfrom(4096); assert peer==("9.9.9.9",53),peer; expected.remove(struct.unpack("!H",response[:2])[0])
 assert not expected; print(wan)'
 
 wait_for_controllers 2

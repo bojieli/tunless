@@ -101,7 +101,7 @@ tls.sendall(b"GET / HTTP/1.1\r\nHost: icanhazip.com\r\nConnection: close\r\n\r\n
 resp=http.client.HTTPResponse(tls); resp.begin(); assert resp.status==200
 wan=resp.read().decode().strip(); assert ipaddress.ip_address(wan).version==4
 q=struct.pack("!HHHHHH",0x7541,0x0100,1,0,0,0)+b"\x07example\x03com\x00"+struct.pack("!HH",1,1)
-s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(10); s.sendto(q,("1.1.1.1",53)); r,_=s.recvfrom(4096)
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(10); s.sendto(q,("9.9.9.9",53)); r,_=s.recvfrom(4096)
 assert r[:2]==b"\x75\x41"; print(wan)'
 exit_address=$("${runtime[@]}" exec --sync "$container_id" python -c "$probe")
 [[ "$exit_address" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || {
