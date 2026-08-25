@@ -4,82 +4,181 @@ import XCTest
 final class CaptureHealthTests: XCTestCase {
     private let start = Date(timeIntervalSince1970: 1_700_000_000)
 
-    func testUnconfirmedCaptureIsReleasedWhenProbationExpires() {
-        var health = CaptureHealth(probationSeconds: 45, failuresBeforeRelease: 3)
+    private func armed(
+        probation: TimeInterval = 45,
+        failures: Int = 3,
+        confirmed: Bool = true
+    ) -> CaptureHealth {
+        var health = CaptureHealth(probationSeconds: probation, failuresBeforePause: failures)
         health.arm(at: start)
-        XCTAssertEqual(health.probationDecision(at: start.addingTimeInterval(30)), .keep)
-        guard case let .release(reason) = health.probationDecision(at: start.addingTimeInterval(45)) else {
+        if confirmed { health.confirm() }
+        return health
+    }
+
+    private func failUntilPaused(_ health: inout CaptureHealth, at now: Date) -> String? {
+        for _ in 0..<health.failuresBeforePause {
+            if case let .pause(reason) = health.observe(succeeded: false, pathSatisfied: true, at: now) {
+                return reason
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Standing aside
+
+    func testCaptureStandsAsideAfterConsecutiveFailures() {
+        var health = armed()
+        XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: start), .unchanged)
+        XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: start), .unchanged)
+        guard case let .pause(reason) = health.observe(succeeded: false, pathSatisfied: true, at: start) else {
+            return XCTFail("sustained resolution failure must hand the network back")
+        }
+        XCTAssertTrue(reason.contains("3 times"))
+        XCTAssertTrue(health.shouldDeclineFlows)
+    }
+
+    func testUnconfirmedCaptureIsPausedWhenProbationExpires() {
+        var health = armed(confirmed: false)
+        XCTAssertEqual(health.probationDecision(at: start.addingTimeInterval(30)), .unchanged)
+        guard case let .pause(reason) = health.probationDecision(at: start.addingTimeInterval(45)) else {
             return XCTFail("probation must end on its own when nothing confirms it")
         }
         XCTAssertTrue(reason.contains("probation"))
     }
 
     func testConfirmationEndsProbation() {
-        var health = CaptureHealth(probationSeconds: 45, failuresBeforeRelease: 3)
-        health.arm(at: start)
-        health.confirm()
-        XCTAssertEqual(health.probationDecision(at: start.addingTimeInterval(600)), .keep)
+        var health = armed()
+        XCTAssertEqual(health.probationDecision(at: start.addingTimeInterval(600)), .unchanged)
     }
 
-    func testConfirmedCaptureIsReleasedAfterConsecutiveFailures() {
-        var health = CaptureHealth(probationSeconds: 45, failuresBeforeRelease: 3)
+    func testASuccessfulProbeConfirmsWithoutTheLauncher() {
+        var health = armed(confirmed: false)
+        XCTAssertEqual(health.observe(succeeded: true, pathSatisfied: true, at: start.addingTimeInterval(30)), .unchanged)
+        XCTAssertEqual(health.probationDecision(at: start.addingTimeInterval(600)), .unchanged)
+    }
+
+    // MARK: - Standing back up
+
+    /// The operator asked for capture by running `start`. A minute of upstream
+    /// trouble does not withdraw that request, and staying aside afterwards
+    /// leaves the host resolving names through whatever the network hands it —
+    /// the exposure the DNS override exists to remove.
+    func testCaptureResumesOnTheFirstProbeThatSucceedsAgain() {
+        var health = armed()
+        XCTAssertNotNil(failUntilPaused(&health, at: start))
+        XCTAssertTrue(health.shouldDeclineFlows)
+
+        XCTAssertEqual(health.observe(succeeded: true, pathSatisfied: true, at: start.addingTimeInterval(60)), .resume)
+        XCTAssertFalse(health.shouldDeclineFlows)
+        XCTAssertNil(health.pauseReason)
+    }
+
+    func testAPausedCaptureDoesNotPauseAgainOrResumeTwice() {
+        var health = armed()
+        XCTAssertNotNil(failUntilPaused(&health, at: start))
+        for _ in 0..<5 {
+            XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: start), .unchanged)
+        }
+        XCTAssertEqual(health.observe(succeeded: true, pathSatisfied: true, at: start), .resume)
+        XCTAssertEqual(health.observe(succeeded: true, pathSatisfied: true, at: start), .unchanged)
+    }
+
+    // MARK: - Sleep
+
+    /// The outage this exists to prevent: a Mac going to sleep tears its
+    /// network down, every probe fails, capture stands aside at the moment
+    /// nothing is using the network — and the pause outlives the sleep, so the
+    /// host wakes with its DNS unprotected and nothing on screen to say so.
+    func testSleepDoesNotPauseCapture() {
+        var health = armed()
+        health.systemWillSleep()
+        for i in 0..<10 {
+            XCTAssertEqual(
+                health.observe(succeeded: false, pathSatisfied: true, at: start.addingTimeInterval(Double(i) * 30)),
+                .unchanged)
+        }
+        XCTAssertFalse(health.shouldDeclineFlows)
+        XCTAssertEqual(health.consecutiveFailures, 0)
+    }
+
+    func testProbesAreIgnoredForAGracePeriodAfterWake() {
+        var health = CaptureHealth(probationSeconds: 45, failuresBeforePause: 3, wakeGraceSeconds: 20)
         health.arm(at: start)
         health.confirm()
-        XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: start), .keep)
-        XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: start), .keep)
-        guard case let .release(reason) = health.observe(succeeded: false, pathSatisfied: true, at: start) else {
-            return XCTFail("sustained resolution failure must give the network back")
+        health.systemWillSleep()
+        let wake = start.addingTimeInterval(30_000)
+        health.systemDidWake(at: wake)
+
+        XCTAssertTrue(health.ignoringProbes(at: wake.addingTimeInterval(5)))
+        XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: wake.addingTimeInterval(5)), .unchanged)
+        XCTAssertEqual(health.consecutiveFailures, 0)
+
+        XCTAssertFalse(health.ignoringProbes(at: wake.addingTimeInterval(25)))
+        XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: wake.addingTimeInterval(25)), .unchanged)
+        XCTAssertEqual(health.consecutiveFailures, 1)
+    }
+
+    func testFailuresLeadingIntoSleepAreForgottenOnWake() {
+        var health = armed(failures: 3)
+        _ = health.observe(succeeded: false, pathSatisfied: true, at: start)
+        _ = health.observe(succeeded: false, pathSatisfied: true, at: start)
+        XCTAssertEqual(health.consecutiveFailures, 2)
+        health.systemWillSleep()
+        let wake = start.addingTimeInterval(30_000)
+        health.systemDidWake(at: wake)
+        // Without this, two pre-sleep failures plus one post-wake failure would
+        // pause capture on a host whose upstream never actually failed.
+        XCTAssertEqual(
+            health.observe(succeeded: false, pathSatisfied: true, at: wake.addingTimeInterval(25)),
+            .unchanged)
+        XCTAssertFalse(health.shouldDeclineFlows)
+    }
+
+    func testProbationDecisionIsAlsoSuspendedAcrossSleep() {
+        var health = armed(confirmed: false)
+        health.systemWillSleep()
+        XCTAssertEqual(health.probationDecision(at: start.addingTimeInterval(600)), .unchanged)
+    }
+
+    // MARK: - Link state
+
+    func testAnOfflineHostDoesNotLoseCapture() {
+        var health = armed(failures: 2)
+        for _ in 0..<10 {
+            XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: false, at: start), .unchanged)
         }
-        XCTAssertTrue(reason.contains("3 times"))
+        XCTAssertEqual(health.consecutiveFailures, 0)
+        XCTAssertFalse(health.shouldDeclineFlows)
     }
 
     func testASuccessfulProbeForgivesEarlierFailures() {
-        var health = CaptureHealth(probationSeconds: 45, failuresBeforeRelease: 3)
-        health.arm(at: start)
-        health.confirm()
+        var health = armed()
         _ = health.observe(succeeded: false, pathSatisfied: true, at: start)
         _ = health.observe(succeeded: false, pathSatisfied: true, at: start)
-        XCTAssertEqual(health.observe(succeeded: true, pathSatisfied: true, at: start), .keep)
+        XCTAssertEqual(health.observe(succeeded: true, pathSatisfied: true, at: start), .unchanged)
         XCTAssertEqual(health.consecutiveFailures, 0)
-        XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: start), .keep)
+        XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: start), .unchanged)
     }
 
-    /// An offline host fails every probe. Releasing capture there would add a
-    /// manual restart to an outage capture did not cause, so link state gates
-    /// the decision.
-    func testAnOfflineHostDoesNotLoseCapture() {
-        var health = CaptureHealth(probationSeconds: 45, failuresBeforeRelease: 2)
-        health.arm(at: start)
-        health.confirm()
-        for _ in 0..<10 {
-            XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: false, at: start), .keep)
-        }
-        XCTAssertEqual(health.consecutiveFailures, 0)
-    }
-
-    /// A probe that succeeds before the launcher reports in is itself proof,
-    /// so a launcher killed mid-verification does not cost the host capture.
-    func testASuccessfulProbeConfirmsWithoutTheLauncher() {
-        var health = CaptureHealth(probationSeconds: 45, failuresBeforeRelease: 3)
-        health.arm(at: start)
-        XCTAssertEqual(health.observe(succeeded: true, pathSatisfied: true, at: start.addingTimeInterval(30)), .keep)
-        XCTAssertEqual(health.probationDecision(at: start.addingTimeInterval(600)), .keep)
-    }
-
-    func testProbesDuringProbationAreBoundedByProbationRatherThanTheFailureBudget() {
-        var health = CaptureHealth(probationSeconds: 45, failuresBeforeRelease: 2)
-        health.arm(at: start)
-        XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: start.addingTimeInterval(10)), .keep)
-        XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: start.addingTimeInterval(20)), .keep)
-        guard case .release = health.observe(succeeded: false, pathSatisfied: true, at: start.addingTimeInterval(50)) else {
-            return XCTFail("an unconfirmed capture must not outlive its probation window")
-        }
-    }
+    // MARK: - Control protocol
 
     func testControlMessageIsDistinguishableFromConfigurationAndTelemetry() {
         XCTAssertEqual(ControlMessage.decode(ControlMessage.confirmHealthy.encoded), .confirmHealthy)
+        XCTAssertEqual(ControlMessage.decode(ControlMessage.queryHealth.encoded), .queryHealth)
         XCTAssertNil(ControlMessage.decode(Data()))
         XCTAssertNil(ControlMessage.decode(Data("{}".utf8)))
         XCTAssertNil(ControlMessage.decode(Data([0xfe])))
+    }
+
+    func testHealthReportSaysWhyCaptureIsNotClaimingFlows() {
+        let paused = CaptureHealthReport(
+            capturing: false, pauseReason: "upstream stopped resolving", confirmed: true, consecutiveFailures: 3)
+        XCTAssertEqual(paused.summary, "paused: upstream stopped resolving")
+        XCTAssertEqual(
+            CaptureHealthReport(capturing: true, pauseReason: nil, confirmed: true, consecutiveFailures: 0).summary,
+            "capturing")
+        XCTAssertEqual(
+            CaptureHealthReport(capturing: true, pauseReason: nil, confirmed: false, consecutiveFailures: 0).summary,
+            "capturing (unconfirmed)")
     }
 }

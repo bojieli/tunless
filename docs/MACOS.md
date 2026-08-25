@@ -284,38 +284,61 @@ instant. Nothing in them covers the upstream that stops resolving an hour
 later, when the proxy is restarted, a node is switched, a TUN device comes up
 beneath it, or the laptop moves to another network. So the provider keeps
 proving it: every 30 seconds it sends a real query along the same path a
-captured port-53 flow takes, and after three consecutive failures it disables
-capture itself and the host returns to its previous path.
+captured port-53 flow takes, and after three consecutive failures it stops
+claiming flows, which puts the host back on the path it had before capture.
 
 The same mechanism closes the gap left by a launcher that never reports back.
 Capture is armed on a probation window when it starts, and a provider that is
 not told resolution works — because the launcher was killed, suspended, or
-disconnected between enabling capture and verifying it — releases the network
-when that window expires rather than holding it indefinitely on an unverified
+disconnected between enabling capture and verifying it — stands aside when that
+window expires rather than holding the host indefinitely on an unverified
 claim. A probe that succeeds on its own counts as proof, so a start that
 genuinely works never depends on the launcher surviving.
 
 Link state gates the decision: a host with no usable network fails every probe,
-and releasing capture there would add a manual restart to an outage capture did
-not cause. `--no-health-watchdog` (or `TUNLESS_NO_HEALTH_WATCHDOG=true`) turns
-the watchdog off for a host that would rather keep capture through an outage
-than have it disabled underneath a running workload.
+and standing aside there would change nothing capture caused.
+`--no-health-watchdog` (or `TUNLESS_NO_HEALTH_WATCHDOG=true`) turns the watchdog
+off for a host that would rather keep capture through an outage than have it
+stand aside underneath a running workload.
 
-Release is final until someone starts capture again. Nothing re-arms it on a
-timer, because re-enabling capture is a privileged change to how every flow on
-the host is routed and should not happen unobserved. The practical consequence
-is that a laptop left running can be found with capture off in the morning if
-its upstream was unreachable for a few minutes overnight — `status` reports
-`disconnected` with `enabled` still true, and `start` puts it back. Prefer that
-to the alternative: capture that re-arms itself is capture that can take the
-network down while nobody is watching.
+Standing aside is a pause, not a verdict. Declining a flow hands it back to the
+kernel, which routes it as though tunless were not installed, so the host
+recovers exactly as it would if the provider had died — while the provider
+stays alive to keep probing. When a probe succeeds again, capture resumes on
+its own. Running `start` is the operator asking for capture, and a few minutes
+of upstream trouble does not withdraw that request; staying aside afterwards
+would leave the host resolving names through whatever the network hands it,
+which is the exposure the DNS override exists to remove.
 
-A released capture is visible in `--telemetry` as a `capture` record whose
-event begins with `released:`, and in the system log:
+Sleep is excluded from the evidence. A machine going to sleep tears its network
+down and fails every probe, so the provider suspends the watchdog on
+`NEProvider.sleep()` and ignores probe results for twenty seconds after
+`wake()`, discarding the failures that led into the sleep. Without that, a
+laptop pauses capture at the moment nothing is using the network, and the pause
+outlives the sleep: the host wakes with its DNS unprotected and nothing on
+screen to say so.
+
+Because a paused session stays connected, `status` alone would report
+`connected` either way. The `capture` field is the signal that matters:
 
 ```console
-tunless: releasing capture: name resolution failed 3 times in a row through the upstream
+{ "status": "connected", "capture": "paused: name resolution failed 3 times in a row through the upstream" }
+{ "status": "connected", "capture": "capturing" }
 ```
+
+Each transition is also written to the unified log under subsystem
+`com.bojieli.tunless`, and appears in `--telemetry` as a `capture` record:
+
+```console
+/usr/bin/log show --last 1h --predicate 'subsystem == "com.bojieli.tunless"'
+capture paused: name resolution failed 3 times in a row through the upstream.
+Flows now go direct; capture resumes automatically when the upstream resolves again
+```
+
+Log first and to somewhere that survives, because the first version of this
+recorded the reason into the telemetry buffer and then cancelled the provider,
+which threw that buffer away — destroying the one message that explained why
+the host had lost capture.
 
 If the upstream genuinely cannot relay DNS and capture is still wanted, start
 with `--disable-dns-override` so each application keeps its own resolver and
