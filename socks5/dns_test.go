@@ -68,3 +68,51 @@ func TestDNSOverrideLeavesOtherTrafficUntouched(t *testing.T) {
 		t.Fatal("non-DNS traffic was modified")
 	}
 }
+
+func TestTranslatedTransactionIDsAreUnpredictable(t *testing.T) {
+	m := newDNSTransactionMap(4096, time.Minute)
+	override := netip.MustParseAddrPort("1.1.1.1:53")
+	original := netip.MustParseAddrPort("223.6.6.6:53")
+	seen := make(map[uint16]struct{})
+	var previous uint16
+	consecutive := 0
+	const queries = 256
+	for i := range queries {
+		translated, _ := m.prepare(dnsMessage(0x1234), original, override)
+		id := binary.BigEndian.Uint16(translated[:2])
+		if _, duplicate := seen[id]; duplicate {
+			t.Fatalf("translated transaction ID %#04x was handed out twice", id)
+		}
+		seen[id] = struct{}{}
+		if i > 0 && id == previous+1 {
+			consecutive++
+		}
+		previous = id
+	}
+	// A counter scores queries-1 here. Independent draws land on their
+	// predecessor's successor about once in 65,536, so anything above a couple
+	// of hits means the IDs are being counted out rather than drawn.
+	if consecutive > 4 {
+		t.Fatalf("%d of %d translated IDs followed their predecessor; the allocator looks sequential", consecutive, queries-1)
+	}
+}
+
+func TestTransactionIDAllocationSurvivesCollidingDraws(t *testing.T) {
+	m := newDNSTransactionMap(8, time.Minute)
+	m.random = func() uint16 { return 0x2000 }
+	override := netip.MustParseAddrPort("1.1.1.1:53")
+	first := netip.MustParseAddrPort("223.6.6.6:53")
+	second := netip.MustParseAddrPort("8.8.8.8:53")
+	one, _ := m.prepare(dnsMessage(0x1111), first, override)
+	two, _ := m.prepare(dnsMessage(0x2222), second, override)
+	if got := binary.BigEndian.Uint16(one[:2]); got != 0x2000 {
+		t.Fatalf("first translated ID = %#04x, want %#04x", got, 0x2000)
+	}
+	if got := binary.BigEndian.Uint16(two[:2]); got != 0x2001 {
+		t.Fatalf("second translated ID = %#04x, want the next free ID %#04x", got, 0x2001)
+	}
+	reply, source := m.restore(two, override)
+	if source != second || binary.BigEndian.Uint16(reply[:2]) != 0x2222 {
+		t.Fatalf("restored = %s/%#04x, want %s/%#04x", source, binary.BigEndian.Uint16(reply[:2]), second, 0x2222)
+	}
+}

@@ -77,9 +77,11 @@ final class CaptureFilterTests:XCTestCase {
 
 final class DNSResponseMapTests:XCTestCase {
 	func testRestoresOriginalResolverEndpointAndIdentifier()async{
-		let map=DNSResponseMap();let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53)
+		// Pin the draw: the allocator is random, and an unpinned run would match
+		// the query's own identifier once every 65,536 executions.
+		let map=DNSResponseMap(randomIdentifier:{0x4321});let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53)
 		let query=Data([0x12,0x34,0x01,0x00,0,1,0,0,0,0,0,0]);let translated=await map.prepare(query:query,original:original,routed:routed)
-		XCTAssertNotEqual(translated.prefix(2),query.prefix(2))
+		XCTAssertEqual(translated.prefix(2),Data([0x43,0x21]))
 		var response=translated;response[2]=0x81;response[3]=0x80
 		let restored=await map.restore(response:response,receivedFrom:routed)
 		let count=await map.outstandingCount();XCTAssertEqual(restored.source,original);XCTAssertEqual(restored.payload.prefix(2),query.prefix(2));XCTAssertEqual(count,0)
@@ -92,6 +94,26 @@ final class DNSResponseMapTests:XCTestCase {
 	func testDoesNotRewriteResponseFromAnotherSource()async{
 		let map=DNSResponseMap();let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);let query=Data([0xab,0xcd,1,0,0,1,0,0,0,0,0,0]);let translated=await map.prepare(query:query,original:original,routed:routed)
 		let other=await map.restore(response:translated,receivedFrom:SOCKSAddress(host:"8.8.8.8",port:53));let expected=await map.restore(response:translated,receivedFrom:routed);XCTAssertEqual(other.source,SOCKSAddress(host:"8.8.8.8",port:53));XCTAssertEqual(expected.source,original)
+	}
+	func testTranslatedIdentifiersAreUnpredictable()async{
+		let map=DNSResponseMap();let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);let query=Data([0x12,0x34,0x01,0x00,0,1,0,0,0,0,0,0])
+		var seen=Set<UInt16>();var previous:UInt16=0;var consecutive=0;let queries=256
+		for index in 0..<queries{
+			let translated=await map.prepare(query:query,original:original,routed:routed)
+			let identifier=UInt16(translated[translated.startIndex])<<8|UInt16(translated[translated.index(after:translated.startIndex)])
+			XCTAssertFalse(seen.contains(identifier),"translated identifier \(identifier) was handed out twice");seen.insert(identifier)
+			if index>0,identifier==previous&+1{consecutive+=1};previous=identifier
+		}
+		// A counter scores queries-1 here. Independent draws land on their
+		// predecessor's successor about once in 65,536.
+		XCTAssertLessThanOrEqual(consecutive,4,"translated identifiers look sequential")
+	}
+	func testIdentifierAllocationSurvivesCollidingDraws()async{
+		let map=DNSResponseMap(randomIdentifier:{0x2000});let first=SOCKSAddress(host:"223.6.6.6",port:53);let second=SOCKSAddress(host:"8.8.8.8",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53)
+		let one=await map.prepare(query:Data([0x11,0x11,1,0,0,1,0,0,0,0,0,0]),original:first,routed:routed)
+		let two=await map.prepare(query:Data([0x22,0x22,1,0,0,1,0,0,0,0,0,0]),original:second,routed:routed)
+		XCTAssertEqual(one.prefix(2),Data([0x20,0x00]));XCTAssertEqual(two.prefix(2),Data([0x20,0x01]))
+		let restored=await map.restore(response:two,receivedFrom:routed);XCTAssertEqual(restored.source,second);XCTAssertEqual(restored.payload.prefix(2),Data([0x22,0x22]))
 	}
 	func testMapIsBoundedAndExpiresEntries()async throws{
 		let map=DNSResponseMap(maxEntries:2,ttlSeconds:0.01);let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53)

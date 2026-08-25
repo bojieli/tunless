@@ -641,3 +641,133 @@ func TestUsableHostnameFallsBackInsteadOfFailingTheFlow(t *testing.T) {
 		}
 	}
 }
+
+func TestDialUpstreamWalksAlternatesUntilOneAnswers(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		accepted <- struct{}{}
+		_ = conn.Close()
+	}()
+	// A closed listener leaves an address that refuses immediately, which is
+	// what a proxy bound to only one address of a name looks like.
+	refused, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedAddress := refused.Addr().String()
+	_ = refused.Close()
+
+	client := &Client{Address: refusedAddress, Alternates: []string{listener.Addr().String()}}
+	conn, err := client.dialUpstream(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("dialUpstream: %v", err)
+	}
+	defer conn.Close()
+	if conn.RemoteAddr().String() != listener.Addr().String() {
+		t.Fatalf("connected to %s, want the alternate %s", conn.RemoteAddr(), listener.Addr())
+	}
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the alternate address was never dialed")
+	}
+}
+
+func TestDialUpstreamReportsEveryFailure(t *testing.T) {
+	first, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAddress := first.Addr().String()
+	_ = first.Close()
+	second, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAddress := second.Addr().String()
+	_ = second.Close()
+
+	client := &Client{Address: firstAddress, Alternates: []string{secondAddress}}
+	_, err = client.dialUpstream(context.Background(), nil)
+	if err == nil {
+		t.Fatal("dialUpstream succeeded with no reachable address")
+	}
+	for _, address := range []string{firstAddress, secondAddress} {
+		if !strings.Contains(err.Error(), address) {
+			t.Fatalf("error %v omits the attempt on %s", err, address)
+		}
+	}
+}
+
+func TestExchangeDNSUDPIgnoresDatagramsThatAnswerNothing(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	relay, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	destination := netip.MustParseAddrPort("1.1.1.1:53")
+	go func() {
+		control, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer control.Close()
+		var greeting [3]byte
+		_, _ = io.ReadFull(control, greeting[:])
+		_, _ = control.Write([]byte{5, 0})
+		var request [10]byte
+		_, _ = io.ReadFull(control, request[:])
+		bound := relay.LocalAddr().(*net.UDPAddr).AddrPort()
+		reply := []byte{5, 0, 0, 1}
+		reply = append(reply, bound.Addr().AsSlice()...)
+		reply = append(reply, byte(bound.Port()>>8), byte(bound.Port()))
+		_, _ = control.Write(reply)
+		_, _ = io.Copy(io.Discard, control)
+	}()
+	answer := func(id uint16, marker byte) []byte {
+		message := dnsMessage(id)
+		message[2] = 0x80
+		message[11] = marker
+		frame := append([]byte{0, 0, 0}, encodeAddr(destination)...)
+		return append(frame, message...)
+	}
+	go func() {
+		buffer := make([]byte, 65535)
+		_, peer, readErr := relay.ReadFromUDPAddrPort(buffer)
+		if readErr != nil {
+			return
+		}
+		// A datagram from the right place answering a different question, then
+		// the real reply behind it.
+		_, _ = relay.WriteToUDPAddrPort(answer(0x9999, 0xaa), peer)
+		_, _ = relay.WriteToUDPAddrPort(answer(0x1234, 0xbb), peer)
+	}()
+
+	client := &Client{Address: listener.Addr().String()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	reply, err := client.ExchangeDNSUDP(ctx, destination, dnsMessage(0x1234))
+	if err != nil {
+		t.Fatalf("ExchangeDNSUDP: %v", err)
+	}
+	if len(reply) != 12 || reply[0] != 0x12 || reply[1] != 0x34 {
+		t.Fatalf("reply transaction = %x, want the query's own", reply[:2])
+	}
+	if reply[11] != 0xbb {
+		t.Fatalf("reply marker = %#x, want the real answer %#x", reply[11], 0xbb)
+	}
+}

@@ -71,8 +71,41 @@ use ISO 8601. The repository has not made a public release yet.
   plus synchronized third-party license notices carried by every archive and
   native package.
 
+### Fixed
+
+- A `--upstream` given as a hostname is resolved once at startup and pinned to
+  the addresses it returned, instead of being resolved again on every flow. The
+  per-flow lookup was a loop: tunless normally shares the captured cgroup, so
+  dialing the upstream needed a name lookup, and capturing that lookup needed
+  the dial. Resolution recursed until the flow ceiling rejected it, which
+  presents as a machine whose DNS stopped working. Every pinned address is
+  tried in turn, so a proxy named `localhost` still reaches whichever of ::1
+  and 127.0.0.1 it listens on, and all of them are reserved from capture.
+
 ### Security
 
+- Observed address-to-name mappings expire after at most a day, whatever TTL
+  the answer carried. A record may claim a century, which is a claim on every
+  future tenant of a recycled address rather than a statement about freshness.
+- The Linux IPv4 redirect socket drops datagrams that were not delivered to a
+  loopback address. It binds the wildcard because each captured UDP association
+  is redirected to its own 127.x relay address and a socket bound to one
+  address would see only one of them, which leaves a port reachable from the
+  network; correlation refused a foreign datagram already, and now the receive
+  path says so where it is relied on.
+- Both DNS forwarding paths now check that a datagram answers the query before
+  treating it as the answer: the transaction ID has to match and the response
+  bit has to be set. Previously the first datagram to reach the socket was
+  returned, so a forged one — cheap for anyone who can guess an ephemeral port
+  — consumed the exchange and the real answer arrived to a closed socket. The
+  observer's own recording already held replies to this standard; the
+  forwarding path did not.
+- The private DNS transaction ID that replaces an application's own while a
+  port-53 query is routed to the trusted resolver is now drawn at random on
+  both macOS and the portable emitter. It was counted out from zero, which
+  handed every rewritten query an ID an off-path attacker could predict —
+  exactly the guesswork RFC 5452 randomization exists to prevent, removed by
+  the rewrite rather than by the application.
 - Exact cgroup/container identity validation, privilege separation, fail-open
   BPF lifecycle, bounded flow concurrency, full-history secret scanning,
   public-release gates for CodeQL, dependency review, and provenance

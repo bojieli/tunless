@@ -61,9 +61,15 @@ the lock-free flow counters.
 Captured TCP and UDP queries whose original destination port is 53 are sent to
 the numeric `--dns-upstream` through SOCKS5 by default. UDP query IDs are
 translated per outstanding request and restored with the original resolver
-source on reply, so reused IDs and out-of-order responses are unambiguous. Use
+source on reply, so reused IDs and out-of-order responses are unambiguous. The
+translated ID is drawn at random, keeping the off-path spoofing resistance the
+application's own random ID was there to provide. Use
 `--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to retain each
-application's original resolver. `--flow-idle-timeout` and
+application's original resolver. An `--upstream` written as a hostname is
+resolved once at startup, and the numeric addresses it returned are what every
+flow dials, in order, until one answers; the startup log records the name and
+the addresses. Resolving per flow would put a lookup inside the path that
+carries lookups. A record that changes later is picked up by restarting. `--flow-idle-timeout` and
 `--udp-idle-timeout` bound abandoned flows; zero disables the corresponding
 timeout.
 
@@ -71,7 +77,10 @@ timeout.
 
 The observer forwards UDP and TCP DNS without changing answers, records A/AAAA
 TTL mappings, and supplies a hostname only when exactly one unexpired name maps
-to the address. Ambiguous CDN addresses remain IP-only.
+to the address. A recorded mapping expires with the answer's TTL, bounded to a
+day: an address outlives the name that pointed at it, and an attribution that
+outlives its answer routes the address's next tenant under the old name's
+rules. Ambiguous CDN addresses remain IP-only.
 
 ```console
 tunless --upstream 127.0.0.1:7890 \

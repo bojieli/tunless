@@ -1,6 +1,7 @@
 package socks5
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"net/netip"
 	"sync"
@@ -14,10 +15,10 @@ import (
 type dnsTransactionMap struct {
 	mu         sync.Mutex
 	entries    map[uint16]dnsTransaction
-	next       uint16
 	maxEntries int
 	ttl        time.Duration
 	now        func() time.Time
+	random     func() uint16
 }
 
 type dnsTransaction struct {
@@ -33,6 +34,7 @@ func newDNSTransactionMap(maxEntries int, ttl time.Duration) *dnsTransactionMap 
 		maxEntries: maxEntries,
 		ttl:        ttl,
 		now:        time.Now,
+		random:     randomTransactionID,
 	}
 }
 
@@ -88,15 +90,42 @@ func (m *dnsTransactionMap) restore(payload []byte, source netip.AddrPort) ([]by
 	return copyPayload, entry.original
 }
 
+// allocateID picks the private transaction ID a rewritten query will carry.
+//
+// The ID has to be drawn at random, not counted out. A resolver client picks
+// its own ID unpredictably so that an attacker who cannot see the query cannot
+// forge an answer to it (RFC 5452); rewriting replaces that ID with this one,
+// so anything less than the same unpredictability hands every captured lookup
+// on the machine a weaker answer than it would have had unproxied.
 func (m *dnsTransactionMap) allocateID() (uint16, bool) {
-	for range 1 << 16 {
-		candidate := m.next
-		m.next++
+	// Outstanding queries are bounded far below the 16-bit space, so the first
+	// draw is almost always free.
+	for range 8 {
+		candidate := m.random()
 		if _, exists := m.entries[candidate]; !exists {
 			return candidate, true
 		}
 	}
+	// Reached only when the space is unusually crowded. Walk upward from a
+	// random start rather than from zero, so even the fallback does not settle
+	// into a sequence someone can follow.
+	candidate := m.random()
+	for range 1 << 16 {
+		if _, exists := m.entries[candidate]; !exists {
+			return candidate, true
+		}
+		candidate++
+	}
 	return 0, false
+}
+
+func randomTransactionID() uint16 {
+	var buffer [2]byte
+	// crypto/rand.Read fills the buffer or stops the program; it cannot come
+	// back short or with an error. Failing loudly is the right outcome for a
+	// draw whose only job is being unguessable.
+	_, _ = rand.Read(buffer[:])
+	return binary.BigEndian.Uint16(buffer[:])
 }
 
 func (m *dnsTransactionMap) prune(now time.Time) {

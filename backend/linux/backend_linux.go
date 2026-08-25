@@ -300,6 +300,18 @@ func listenSocketsCurrentNamespace(address string) (uint16, []net.Listener, []*n
 		_ = v4.Close()
 		return 0, nil, nil, err
 	}
+	// The IPv4 redirect socket is the one thing here that cannot be pinned to a
+	// single address. Each captured UDP association is redirected to its own
+	// 127.x.y.z relay address, derived from the socket cookie, and that address
+	// is how a datagram is correlated back to the flow that sent it. Receiving
+	// across all of 127.0.0.0/8 means binding the wildcard; a socket bound to
+	// one address only ever sees datagrams addressed to that one.
+	//
+	// What that opens is a port reachable from the network, so the receive path
+	// checks that a datagram was delivered to a loopback address before doing
+	// anything with it. Correlation would refuse a foreign one anyway — every
+	// key in the relay map is a 127.x address — but an invariant this load
+	// bearing is worth stating where it is relied on.
 	u4, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: int(actual)})
 	if err != nil {
 		_ = v4.Close()
@@ -475,7 +487,10 @@ func (b *Backend) readPackets4(ctx context.Context, conn *net.UDPConn) {
 				relayIP, _ = netip.AddrFromSlice(message.Data[8:12])
 			}
 		}
-		if relayKey == 0 {
+		// See the wildcard bind in listenSocketsCurrentNamespace: this socket
+		// can be reached from off the machine, and a redirected datagram is
+		// always delivered to the 127.x relay address BPF chose for its flow.
+		if relayKey == 0 || !relayIP.IsLoopback() {
 			continue
 		}
 		var cookie uint64

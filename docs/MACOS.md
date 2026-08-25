@@ -218,6 +218,15 @@ the upstream was asked to query are tunless's own datapath. The provider
 refuses to capture any of them, so a forgotten flag, a stale saved
 configuration, or an over-broad `--include-destination` cannot reach them.
 
+One edge is worth knowing. The upstream is matched as it was written, so an
+`--upstream` given as a hostname is recognized only when a flow names the same
+host; a flow addressed to the IP that name resolves to is not recognized as the
+upstream and is captured like anything else. Nothing on the machine has to
+notice — the provider's own connection to the upstream is never captured — but
+an application pointed at the proxy by address, while tunless was pointed at it
+by name, sends its proxy traffic back through the proxy. Writing `--upstream`
+as an address on both sides avoids it.
+
 **Excluded by default, overridable per prefix.** RFC 1918 and RFC 4193 private
 ranges, RFC 6598 carrier-grade NAT, and the `198.18.0.0/15` fake-IP range are
 excluded unless asked for. These are not reachability-critical the way the
@@ -633,7 +642,9 @@ resolver it originally addressed, preserving connected-datagram semantics.
 Tunless assigns a private transaction ID to each outstanding UDP query, then
 restores the application's original ID and resolver endpoint on reply. This
 prevents concurrent reused IDs and out-of-order responses from being matched by
-FIFO order. Entries expire after 30 seconds and are capped at 4,096. Set
+FIFO order. That private ID is drawn at random rather than counted out, so a
+rewritten query is no easier to answer falsely than the one the application
+wrote (RFC 5452). Entries expire after 30 seconds and are capped at 4,096. Set
 `TUNLESS_DNS_UPSTREAM` to choose another trusted resolver. Use
 `--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to preserve the
 original DNS destination while continuing to proxy the flow.

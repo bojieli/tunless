@@ -167,6 +167,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	named := client.Address
+	resolveCtx, cancelResolve := context.WithTimeout(context.Background(), 10*time.Second)
+	pinned, err := pinUpstreamAddresses(resolveCtx, client.Address, net.DefaultResolver.LookupNetIP)
+	cancelResolve()
+	if err != nil {
+		return err
+	}
+	client.Address, client.Alternates = pinned[0], pinned[1:]
+	if client.Address != named {
+		logger.Info("pinned the upstream address at startup", "upstream", named, "address", client.Address, "alternates", client.Alternates)
+	}
 	client.MetadataUsername = metadataUsername
 	client.FlowIdleTimeout = flowIdleTimeout
 	client.UDPIdleTimeout = udpIdleTimeout
@@ -180,7 +191,7 @@ func run() error {
 	if filter.ExcludeDestinations, err = prefixes(excludeDst); err != nil {
 		return err
 	}
-	reserved, err := reservedDestinations(client.Address, client.DNSOverride, includeDst)
+	reserved, err := reservedDestinations(pinned, client.DNSOverride, includeDst)
 	if err != nil {
 		return err
 	}
@@ -516,7 +527,7 @@ func cgroupPathFromProc(data []byte) (string, error) {
 // already gone. The destinations are known from the configuration, so reserve
 // those instead. An explicit --include-destination for the same prefix is left
 // alone: naming it is the operator saying they know.
-func reservedDestinations(upstream string, dnsTarget netip.AddrPort, included []string) ([]netip.Prefix, error) {
+func reservedDestinations(upstream []string, dnsTarget netip.AddrPort, included []string) ([]netip.Prefix, error) {
 	requested, err := prefixes(included)
 	if err != nil {
 		return nil, err
@@ -535,15 +546,62 @@ func reservedDestinations(upstream string, dnsTarget netip.AddrPort, included []
 		}
 		reserved = append(reserved, prefix)
 	}
-	if host, _, splitErr := net.SplitHostPort(upstream); splitErr == nil {
-		if addr, parseErr := netip.ParseAddr(host); parseErr == nil {
-			add(addr)
+	for _, address := range upstream {
+		if host, _, splitErr := net.SplitHostPort(address); splitErr == nil {
+			if addr, parseErr := netip.ParseAddr(host); parseErr == nil {
+				add(addr)
+			}
 		}
 	}
 	if dnsTarget.IsValid() {
 		add(dnsTarget.Addr())
 	}
 	return reserved, nil
+}
+
+// pinUpstreamAddresses resolves a named SOCKS5 upstream once, before capture
+// starts, and returns the numeric addresses the datapath will dial from then
+// on, in the order the resolver returned them.
+//
+// Resolving it per flow instead is a loop with no exit, because tunless
+// normally shares the captured cgroup with the applications it is capturing.
+// Dialing the upstream needs the name, resolving the name is a port-53 flow,
+// and capturing that flow hands it to the emitter, which dials the upstream,
+// which needs the name again. Nothing errors along the way: resolution simply
+// recurses until the flow ceiling starts rejecting it, and what the operator
+// sees is a machine whose DNS stopped working. The trusted resolver has to be
+// numeric for exactly this reason, and the upstream is the other half of the
+// same datapath.
+//
+// What the name resolved to is fixed for the life of the process. A record
+// that changes is picked up by restarting, which is a smaller surprise than a
+// datapath that depends on the traffic it carries.
+func pinUpstreamAddresses(ctx context.Context, address string, lookup func(context.Context, string, string) ([]netip.Addr, error)) ([]string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("upstream: %w", err)
+	}
+	if _, parseErr := netip.ParseAddr(host); parseErr == nil {
+		return []string{address}, nil
+	}
+	found, err := lookup(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve upstream %q: %w", host, err)
+	}
+	// Every address the name carries is kept, not just the first. A proxy on
+	// `localhost` answers on 127.0.0.1 while the resolver commonly names ::1
+	// first, and pinning one of the two would quietly stop connecting.
+	pinned := make([]string, 0, len(found))
+	for _, addr := range found {
+		addr = addr.Unmap()
+		if addr.IsValid() && !addr.IsUnspecified() && !addr.IsMulticast() {
+			pinned = append(pinned, net.JoinHostPort(addr.String(), port))
+		}
+	}
+	if len(pinned) == 0 {
+		return nil, fmt.Errorf("upstream %q resolved without a usable address", host)
+	}
+	return pinned, nil
 }
 
 func parseUpstream(value string) (*socks5.Client, error) {

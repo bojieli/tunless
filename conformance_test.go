@@ -66,7 +66,12 @@ type stack struct {
 	addr     string
 }
 
-func startStack(t *testing.T) *stack {
+func startStack(t *testing.T) *stack { return startStackWith(t, nil) }
+
+// startStackWith builds client -> reference inbound -> core -> SOCKS5 emitter
+// -> reference inbound -> direct emitter -> target. configure adjusts the
+// emitter that joins the two halves.
+func startStackWith(t *testing.T, configure func(*socks5.Client)) *stack {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &stack{cancel: cancel}
@@ -80,10 +85,14 @@ func startStack(t *testing.T) *stack {
 	downAddr := waitAddr(t, down)
 	up := &loopback.Backend{Address: "127.0.0.1:0"}
 	s.backends = append(s.backends, up)
+	emitter := &socks5.Client{Address: downAddr}
+	if configure != nil {
+		configure(emitter)
+	}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		_ = (&tunless.Core{Backend: up, Emitter: &socks5.Client{Address: downAddr}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}).Run(ctx)
+		_ = (&tunless.Core{Backend: up, Emitter: emitter, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}).Run(ctx)
 	}()
 	s.addr = waitAddr(t, up)
 	return s
@@ -367,6 +376,36 @@ func socksConnect(t *testing.T, proxy, target string) net.Conn {
 	readEncoded(t, c)
 	return c
 }
+
+// socksConnectAuthenticated offers username/password authentication and
+// nothing else, so a server that would rather skip it has no way to.
+func socksConnectAuthenticated(t *testing.T, proxy, target, username, password string) net.Conn {
+	t.Helper()
+	c, err := net.Dial("tcp", proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.Write([]byte{5, 1, 2})
+	if choice := readExact(t, c, 2); choice[0] != 5 || choice[1] != 2 {
+		t.Fatalf("server selected method %v, want username/password", choice)
+	}
+	auth := []byte{1, byte(len(username))}
+	auth = append(auth, username...)
+	auth = append(auth, byte(len(password)))
+	auth = append(auth, password...)
+	_, _ = c.Write(auth)
+	if reply := readExact(t, c, 2); reply[0] != 1 || reply[1] != 0 {
+		t.Fatalf("authentication reply %v", reply)
+	}
+	a := netip.MustParseAddrPort(target)
+	_, _ = c.Write(append([]byte{5, 1, 0}, encoded(a)...))
+	if reply := readExact(t, c, 3); reply[1] != 0 {
+		t.Fatalf("SOCKS status %d", reply[1])
+	}
+	readEncoded(t, c)
+	return c
+}
+
 func socksUDPAssociate(t *testing.T, proxy string) (net.Conn, netip.AddrPort) {
 	t.Helper()
 	c, err := net.Dial("tcp", proxy)
@@ -414,4 +453,28 @@ func udpFrame(a netip.AddrPort, p []byte) []byte {
 	b := []byte{0, 0, 0}
 	b = append(b, encoded(a)...)
 	return append(b, p...)
+}
+
+// TestAuthenticatedHopsCarryPayload exercises username/password authentication
+// on both hops at once: the test client authenticates to the reference inbound,
+// and the emitter joining the two halves authenticates to the second one. The
+// second hop is what `--metadata-username` uses on every flow, so a reference
+// target that mishandled RFC 1929 would otherwise go unnoticed locally.
+func TestAuthenticatedHopsCarryPayload(t *testing.T) {
+	targetAddr, closeTarget := tcpEcho(t, "tcp4", "127.0.0.1:0")
+	defer closeTarget()
+	s := startStackWith(t, func(client *socks5.Client) {
+		client.Username, client.Password = "pid=42;path=%2Fbin%2Fcurl", "secret"
+	})
+	defer s.close()
+	conn := socksConnectAuthenticated(t, s.addr, targetAddr, "operator", "hunter2")
+	defer conn.Close()
+	payload := []byte("authenticated round trip")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	got := readExact(t, conn, len(payload))
+	if string(got) != string(payload) {
+		t.Fatalf("echo = %q, want %q", got, payload)
+	}
 }
