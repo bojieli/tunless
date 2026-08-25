@@ -114,16 +114,19 @@ qualified. Link each completed item to a run, commit, or measurement.
 
 ## Release scope
 
-- [ ] [RELEASE_NOTES.md](RELEASE_NOTES.md) reviewed, its draft banner removed,
+- [x] [RELEASE_NOTES.md](RELEASE_NOTES.md) reviewed, its draft banner removed,
       and its text used as the GitHub Release body
-- [ ] `CHANGELOG.md` heading changed from `0.1.0 — UNRELEASED` to `0.1.0` with
+- [x] `CHANGELOG.md` heading changed from `0.1.0 — UNRELEASED` to `0.1.0` with
       the tag's ISO date
-- [ ] README's "Where the project actually is" section replaced: it currently
-      says nothing has been released, which stops being true at the tag and
-      would otherwise be the first thing a reader is told
-- [ ] Release notes state the per-platform maturity from
-      [RELEASING.md](RELEASING.md#what-the-first-release-covers): Linux
-      generally available, macOS beta, Windows source only
+- [x] README's "Where the project actually is" section replaced: 0.1.0 is
+      described as a preview, with the three things worth knowing before
+      installing it — no soak on either platform, an unverified kernel floor,
+      and unreliable rootful Podman — stated there rather than left to the
+      evidence log
+- [x] Release notes state the per-platform maturity from
+      [RELEASING.md](RELEASING.md#what-the-first-release-covers), adjusted for
+      a preview: Linux is the platform this release is for, macOS beta, Windows
+      source only
 - [ ] No Windows binary or driver is attached to the release, and the Windows
       documentation still says it is not a shippable artifact
 

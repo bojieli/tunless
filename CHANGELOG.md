@@ -1,9 +1,12 @@
 # Changelog
 
 This project follows semantic versioning after its first public release. Dates
-use ISO 8601. The repository has not made a public release yet.
+use ISO 8601.
 
-## 0.1.0 — UNRELEASED
+## 0.1.0 — 2026-08-25
+
+Preview release. See
+[docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) for what that means.
 
 ### Added
 

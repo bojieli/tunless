@@ -3,15 +3,17 @@
 *Audience:* the body of the GitHub Release, and anyone deciding whether to
 install this.
 
-> **Draft for 0.1.0. Nothing has been published.** The gates that must be met
-> before this text becomes a release are in
-> [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md), and the evidence behind every
-> claim below is in [MEASUREMENTS.md](MEASUREMENTS.md). Delete this block at tag
-> time; the checklist says when.
+## 0.1.0 — 2026-08-25 — preview
 
-## 0.1.0 — UNRELEASED
+First release, and a **preview**: install it to try it, not to depend on it.
+The code is exercised against a live kernel on every pull request and every
+claim below is backed by a dated measurement, but the evidence is narrow in one
+specific way — nobody has run it for hours. Read
+[what a preview means here](../README.md#where-the-project-actually-is) and the
+**Gates not demonstrated** table in [MEASUREMENTS.md](MEASUREMENTS.md) before
+deciding this belongs on a machine you care about.
 
-First release. `tunless` catches connections at the socket layer and hands them
+ `tunless` catches connections at the socket layer and hands them
 to a SOCKS5 proxy you already run, so unmodified applications go through your
 proxy without a TUN device, a fake-IP pool, or a rewritten routing table. The
 kernel still knows the hostname and the calling process at that layer, so
@@ -25,7 +27,7 @@ its face rather than only in a document you might not reach.
 
 | Platform | Ships as | Because |
 | --- | --- | --- |
-| Linux | Generally available | eBPF capture for TCP and UDP over both address families, on the host and inside container namespaces, from a reproducible embedded BPF object, with dated throughput, footprint, filter, and recovery evidence |
+| Linux | Preview, and the platform this release is for | eBPF capture for TCP and UDP over both address families, on the host and inside container namespaces, from a reproducible embedded BPF object, with dated throughput, footprint, filter, and recovery evidence |
 | macOS | Beta | Notarized builds pass the recorded live suites and capture stands aside on its own when the upstream stops resolving, but exact-candidate clean-machine qualification is open and `remoteHostname` and HTTP/3 coverage are not demonstrated |
 | Windows | Source only, not a shippable artifact | The WFP backend is implemented, but WDK build, Driver Verifier, runtime, UDP, fuzzing, and Microsoft attestation gates are all unmet, and loading a driver on Windows 10 or later needs a signature this project does not hold |
 
@@ -84,6 +86,18 @@ The complete list, including every security fix, is in
 [CHANGELOG.md](../CHANGELOG.md).
 
 ### Known limitations
+
+- **Nobody has soaked this.** The 48-hour soak harnesses exist on both
+  platforms; neither has been run. Every serious defect this project has found
+  surfaced over hours rather than minutes, so this is the gap most likely to
+  still be hiding one.
+- **Rootful Podman is unreliable.** Podman commands against an attached
+  container — `rm --force`, `exec` — hang in roughly two runs in five on podman
+  5.8.4 with netavark. Docker and containerd via kind do not show it and podman
+  3.4.4 on CNI did not either. Cause unknown. Use Docker.
+- **The 5.10 kernel floor is unverified on this code.** Current kernels are
+  tested continuously; the oldest supported one was last exercised before this
+  release's datapath changes.
 
 These are boundaries, not bugs waiting on a patch:
 
