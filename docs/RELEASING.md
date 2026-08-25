@@ -59,7 +59,8 @@ visibility changes.
 ## Prepare a candidate
 
 1. Ensure `main` is clean, CI/security/kernel workflows pass, and the version's
-   scope is final. Update `CHANGELOG.md` and the measurements.
+   scope is final. Update `CHANGELOG.md`, `docs/RELEASE_NOTES.md`, and the
+   measurements.
 2. Run `./scripts/release-check.sh VERSION`. This creates Linux amd64/arm64 raw
    binaries, normalized archives, DEB/RPM packages, an amd64/arm64 OCI archive,
    deterministic SPDX JSON SBOMs for each binary and OCI platform, synchronized
