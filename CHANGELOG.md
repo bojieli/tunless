@@ -17,9 +17,14 @@ use ISO 8601. The repository has not made a public release yet.
   default on macOS, with `--include-destination` overriding per prefix and
   `--no-default-exclusions` dropping the set.
 - A macOS capture health watchdog that re-proves name resolution through the
-  live upstream every 30 seconds and disables capture after three consecutive
-  failures, plus a probation window that releases capture when a start is never
-  confirmed. `--no-health-watchdog` opts out.
+  live upstream every 30 seconds. After three consecutive failures the provider
+  stops claiming flows, so they go direct as though tunless were not installed,
+  and it resumes on the first probe that succeeds again. A probation window
+  covers a start that is never confirmed. Sleep suspends the watchdog and a
+  wake discards the failures that led into it, so a sleeping laptop cannot pause
+  capture and wake up unprotected. `status` reports what capture is doing in a
+  `capture` field, and every transition is written to the unified log under
+  subsystem `com.bojieli.tunless`. `--no-health-watchdog` opts out.
 
 - Idempotent macOS `stop` and `cleanup` recovery commands, a bounded cleanup
   script bundled in the app, stale-manager removal, Network Extension

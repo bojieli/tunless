@@ -52,9 +52,11 @@ prefix.
 
 start refuses to enable capture when the upstream cannot relay DNS, and rolls
 capture back automatically if name resolution does not work once capture is on.
-Capture then stays accountable: the provider re-proves resolution on a timer and
-disables capture on its own if that stops working, or if a start is never
-confirmed. Together these mean capture cannot outlive the network it depends on.
+Capture then stays accountable: the provider re-proves resolution on a timer,
+stands aside on its own if that stops working, and resumes when the upstream
+recovers. Sleep never counts against the upstream. status reports what capture
+is actually doing in its capture field, since a paused session still reads as
+connected.
 
 Use stop for an ordinary shutdown. Cleanup is the fail-safe recovery command:
 it stops capture, removes every Tunless proxy configuration, and deactivates
@@ -117,12 +119,20 @@ private struct StatusReport: Codable {
     let upstream: String?
     let dnsUpstream: String?
     let preset: String?
+    /// What the provider is doing with flows right now.
+    ///
+    /// A capture that stood aside keeps its session connected, because the
+    /// session is what keeps the watchdog probing, so `status` alone reports
+    /// `connected` either way. Without this field a paused capture is
+    /// indistinguishable from a working one.
+    let capture: String?
 
     enum CodingKeys: String, CodingKey {
         case status
         case enabled
         case upstream
         case preset
+        case capture
         case launcherVersion = "launcher_version"
         case launcherBuild = "launcher_build"
         case dnsUpstream = "dns_upstream"
@@ -409,20 +419,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                     launcherBuild: fields.build,
                     upstream: nil,
                     dnsUpstream: nil,
-                    preset: nil))
+                    preset: nil,
+                    capture: nil))
                 terminate(0)
             }
             let configuration = self.savedConfiguration(manager)
-            self.writeJSON(StatusReport(
-                status: Self.statusName(manager.connection.status),
-                enabled: manager.isEnabled,
-                launcherVersion: fields.version,
-                launcherBuild: fields.build,
-                upstream: configuration?.upstreamAddress,
-                dnsUpstream: Self.dnsAddress(configuration),
-                preset: Self.presetName(configuration)))
-            terminate(0)
+            self.captureHealth(manager) { capture in
+                self.writeJSON(StatusReport(
+                    status: Self.statusName(manager.connection.status),
+                    enabled: manager.isEnabled,
+                    launcherVersion: fields.version,
+                    launcherBuild: fields.build,
+                    upstream: configuration?.upstreamAddress,
+                    dnsUpstream: Self.dnsAddress(configuration),
+                    preset: Self.presetName(configuration),
+                    capture: capture))
+                terminate(0)
+            }
         }
+    }
+
+    /// Asks the running provider whether it is claiming flows. Answers `nil`
+    /// when there is no provider to ask, and gives up rather than hanging so
+    /// `status` still reports something useful if the provider is wedged.
+    private func captureHealth(
+        _ manager: NETransparentProxyManager,
+        completion: @escaping (String?) -> Void
+    ) {
+        // The reply and the deadline race, and whichever wins writes the
+        // report and exits, so this must answer exactly once.
+        var settled = false
+        let settle: (String?) -> Void = { summary in
+            guard !settled else { return }
+            settled = true
+            completion(summary)
+        }
+        guard manager.connection.status == .connected,
+              let session = manager.connection as? NETunnelProviderSession
+        else {
+            settle(nil)
+            return
+        }
+        do {
+            try session.sendProviderMessage(ControlMessage.queryHealth.encoded) { data in
+                guard let data,
+                      let report = try? JSONDecoder().decode(CaptureHealthReport.self, from: data)
+                else {
+                    settle(nil)
+                    return
+                }
+                settle(report.summary)
+            }
+        } catch {
+            settle(nil)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { settle(nil) }
     }
 
     private func savedConfiguration(_ manager: NETransparentProxyManager) -> LauncherConfiguration? {

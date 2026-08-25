@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import NetworkExtension
+import os
 
 public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppProxyUDPFlowHandling {
     private enum PumpResult {
@@ -43,6 +44,14 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     private let healthQueue = DispatchQueue(label: "com.bojieli.tunless.capture-health")
     /// How often the provider re-proves that the upstream still resolves.
     private static let healthIntervalSeconds = 30
+    private static let log = Logger(subsystem: "com.bojieli.tunless", category: "capture")
+
+    /// True while capture is standing aside and flows should go direct.
+    private func decliningFlows() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return health.shouldDeclineFlows
+    }
 
     public override func startProxy(options: [String: Any]? = nil, completionHandler: @escaping (Error?) -> Void) {
         guard
@@ -82,9 +91,10 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     /// again. A provider that stays up while its upstream stops resolving is
     /// not, because every name lookup on the host now fails through it, and a
     /// host that cannot resolve cannot fetch, install, or read its way to the
-    /// fix. So capture is treated as a claim that has to keep being true: it
-    /// is armed on a probation window the launcher must confirm, then re-proved
-    /// on a timer, and handed back automatically when the proof stops holding.
+    /// fix. So capture is treated as a claim that has to keep being true: it is
+    /// armed on a probation window, re-proved on a timer, and stood down
+    /// automatically when the proof stops holding — then stood back up when it
+    /// holds again.
     private func startHealthWatchdog() {
         guard configurationSnapshot().disableHealthWatchdog != true else { return }
         lock.lock()
@@ -133,30 +143,86 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let stoppingNow = stopping
         lock.unlock()
         guard !stoppingNow else { return }
-        if case let .release(reason) = probation {
-            release(reason)
-            return
-        }
+        apply(probation)
         Task { [weak self] in
             guard let self else { return }
             let succeeded = await DNSHealthProbe.run(configuration: selected)
-            if case let .release(reason) = self.observeHealth(
-                succeeded: succeeded, pathSatisfied: satisfied) {
-                self.release(reason)
-            }
+            self.apply(self.observeHealth(succeeded: succeeded, pathSatisfied: satisfied))
         }
     }
 
-    /// Gives the network back. Stopping the tunnel is what un-captures the
-    /// host, so this is the recovery, not merely the report of a problem.
-    private func release(_ reason: String) {
+    /// The system is about to sleep.
+    ///
+    /// Sleep takes the network down, so every probe from here until the wake
+    /// would fail for a reason that has nothing to do with the upstream.
+    /// Believing them pauses capture at the exact moment nothing is using it,
+    /// and the pause then outlives the sleep — which is how a laptop wakes with
+    /// its DNS unprotected and nothing on screen to say so.
+    public override func sleep(completionHandler: @escaping () -> Void) {
+        lock.lock()
+        health.systemWillSleep()
+        lock.unlock()
+        completionHandler()
+    }
+
+    /// The system woke. Interfaces, routes, and the upstream's own connections
+    /// come back over several seconds, so probe results are ignored for a grace
+    /// period rather than counted against the upstream.
+    public override func wake() {
+        lock.lock()
+        health.systemDidWake(at: Date())
+        lock.unlock()
+    }
+
+    private func apply(_ decision: CaptureHealth.Decision) {
+        switch decision {
+        case .unchanged: break
+        case let .pause(reason): standDown(reason)
+        case .resume: standUp()
+        }
+    }
+
+    /// Stops claiming flows and tears down the ones in flight.
+    ///
+    /// This is a pause, not a shutdown. Declining a flow hands it back to the
+    /// kernel, which routes it as though tunless were not installed, so the
+    /// host recovers exactly as it would if the provider had died — while the
+    /// provider stays alive to keep probing and to say why. Cancelling the
+    /// tunnel instead would end the session that does the probing, leaving
+    /// nothing able to notice the upstream coming back and nothing holding the
+    /// explanation.
+    private func standDown(_ reason: String) {
         lock.lock()
         guard !stopping else {
             lock.unlock()
             return
         }
-        stopping = true
+        let records = Array(activeFlows.values)
         lock.unlock()
+        // Flows already relaying through an upstream that cannot carry them are
+        // not going to recover; closing them lets applications retry, and the
+        // retry goes direct.
+        for record in records {
+            record.flow.closeReadWithError(SOCKSError.closed)
+            record.flow.closeWriteWithError(SOCKSError.closed)
+            record.task.cancel()
+        }
+        note("capture paused: \(reason). Flows now go direct; capture resumes"
+            + " automatically when the upstream resolves again")
+    }
+
+    private func standUp() {
+        note("capture resumed: the upstream is resolving names again")
+    }
+
+    /// Records something that must outlive the provider.
+    ///
+    /// The first version of this wrote only to the telemetry buffer and then
+    /// cancelled the provider, which threw that buffer away — so the one
+    /// message explaining why the host lost capture was destroyed by the act of
+    /// losing it. Log first, and to a place that survives.
+    private func note(_ message: String) {
+        Self.log.notice("\(message, privacy: .public)")
         appendTelemetry(FlowTelemetry(
             protocolName: "capture",
             destination: configurationSnapshot().upstreamHost,
@@ -164,9 +230,20 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             hostname: nil,
             signingIdentifier: "tunless",
             timestamp: Date(),
-            event: "released: \(reason)"))
-        NSLog("tunless: releasing capture: %@", reason)
-        cancelProxyWithError(CaptureReleased(reason: reason))
+            event: message))
+    }
+
+    /// Health as the launcher reports it, so a paused capture is visible in
+    /// `status` instead of looking like a healthy connected session.
+    private func healthSnapshot() -> Data? {
+        lock.lock()
+        let snapshot = CaptureHealthReport(
+            capturing: !health.shouldDeclineFlows,
+            pauseReason: health.pauseReason,
+            confirmed: health.confirmed,
+            consecutiveFailures: health.consecutiveFailures)
+        lock.unlock()
+        return try? JSONEncoder().encode(snapshot)
     }
 
     public override func stopProxy(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
@@ -191,6 +268,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             let tcp = flow as? NEAppProxyTCPFlow,
             let originalDestination = Self.address(tcp.remoteFlowEndpoint)
         else { return false }
+        guard !decliningFlows() else { return false }
         let selected = configurationSnapshot()
         guard selected.captures(
             host: originalDestination.host,
@@ -216,6 +294,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         initialRemoteFlowEndpoint remoteEndpoint: Network.NWEndpoint
     ) -> Bool {
         guard let destination = Self.address(remoteEndpoint) else { return false }
+        guard !decliningFlows() else { return false }
         let selected = configurationSnapshot()
         guard selected.captures(
             host: destination.host,
@@ -243,6 +322,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                 health.confirm()
                 lock.unlock()
                 completionHandler?(Data([1]))
+            case .queryHealth:
+                completionHandler?(healthSnapshot())
             }
             return
         }
@@ -933,13 +1014,5 @@ actor DNSResponseMap {
         copy[copy.startIndex] = UInt8(identifier >> 8)
         copy[copy.index(after: copy.startIndex)] = UInt8(identifier & 0xff)
         return copy
-    }
-}
-
-/// Reported when the provider hands the network back on its own.
-struct CaptureReleased: LocalizedError {
-    let reason: String
-    var errorDescription: String? {
-        "tunless disabled capture to keep the host reachable: " + reason
     }
 }
