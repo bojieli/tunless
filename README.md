@@ -321,6 +321,7 @@ open work is listed in
 
 | Document | Contents |
 | --- | --- |
+| [docs/FAQ.md](docs/FAQ.md) | The questions people actually ask: rules, app selection, TUN, crashes, DNS |
 | [BLUEPRINT.md](BLUEPRINT.md) | Design of record: the thesis, the faults in TUN mode, rejected alternatives |
 | [docs/CONTAINERS.md](docs/CONTAINERS.md) | Docker, Podman, containerd/CRI-O, Docker Desktop, VMs |
 | [docs/MACOS.md](docs/MACOS.md) | Network Extension build, signing, Clash Verge preset, recovery |
