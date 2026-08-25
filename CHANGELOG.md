@@ -7,6 +7,12 @@ use ISO 8601.
 
 ### Added
 
+- `--cgroup kubernetes` selects a node's pod hierarchy for capture, refusing
+  the arrangements that would capture the agent's own traffic. A DaemonSet is
+  itself a pod, so attaching at the pod root loops; loop avoidance stays cgroup
+  separation rather than an exception list, and the remaining gap -- an agent
+  cannot capture other pods in its own QoS class this way -- is reported rather
+  than worked around. See [docs/CONTAINERS.md](docs/CONTAINERS.md).
 - Per-flow workload attribution on Linux: the cgroup a captured process belongs
   to is resolved to a Kubernetes pod UID, a container ID, or a systemd unit,
   and carried alongside the existing process fields. Both cgroup drivers are

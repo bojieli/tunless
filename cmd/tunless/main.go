@@ -27,6 +27,7 @@ import (
 	"github.com/bojieli/tunless/metadata"
 	"github.com/bojieli/tunless/socks5"
 	statusapi "github.com/bojieli/tunless/status"
+	"github.com/bojieli/tunless/workload"
 )
 
 var version = "dev"
@@ -59,7 +60,7 @@ func run() error {
 	flag.StringVar(&upstream, "upstream", os.Getenv("TUNLESS_UPSTREAM"), "SOCKS5 upstream, e.g. 127.0.0.1:7890 or socks5://user:pass@host:port")
 	flag.StringVar(&listen, "listen", "127.0.0.1:1080", "numeric loopback address for redirect/reference listeners")
 	flag.StringVar(&backendName, "backend", "auto", "capture backend: auto, linux, or loopback")
-	flag.StringVar(&cgroupPath, "cgroup", os.Getenv("TUNLESS_CGROUP"), "cgroup v2 path captured by the Linux backend")
+	flag.StringVar(&cgroupPath, "cgroup", os.Getenv("TUNLESS_CGROUP"), "cgroup v2 path captured by the Linux backend, or \"kubernetes\" to select the node's pod hierarchy without capturing this process")
 	flag.StringVar(&networkNamespace, "network-namespace", "", "optional Linux network namespace path for namespace-local redirect listeners")
 	flag.IntVar(&containerPID, "container-pid", 0, "optional Linux container init PID; derives its cgroup and network namespace")
 	flag.StringVar(&containerID, "container-id", "", "expected container ID; protects --container-pid from PID reuse")
@@ -145,6 +146,13 @@ func run() error {
 		}
 	} else if containerID != "" {
 		return errors.New("--container-id requires --container-pid")
+	}
+	if runtime.GOOS == "linux" && cgroupPath == "kubernetes" {
+		resolved, resolveErr := kubernetesCaptureScope()
+		if resolveErr != nil {
+			return resolveErr
+		}
+		cgroupPath = resolved
 	}
 	if runtime.GOOS == "linux" && cgroupPath == "" && (backendName == "auto" || backendName == "linux") {
 		const defaultCgroup = "/sys/fs/cgroup/user.slice"
@@ -659,4 +667,42 @@ func prefixes(values []string) ([]netip.Prefix, error) {
 		result = append(result, p)
 	}
 	return result, nil
+}
+
+// kubernetesCaptureScope picks the cgroup a node-level capture may attach to.
+//
+// Attaching above the pods is the whole point of running on a node, and the
+// obstacle is that a DaemonSet is itself a pod: attaching at the pod root would
+// capture this process's own connection to its upstream, and every packet it
+// forwarded would be captured again on the way out. Loop avoidance here is
+// cgroup separation, exactly as it is on the desktop, and not an exception
+// list -- an exception keyed on this agent's own address is the first thing a
+// misconfiguration silently removes.
+//
+// A single scope is required rather than attaching to several, because the
+// backend attaches to one and pretending otherwise would capture a subset
+// while reporting success. When several are available the operator is told
+// what they are and asked to choose, which is a worse experience and a true
+// one.
+func kubernetesCaptureScope() (string, error) {
+	self := workload.SelfCgroup()
+	scopes, err := workload.CaptureScopes("/sys/fs/cgroup", self)
+	if err != nil {
+		if errors.Is(err, workload.ErrWouldLoop) {
+			return "", fmt.Errorf("%w -- run tunless outside the pod hierarchy "+
+				"(a systemd unit, or a static pod in system.slice) so it can attach at the root", err)
+		}
+		return "", err
+	}
+	if len(scopes) == 1 {
+		slog.Info("kubernetes capture scope selected", "cgroup", scopes[0].Path, "scope", scopes[0].Why)
+		return scopes[0].Path, nil
+	}
+	names := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		names = append(names, s.Path)
+	}
+	return "", fmt.Errorf("this process is inside the pod hierarchy, so capture must attach below it; "+
+		"pass --cgroup with one of %s, or run tunless outside the hierarchy to capture all pods at once",
+		strings.Join(names, ", "))
 }
