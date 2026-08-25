@@ -33,8 +33,13 @@ qualified. Link each completed item to a run, commit, or measurement.
       malformed-input suites pass
 - [x] Linux exact embedded BPF object is reproducible and verifier/runtime-tested
       on x86-64 current kernel and ARM64 kernel 5.10
-- [x] TCP/UDP WAN, upstream restart, overload, controller crash, stale PID,
-      container stop/recreate, and fail-open recovery pass
+- [ ] TCP/UDP WAN, upstream restart, overload, controller crash, stale PID,
+      container stop/recreate, and fail-open recovery pass. Checked once, then
+      invalidated: reserving the resolver from capture pointed this suite's
+      connected-UDP probe at an address that is no longer captured, so it
+      failed on every run from 2026-08-24 onward and the UDP half of the
+      evidence has not been re-demonstrated since. Re-check only on a green run
+      of the fixed suite against the candidate commit
 - [x] Docker native Linux and Docker Desktop macOS tests cover unmodified,
       no-proxy-environment applications
 - [x] Linux unconnected UDP sockets that alternate destinations fail safely or

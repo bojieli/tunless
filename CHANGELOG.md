@@ -97,6 +97,17 @@ use ISO 8601. The repository has not made a public release yet.
   inapplicable to runtimes that open one socket for both families, and a prefix
   written in mapped form is loaded into the IPv6 map at its own length instead
   of being unmapped into an IPv4 map that cannot hold it.
+- Linux userspace reads a dual-stack record as the destination it actually
+  reaches. The IPv6 hooks record `AF_INET6` because the socket was, not because
+  the destination is, so a program that opens one socket for both families
+  arrived as `::ffff:10.0.0.1`. An IPv4 prefix does not contain a mapped
+  address, so the userspace half of `--exclude-destination 10.0.0.0/8` still
+  did not apply to those flows after the BPF maps learned to cover them; the
+  DNS observer could not attribute a hostname it had recorded against the
+  unmapped answer; a UDP reply was checked against the mapped form and
+  rejected, which an application sees as a datagram that never arrives; and the
+  log line named an address nobody had configured. Records are unmapped once,
+  at the decode boundary, so everything downstream agrees on one spelling.
 - A Linux include list is an allowlist across both address families, matching
   macOS. Naming only IPv4 prefixes used to leave `has_include6` unset, which
   captured every IPv6 destination — the opposite of narrowing.

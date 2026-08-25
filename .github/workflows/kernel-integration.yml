@@ -3,6 +3,13 @@ name: Privileged Linux integration
 on:
   push:
     branches: [main]
+  # This suite is the only place the eBPF datapath is exercised against a real
+  # kernel, and it guards the platform the project ships as generally
+  # available. Running it on push alone meant a change could break capture and
+  # still merge green: the UDP recovery assertion failed on main for 38
+  # consecutive runs across a day before anyone looked. A gate that cannot fail
+  # a pull request is not a gate.
+  pull_request:
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
