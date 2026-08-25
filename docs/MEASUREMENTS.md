@@ -654,12 +654,70 @@ Together with the datapath evidence on kernel 6.1, this closes re-measuring
 Linux on the current tree. The figures should still be confirmed on the tagged
 commit, but they no longer rest on a tree that has since changed.
 
+## Linux privileged WAN, UDP recovery, and container matrix, 2026-08-25
+
+Run on the hosted `ubuntu-24.04` runner, x86-64, cgroup v2, against commit
+`6ead291`, with sing-box 1.13.18 in direct mode as the SOCKS upstream. This is
+the first full pass of the privileged suite since the resolver reservation
+landed on 2026-08-24; the intervening failures were the suite's own probe
+addressing the reserved resolver, not a capture defect.
+
+```
+wan_exit=<the host's own IPv4 exit>  udp_recovered_after_attempt=2  udp_flows=5  doctor=pass  status=pass
+engine=docker    attachments=3 tcp_flows=6 udp_flows=6 recreated=yes
+engine=podman    attachments=3 tcp_flows=6 udp_flows=7 recreated=yes
+runtime=containerd-via-kind wan_exit=<same host exit> tcp_udp=pass lifecycle_detach=pass
+```
+
+Connected UDP recovered on the second attempt after the SOCKS relay was killed
+and restarted underneath it, which is the fail-open-and-resume behavior the
+README claims. Teardown left zero Tunless BPF links. The same suite passed on
+`main` after merge and on two further runs.
+
+Subject to the rule that dated evidence must name the tagged commit — this
+names `6ead291`, not a candidate.
+
+## Linux dual-stack destination filters, 2026-08-25
+
+Run by `scripts/integration-linux-dualstack.sh` on the hosted `ubuntu-24.04`
+runner, x86-64, cgroup v2, against commit `6ead291` with sing-box 1.13.18 in
+direct mode as the SOCKS upstream. This is the first time the filters have been
+exercised against an attached cgroup program rather than in userspace unit
+tests, and it closes the gate that said so.
+
+One `AF_INET6` socket with `IPV6_V6ONLY` cleared, reaching a routable IPv4
+address on the host as `::ffff:10.1.0.18`, in three configurations:
+
+```
+dualstack host=10.1.0.18 port=28343 unfiltered_flows=1 mapped_spellings=0 excluded=0 include_elsewhere=0
+```
+
+- **Unfiltered**: the flow was captured, and the controller named the
+  destination `10.1.0.18:28343`. No mapped spelling appeared anywhere in the
+  log. That is the decode fix demonstrated on a real kernel rather than argued
+  from unit tests.
+- **`--exclude-destination 10.1.0.18/32`**: not captured. An IPv4 exclusion
+  prefix covers the mapped form a dual-stack socket presents.
+- **`--include-destination 203.0.113.0/24`**: not captured. Naming one
+  unrelated IPv4 prefix restricts both families, rather than leaving the v6
+  family wide open as an unset `has_include6` used to.
+
+The echo completed in all three phases and in a baseline probe taken before any
+capture existed, so "not captured" here means the flow went direct rather than
+broke. The result does not depend on how the kernel dispatches a mapped
+destination between the v4 and v6 hooks: whichever pair sees it, the assertions
+are the same.
+
+Subject to the rule that dated evidence must name the tagged commit — this
+names `6ead291`, not a candidate, and should be re-taken on the tag.
+
 ## Gates not demonstrated
 
 | Gate | Status / reason |
 | --- | --- |
-| Linux privileged UDP capture and relay recovery on the current tree | The connected-UDP probe in `scripts/integration-linux.sh` addressed the same resolver the controller relays to, which [the startup reservation](#linux-datapath-on-the-current-tree) excludes from capture, so the probe went direct and the suite recorded zero UDP flows. Every run of the privileged Linux workflow from 2026-08-24 onward failed on that assertion. The probe now addresses a resolver the controller is not relaying to; TCP WAN evidence is unaffected, but the UDP capture and post-restart recovery half needs a green run before it counts again. |
-| Linux destination filters after the family-consistency change | The reserved capture floor, IPv4-mapped prefix coverage, and the both-family include list are unit-tested in userspace and have not been exercised against an attached cgroup program. The include/exclude policy evidence recorded under [Functional gates demonstrated](#functional-gates-demonstrated) predates them and does not cover the new behavior. |
+| Linux kernel floor on the current tree | The 5.10 evidence is the Lima ARM64 guest from 2026-08-17/19. Every datapath change since — the upstream and resolver reservation, the capture floor, the both-family filter change, the DNS override work, and the dual-stack decode fix — is unexercised on the oldest kernel this project supports, and its hosted job is gated behind `workflow_dispatch` with `run_kernel_5_10: true`, skipped in every recent run. 6.1 and 6.8 were re-taken on 2026-08-25; the floor was not. |
+| Linux long-run soak | `scripts/tunless-linux-soak.sh` exists; no run has been recorded. `stress.sh` soaks the portable core under connection load, which is duration without the eBPF datapath and cannot see a capture that quietly stops claiming flows. |
+| Rootful Podman teardown under CI | `podman rm --force` hangs until the harness's 120-second guard during the recreate step, twice in five runs on 2026-08-25 (both on the first container). The diagnostics recorded on the second occurrence: the container was already `Exited (137)`, its controller process was gone, its seven cgroup links were gone, and the second container was still running with its own controller attached. So the engine was not waiting on anything tunless still held at that moment, and it still did not return. Docker and containerd via kind pass the same lifecycle. The suspected surface is the container network namespace the controller opens sockets in and the engine's removal path waits to release, but nothing establishes that yet, and it needs a Linux host to reproduce on rather than a hosted runner. Not a CI-only concern: the same command is what an operator runs to remove an attached container. |
 | macOS exact release candidate | Builds 8 and 9 provide notarization, staple, Gatekeeper, activation, upgrade, and live-runtime evidence, but the current working tree is newer and has not completed exact-candidate clean-machine qualification. |
 | macOS `remoteHostname` fraction | Activation and representative declined-flow behavior are verified, but a statistically useful fraction still requires a defined realistic app corpus; no number is invented. |
 | macOS HTTP/3 | The installed curl lacks HTTP/3 support. HTTP/1.x, HTTP/2, TLS, DNS UDP/TCP, and non-DNS UDP passed, but no QUIC HTTP client was exercised. |

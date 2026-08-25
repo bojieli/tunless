@@ -60,6 +60,8 @@ jobs:
         run: make build VERSION="ci-${GITHUB_SHA}"
       - name: Run privileged WAN and recovery suite
         run: sudo --preserve-env=PATH env SINGBOX_BINARY="$(go env GOPATH)/bin/sing-box" ./scripts/integration-linux.sh
+      - name: Run dual-stack destination filter suite
+        run: sudo --preserve-env=PATH env SINGBOX_BINARY="$(go env GOPATH)/bin/sing-box" ./scripts/integration-linux-dualstack.sh
       - name: Run multi-container lifecycle suite
         run: sudo --preserve-env=PATH env SINGBOX_BINARY="$(go env GOPATH)/bin/sing-box" ./scripts/integration-containers.sh
       - name: Run rootful Podman lifecycle suite
