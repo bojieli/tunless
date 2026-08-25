@@ -12,6 +12,13 @@ demonstrated is listed explicitly in
 
 Measured 2026-08-17.
 
+Exit addresses in this log are described rather than printed. Which address a
+flow left by is the evidence — a captured process exiting by the proxy's node
+instead of the host's own is what proves capture worked — and that evidence
+survives naming the addresses by role. Printing them would publish the test
+infrastructure's addresses for no gain in reproducibility, since nobody
+reproducing these runs would be using the same hosts.
+
 ## Headline results
 
 - WAN throughput: the transparent eBPF path (captured process → tunless →
@@ -46,8 +53,8 @@ Measured 2026-08-17.
 - Portable Go: race-enabled TCP/UDP, IPv4/IPv6, 2 MiB bidirectional/half-close,
   cancellation, destination, process metadata, SOCKS5 and HTTP CONNECT tests.
 - Reference backend: its SOCKS5 and HTTP CONNECT inbounds both completed through
-  a real mihomo v1.19.30 downstream on RTX-PRO; the HTTPS checks returned the
-  server's `155.103.252.95` exit address and HTTP 200 respectively.
+  a real mihomo v1.19.30 downstream on RTX-PRO; the HTTPS checks returned that
+  host's own WAN exit address and HTTP 200 respectively.
 - SOCKS metadata: authenticated username negotiation and Unix-socket
   source-port registration/lookup/lifecycle integration. Go and Swift clients
   also reject a server-selected authentication method they did not offer.
@@ -262,7 +269,8 @@ Release app/system-extension build all pass.
 
 The new `scripts/integration-linux.sh` was then run as root on RTX-PRO with the
 updated x86-64 binary. A captured, unmodified curl completed real WAN TLS and
-reported `155.103.252.95`. The harness kept one connected UDP socket open,
+reported that host's own WAN exit address. The harness kept one connected UDP
+socket open,
 killed and restarted sing-box, and recovered that same socket on its second
 retry. Five UDP flow events were observed across the run, and teardown left
 zero Tunless BPF links. This specifically validates preservation of the kernel
@@ -270,8 +278,9 @@ socket correlation needed to create a new SOCKS UDP association after an
 upstream failure.
 
 On macOS Docker Desktop, the updated controller image and host bridge captured
-an unmodified `python:3.11-slim` container. WAN TLS reported the Mac proxy exit
-`23.135.236.244`; a UDP DNS query returned 45 bytes with its original
+an unmodified `python:3.11-slim` container. WAN TLS reported the Mac proxy's
+node exit address rather than the container's own; a UDP DNS query returned 45
+bytes with its original
 transaction ID `0x7200`; three flow events were observed. The second run used
 an active TCP readiness probe for the temporary bridge and reduced the Docker
 build context from 99.09 MB of Xcode artifacts to 7.56 kB compressed.
@@ -301,8 +310,8 @@ throughput claims.
 The final multi-container lifecycle harness forces the WAN probe to IPv4 so a
 host without usable IPv6 does not turn DNS address ordering into a false
 capture failure. On Docker Desktop for macOS, two initial unmodified Python
-containers and one recreated instance all returned the Mac proxy exit
-`23.135.236.244`; the watcher recorded three attachments, six TCP flows, and
+containers and one recreated instance all returned the Mac proxy's node exit
+address; the watcher recorded three attachments, six TCP flows, and
 four UDP flows. On RTX-PRO, rootful Docker recorded three attachments, six TCP
 flows, and six UDP flows. Rootful Podman 3.4.4 on the same host recorded three
 attachments, six TCP flows, and six UDP flows. All application containers
@@ -311,7 +320,7 @@ without restarting the watcher.
 
 The CRI helper was exercised inside a disposable kind v0.30.0 Kubernetes
 v1.34.0 node using its containerd runtime. An unmodified Python pod returned
-the RTX-PRO WAN exit `155.103.252.95`, completed UDP DNS through the SOCKS
+the RTX-PRO WAN exit address, completed UDP DNS through the SOCKS
 association, exposed seven attached BPF links plus map diagnostics, and caused
 the helper to detach after Kubernetes deleted the pod. The kind cluster was
 then deleted. This qualifies the one-container containerd helper and its
@@ -457,8 +466,8 @@ One sample is a functional/throughput sanity check, not a statistically useful
 ranking.
 
 For the real two-host path, RTX-PRO's local port `17897` was reverse-forwarded
-to the Mac's SOCKS port `7897`; an unmodified captured process exited as
-`23.135.236.244` instead of RTX-PRO's direct `155.103.252.95`. The full 100 MiB
+to the Mac's SOCKS port `7897`; an unmodified captured process exited as the
+Mac proxy's node exit address instead of RTX-PRO's own. The full 100 MiB
 object completed in 41.50 s at 2.53 MB/s with 4.35 s TTFB. This validates the
 RTX-PRO → Mac → proxy WAN topology, not the macOS Network Extension capture
 path.
