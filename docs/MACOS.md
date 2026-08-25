@@ -438,6 +438,26 @@ turn itself into a capture outage for everything else on the host. `status`
 reports the live count and the running rejection total, so a rising rejection
 count identifies which of the two is happening.
 
+### Qualifying a candidate
+
+`scripts/macos-qualify.sh --app Tunless.app` runs the exact-candidate checks in
+one pass: signature, Gatekeeper, staple, install, DNS preflight over both
+transports, activation, the live datapath, telemetry, and that the host still
+resolves after `stop`. Every check prints what it observed and the exit status
+is the gate, so a qualification cannot be half-remembered.
+
+```console
+scripts/macos-qualify.sh --app Tunless.app --preset clash-verge
+PASS  Gatekeeper accepts the candidate                notarized Developer ID
+PASS  resolution returns a real address               194.177.211.216
+PASS  host still resolves after stop                  198.18.0.14
+14 passed, 0 failed
+```
+
+Run it on a machine that has never had tunless installed. What it cannot cover
+— `remoteHostname` fractions, HTTP/3, the soak, and first-approval behaviour —
+it prints rather than omits.
+
 ### Soaking a deployment
 
 Every serious defect this project has found surfaced over hours rather than

@@ -77,6 +77,8 @@ qualified. Link each completed item to a run, commit, or measurement.
 
 ## Explicit external platform gates
 
+- [ ] `scripts/macos-qualify.sh` run against the exact notarized candidate on a
+      machine with no prior tunless installation, reporting zero failures
 - [ ] macOS Developer ID entitlements, activation, notarization, staple, and
       clean-machine runtime qualification complete. Signing and notarization
       are automated in `.github/workflows/macos-release.yml`, which uploads the
