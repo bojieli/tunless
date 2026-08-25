@@ -258,3 +258,48 @@ or TPROXY is the appropriate mechanism.
 
 See also: [README](../README.md) ·
 [measurements and release gates](MEASUREMENTS.md).
+
+
+## Kubernetes nodes
+
+Capturing other pods' traffic means attaching above them, which on a node is
+`kubepods.slice` or `kubepods` depending on the cgroup driver. Both are
+recognised.
+
+The obstacle is that a DaemonSet is itself a pod. Attaching at the pod root
+would capture the agent's own connection to its upstream, and every packet it
+forwarded would be captured again on the way out. There is no exception list
+that fixes this -- an exception keyed on the agent's own address is the first
+thing a misconfiguration silently removes, and avoiding exception lists is why
+this project exists.
+
+Loop avoidance is cgroup separation here, exactly as it is on the desktop,
+where `user.slice` is captured from `system.slice`. Two arrangements give it:
+
+**Outside the pod hierarchy, attaching at the root.** Run tunless as a systemd
+unit on the node, or as a static pod placed in `system.slice`. Then
+`--cgroup kubernetes` resolves to the pod root and every pod on the node is
+captured. This is the arrangement to prefer.
+
+**Inside the hierarchy, attaching below it.** An ordinary DaemonSet can attach
+to the QoS subtrees it is not in. `--cgroup kubernetes` reports which those are
+and asks you to name one, because the backend attaches to a single cgroup and
+selecting several silently would capture a subset while reporting success.
+
+The second arrangement has a real gap: an agent in the burstable class cannot
+capture other burstable pods this way. That is reported rather than worked
+around. If you need those pods, move the agent out of the hierarchy.
+
+```console
+# preferred: systemd unit or static pod, outside kubepods
+tunless --cgroup kubernetes --upstream 127.0.0.1:7890
+
+# DaemonSet: tunless names the subtrees it may use
+tunless --cgroup kubernetes
+# error: this process is inside the pod hierarchy, so capture must attach
+# below it; pass --cgroup with one of /sys/fs/cgroup/kubepods.slice/
+# kubepods-besteffort.slice, ... or run tunless outside the hierarchy
+```
+
+Per-flow attribution resolves each captured flow to its pod UID and container
+ID from the cgroup path; see [FLOW_ATTRIBUTION.md](FLOW_ATTRIBUTION.md).
