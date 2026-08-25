@@ -47,6 +47,29 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     private static let healthIntervalSeconds = 30
     private static let log = Logger(subsystem: "com.bojieli.tunless", category: "capture")
 
+    /// The executable behind a flow, resolved from its audit token.
+    ///
+    /// `sourceAppSigningIdentifier` is what the flow metadata hands over, and
+    /// for unbundled binaries it is a toolchain default shared by unrelated
+    /// programs. The audit token carries the process itself, so ask the kernel
+    /// what that process is running. Best effort by construction: a process
+    /// that exited between opening the flow and this lookup resolves to
+    /// nothing, and selection falls back to the signing identifier.
+    static func executablePath(auditToken: Data?) -> String? {
+        guard let auditToken, auditToken.count == MemoryLayout<audit_token_t>.size else { return nil }
+        let pid = auditToken.withUnsafeBytes { raw -> pid_t in
+            // audit_token_t is eight words and the process id is the sixth,
+            // which is what audit_token_to_pid reads.
+            let words = raw.bindMemory(to: UInt32.self)
+            return pid_t(bitPattern: words[5])
+        }
+        guard pid > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        return String(cString: buffer)
+    }
+
     /// True while capture is standing aside and flows should go direct.
     private func decliningFlows() -> Bool {
         lock.lock()
@@ -234,6 +257,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             routedDestination: nil,
             hostname: nil,
             signingIdentifier: "tunless",
+            executablePath: nil,
             timestamp: Date(),
             event: message))
     }
@@ -277,10 +301,12 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         else { return false }
         guard !decliningFlows() else { return false }
         let selected = configurationSnapshot()
+        let executablePath = Self.executablePath(auditToken: flow.metaData.sourceAppAuditToken)
         guard selected.captures(
             host: originalDestination.host,
             port: originalDestination.port,
-            signingIdentifier: flow.metaData.sourceAppSigningIdentifier)
+            signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
+            executablePath: executablePath)
         else { return false }
         let routeHost = (tcp.remoteHostname?.isEmpty == false ? tcp.remoteHostname : nil) ?? originalDestination.host
         let requestedDestination = SOCKSAddress(host: routeHost, port: originalDestination.port)
@@ -306,7 +332,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         guard selected.captures(
             host: destination.host,
             port: destination.port,
-            signingIdentifier: flow.metaData.sourceAppSigningIdentifier)
+            signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
+            executablePath: Self.executablePath(auditToken: flow.metaData.sourceAppAuditToken))
         else { return false }
         return launch(flow: flow, operation: { [weak self] in
             await self?.handleUDP(flow, initialDestination: destination, configuration: selected)
@@ -600,6 +627,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             routedDestination: routed,
             hostname: flow.remoteHostname,
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
+            executablePath: Self.executablePath(auditToken: flow.metaData.sourceAppAuditToken),
             timestamp: Date(),
             event: nil))
     }
@@ -618,6 +646,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             routedDestination: routed,
             hostname: flow.remoteHostname,
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
+            executablePath: Self.executablePath(auditToken: flow.metaData.sourceAppAuditToken),
             timestamp: Date(),
             event: event))
     }

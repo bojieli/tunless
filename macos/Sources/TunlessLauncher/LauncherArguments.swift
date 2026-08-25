@@ -79,6 +79,16 @@ struct LauncherConfiguration: Codable, Equatable {
         return copy
     }
 
+    /// Process patterns that name a toolchain default rather than a program.
+    ///
+    /// `a.out` is what every unbundled binary reports, so a rule written
+    /// against it silently covers unrelated programs. Callers warn rather than
+    /// refuse, because the operator may genuinely mean all of them.
+    var ambiguousProcessPatterns: [String] {
+        let ambiguous: Set<String> = ["a.out", "-"]
+        return ((includeProcesses ?? []) + (excludeProcesses ?? [])).filter { ambiguous.contains($0) }
+    }
+
     var upstreamAddress: String {
         let host = IPv6Address(upstreamHost) == nil ? upstreamHost : "[\(upstreamHost)]"
         return "\(host):\(upstreamPort)"

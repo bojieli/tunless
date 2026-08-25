@@ -93,3 +93,52 @@ final class FlowCeilingTests: XCTestCase {
         XCTAssertEqual(quiet.summary, "capturing, 7 active")
     }
 }
+
+/// A signing identifier is not an identity. Binaries built without a bundle —
+/// every Homebrew tool, most Go and Rust programs — report the linker default,
+/// so the local xray on the dogfood host arrives as `a.out` alongside any
+/// number of unrelated programs.
+final class ProcessIdentityTests: XCTestCase {
+    func testAnExecutablePathSelectsOneProgramWhereTheIdentifierCannot() {
+        let config = ProviderConfiguration(
+            upstreamHost: "127.0.0.1", upstreamPort: 7897,
+            excludeProcesses: ["/opt/homebrew/*/xray"])
+        XCTAssertFalse(config.captures(
+            host: "203.0.113.1", port: 443, signingIdentifier: "a.out",
+            executablePath: "/opt/homebrew/Cellar/xray/25.6.8/libexec/xray"))
+        // A different program sharing the same toolchain default is untouched.
+        XCTAssertTrue(config.captures(
+            host: "203.0.113.1", port: 443, signingIdentifier: "a.out",
+            executablePath: "/opt/homebrew/bin/some-other-tool"))
+    }
+
+    func testTheBasenameAlsoMatches() {
+        let config = ProviderConfiguration(
+            upstreamHost: "127.0.0.1", upstreamPort: 7897, excludeProcesses: ["xray"])
+        XCTAssertFalse(config.captures(
+            host: "203.0.113.1", port: 443, signingIdentifier: "a.out",
+            executablePath: "/opt/homebrew/Cellar/xray/25.6.8/libexec/xray"))
+    }
+
+    func testSigningIdentifierMatchingStillWorksAndSurvivesAnUnknownExecutable() {
+        let config = ProviderConfiguration(
+            upstreamHost: "127.0.0.1", upstreamPort: 7897, excludeProcesses: ["verge-mihomo"])
+        XCTAssertFalse(config.captures(
+            host: "203.0.113.1", port: 443, signingIdentifier: "verge-mihomo", executablePath: nil))
+        XCTAssertFalse(config.captures(
+            host: "203.0.113.1", port: 443, signingIdentifier: "verge-mihomo",
+            executablePath: "/Applications/Clash Verge.app/Contents/MacOS/verge-mihomo"))
+    }
+
+    func testIncludePatternsAcceptEitherIdentity() {
+        let config = ProviderConfiguration(
+            upstreamHost: "127.0.0.1", upstreamPort: 7897,
+            includeProcesses: ["/usr/bin/curl"])
+        XCTAssertTrue(config.captures(
+            host: "203.0.113.1", port: 443, signingIdentifier: "com.apple.curl",
+            executablePath: "/usr/bin/curl"))
+        XCTAssertFalse(config.captures(
+            host: "203.0.113.1", port: 443, signingIdentifier: "com.apple.dig",
+            executablePath: "/usr/bin/dig"))
+    }
+}

@@ -181,6 +181,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
             write("Tunless: missing start configuration\n", to: .standardError)
             terminate(2)
         }
+        for pattern in configuration.ambiguousProcessPatterns {
+            write(
+                "Tunless: process pattern '\(pattern)' is the signing identifier every unbundled"
+                    + " binary reports, so it matches unrelated programs. Match the executable"
+                    + " instead, for example --exclude-process '/opt/homebrew/*/xray'. Run"
+                    + " --telemetry to see the executable behind each captured flow.\n",
+                to: .standardError)
+        }
         let checker = SOCKSPreflight(configuration: configuration)
         preflight = checker
         checker.run { [weak self] result in

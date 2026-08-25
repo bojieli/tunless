@@ -71,13 +71,38 @@ public struct ProviderConfiguration: Codable, Sendable {
 		return self
 	}
 
-	func captures(host: String, port: UInt16, signingIdentifier: String) -> Bool {
+	func captures(host: String, port: UInt16, signingIdentifier: String, executablePath: String? = nil) -> Bool {
 		if reservedDestination(host: host, port: port) { return false }
-		if Self.matchesAny(signingIdentifier, patterns: excludeProcesses ?? []) || Self.matchesAnyPrefix(host, prefixes: excludeDestinations ?? []) { return false }
-		if let patterns = includeProcesses, !patterns.isEmpty, !Self.matchesAny(signingIdentifier, patterns: patterns) { return false }
+		let identity = Self.identities(signingIdentifier: signingIdentifier, executablePath: executablePath)
+		if Self.matchesAny(identity, patterns: excludeProcesses ?? []) || Self.matchesAnyPrefix(host, prefixes: excludeDestinations ?? []) { return false }
+		if let patterns = includeProcesses, !patterns.isEmpty, !Self.matchesAny(identity, patterns: patterns) { return false }
 		if let prefixes = includeDestinations, !prefixes.isEmpty, !Self.matchesAnyPrefix(host, prefixes: prefixes) { return false }
 		return true
 	}
+
+	/// Everything a process-selection pattern may legitimately match.
+	///
+	/// A signing identifier alone is not an identity. Binaries built without a
+	/// bundle — every Homebrew tool, most Go and Rust programs — report the
+	/// linker's default, so a local `xray` and any number of unrelated programs
+	/// all arrive as `a.out`. Excluding that name is a shotgun, and naming the
+	/// upstream's process correctly depends on how someone happened to package
+	/// it. Matching the executable path and its basename as well makes the
+	/// selection say what it means: `--exclude-process /opt/homebrew/*/xray`
+	/// picks out one program, whatever it calls itself.
+	static func identities(signingIdentifier: String, executablePath: String?) -> [String] {
+		var values = [signingIdentifier]
+		if let executablePath, !executablePath.isEmpty {
+			values.append(executablePath)
+			let base = (executablePath as NSString).lastPathComponent
+			if !base.isEmpty, base != executablePath { values.append(base) }
+		}
+		return values
+	}
+
+	/// Signing identifiers that identify nothing, because a toolchain default
+	/// gave them to every unbundled binary on the machine.
+	static let ambiguousIdentifiers: Set<String> = ["a.out", "", "-"]
 
 	/// Destinations capture must never claim, whatever the configuration says.
 	///
@@ -132,8 +157,8 @@ public struct ProviderConfiguration: Codable, Sendable {
 		return SOCKSAddress(host: dnsHost, port: dnsPort)
 	}
 
-	private static func matchesAny(_ value: String, patterns: [String]) -> Bool {
-		patterns.contains { wildcard($0, matches: value) }
+	private static func matchesAny(_ values: [String], patterns: [String]) -> Bool {
+		patterns.contains { pattern in values.contains { wildcard(pattern, matches: $0) } }
 	}
 
 	private static func wildcard(_ pattern: String, matches value: String) -> Bool {
@@ -188,6 +213,11 @@ public struct FlowTelemetry: Codable, Sendable {
 	public var routedDestination: String?
     public var hostname: String?
     public var signingIdentifier: String
+	/// The executable behind the flow, when the audit token resolves to one.
+	///
+	/// Without it an operator reading telemetry sees `a.out` and has no way to
+	/// tell which program that is, let alone write an exclusion for it.
+	public var executablePath: String?
     public var timestamp: Date
 	public var event: String?
 }
