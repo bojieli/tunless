@@ -99,14 +99,17 @@ enum DNSHealthProbe {
     ) async -> Bool {
         let transactionID = UInt16.random(in: 1...UInt16.max)
         let control = SOCKSConnection(configuration: configuration)
-        let datagrams = UnsafeSendableBox<NWConnection?>(nil)
+        // The probe task publishes its datagram connection here and the
+        // timeout task cancels it. Both run concurrently, so the handoff is
+        // locked: an unsynchronised box races the assignment against the read.
+        let datagrams = LockedBox<NWConnection>()
         return await withTimeout(timeoutSeconds, onTimeout: {
             await control.cancel()
-            datagrams.value?.cancel()
+            datagrams.take()?.cancel()
         }) {
             defer {
                 Task { await control.cancel() }
-                datagrams.value?.cancel()
+                datagrams.take()?.cancel()
             }
             do {
                 var relay = try await control.open(
@@ -122,7 +125,7 @@ enum DNSHealthProbe {
                 }
                 guard relay.port > 0, let port = NWEndpoint.Port(rawValue: relay.port) else { return false }
                 let connection = NWConnection(host: NWEndpoint.Host(relay.host), port: port, using: .udp)
-                datagrams.value = connection
+                datagrams.set(connection)
                 var packet = Data([0, 0, 0])
                 packet.append(try resolver.encoded())
                 packet.append(DNSProbeMessage.query(transactionID: transactionID))
@@ -182,9 +185,29 @@ enum DNSHealthProbe {
     }
 }
 
-/// Carries a reference across the probe's concurrent tasks. The value is only
-/// ever written before the tasks that read it can run.
-final class UnsafeSendableBox<Value>: @unchecked Sendable {
-    var value: Value
-    init(_ value: Value) { self.value = value }
+/// Hands a value between the probe's concurrent tasks under a lock.
+///
+/// The probe task creates a connection and the timeout task has to be able to
+/// cancel it, which is a write and a read from two tasks with no ordering
+/// between them. `take` clears as it reads so whichever task gets there first
+/// owns the cancellation and the other does nothing.
+final class LockedBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value?
+
+    init(_ value: Value? = nil) { stored = value }
+
+    func set(_ value: Value) {
+        lock.lock()
+        defer { lock.unlock() }
+        stored = value
+    }
+
+    func take() -> Value? {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = stored
+        stored = nil
+        return value
+    }
 }

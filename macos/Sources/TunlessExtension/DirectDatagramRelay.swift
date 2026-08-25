@@ -24,6 +24,15 @@ import NetworkExtension
 actor DirectDatagramRelay {
     private var connections: [String: NWConnection] = [:]
     private var cancelled = false
+    /// Serialises writes into the flow.
+    ///
+    /// `NEAppProxyUDPFlow.writeDatagrams` must not be called again until its
+    /// completion handler runs, and the flow already has a writer: the pump
+    /// relaying the upstream's replies. Replies from here would interleave with
+    /// it, so every write goes through one channel that keeps at most one
+    /// outstanding.
+    private var writing = false
+    private var pending: [(Data, Network.NWEndpoint)] = []
 
     /// Most destinations one flow may reach directly.
     ///
@@ -45,6 +54,7 @@ actor DirectDatagramRelay {
 
     func cancelAll() {
         cancelled = true
+        pending.removeAll()
         for connection in connections.values { connection.cancel() }
         connections.removeAll()
     }
@@ -69,15 +79,38 @@ actor DirectDatagramRelay {
         into flow: NEAppProxyUDPFlow,
         deadline: InactivityDeadline
     ) {
-        connection.receiveMessage { data, _, _, _ in
-            guard let data, !data.isEmpty,
+        connection.receiveMessage { [weak self] data, _, _, _ in
+            guard let self, let data, !data.isEmpty,
                   let port = Network.NWEndpoint.Port(rawValue: destination.port) else { return }
-            let endpoint = Network.NWEndpoint.hostPort(
-                host: Network.NWEndpoint.Host(destination.host), port: port)
             // The reply is addressed from the destination the sender used, so a
             // connected socket accepts it as an answer to what it asked.
-            flow.writeDatagrams([(data, endpoint)]) { _ in }
-            Task { await deadline.touch() }
+            let endpoint = Network.NWEndpoint.hostPort(
+                host: Network.NWEndpoint.Host(destination.host), port: port)
+            Task {
+                await self.enqueue((data, endpoint), into: flow)
+                await deadline.touch()
+            }
+        }
+    }
+
+    /// Queues one datagram and starts the writer if it is idle.
+    private func enqueue(_ datagram: (Data, Network.NWEndpoint), into flow: NEAppProxyUDPFlow) {
+        guard !cancelled else { return }
+        pending.append(datagram)
+        guard !writing else { return }
+        writing = true
+        drain(into: flow)
+    }
+
+    private func drain(into flow: NEAppProxyUDPFlow) {
+        guard !pending.isEmpty, !cancelled else {
+            writing = false
+            return
+        }
+        let batch = pending
+        pending.removeAll(keepingCapacity: true)
+        flow.writeDatagrams(batch) { [weak self] _ in
+            Task { await self?.drain(into: flow) }
         }
     }
 }
