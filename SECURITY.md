@@ -50,5 +50,13 @@ digest.
   repository was public were pushed directly to `main` by the sole maintainer.
   That history cannot be rewritten to satisfy the check, and doing so would be
   worse than the finding. The protection applies from the transition forward.
+- **Maintained.** Scorecard scores this 0 because the repository was created
+  within the last ninety days. It is a measure of elapsed time, not of the
+  code, and the only thing that resolves it is time passing.
+- **SAST.** Scored 7 of 10: "SAST tool detected but not run on all commits."
+  CodeQL runs on every pull request and every push to `main`. The commits it
+  did not analyse are the pre-public ones that went straight to `main`, which
+  is the same history described under Code-Review above and equally not
+  rewritable.
 - **CII-Best-Practices.** No badge has been applied for. It is a process
   artifact rather than a property of the code.

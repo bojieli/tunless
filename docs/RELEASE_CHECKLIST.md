@@ -15,15 +15,30 @@ qualified. Link each completed item to a run, commit, or measurement.
 - [x] Repository history contains no secrets or oversized unintended artifacts
 - [x] Discussions, issue templates, dependency alerts, and automated security
       fixes configured while the repository remains private
-- [ ] `./scripts/github-harden.sh` run immediately after the repository becomes
-      public, reporting every setting verified
-- [ ] Branch protection and required hosted CI/security checks enabled during
-      the public visibility transition and before a tag is created
-- [ ] Private vulnerability reporting enabled after the repository becomes public
-      and before a public tag or release is created
+- [x] `./scripts/github-harden.sh` run immediately after the repository becomes
+      public, reporting every setting verified. Confirmed 2026-08-25 by
+      `--dry-run` ("all settings verified") and by reading the settings back
+      from the API rather than trusting the script's own report
+- [x] Branch protection and required hosted CI/security checks enabled during
+      the public visibility transition and before a tag is created. Enabled on
+      `main` with strict up-to-date branches, linear history, admin
+      enforcement, no force pushes, and required contexts "Go, BPF API, and
+      containers", "macOS extension", "Windows service source". The privileged
+      Linux suite is deliberately **not** required yet: it can now fail a pull
+      request, but its rootful Podman step hangs in roughly two runs in five,
+      and requiring a check that flakes that often blocks every merge. Make it
+      required once that hang is understood
+- [x] Private vulnerability reporting enabled after the repository becomes public
+      and before a public tag or release is created. Confirmed enabled
+      2026-08-25 via the repository API
 - [x] Dependencies and licenses reviewed; govulncheck and the full-history
       secret scan have acceptable results
-- [ ] Public-only CodeQL, dependency review, and Scorecard have acceptable results
+- [x] Public-only CodeQL, dependency review, and Scorecard have acceptable
+      results. As of 2026-08-25: zero CodeQL alerts, zero Dependabot alerts,
+      dependency review passing, and seven open Scorecard alerts, every one of
+      them recorded in [SECURITY.md](../SECURITY.md) as acted on or accepted
+      with a reason. Re-read before the tag, since the set changes with the
+      code
 - [ ] Exact candidate commit has passing hosted CI, security, fuzz, and
       current-kernel workflows
 
