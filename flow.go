@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+
+	"github.com/bojieli/tunless/workload"
 )
 
 type Proto uint8
@@ -30,6 +32,16 @@ type ProcessInfo struct {
 	Path      string
 	SigningID string
 	CgroupID  uint64
+	// Workload is what the process's cgroup says it belongs to: a Kubernetes
+	// pod, a container, a systemd unit, or nothing.
+	//
+	// The socket layer knows this and a proxy protocol cannot express it. A
+	// consumer that receives it can decide what a flow is from what produced
+	// it; one that does not has to infer intent from byte counts, and arrives
+	// at the answer after the flow it was deciding about has finished. It is
+	// optional in exactly that sense: consumers that ignore it behave as they
+	// did before it existed.
+	Workload workload.Identity
 }
 
 type Packet struct {
