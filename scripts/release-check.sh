@@ -32,7 +32,14 @@ case "$output" in
 	exit 2
 	;;
 esac
-git check-ignore --quiet -- "$output" || {
+# Ask about a directory, with the trailing slash that says so. `.gitignore`
+# carries `/dist/`, which is a directory-only pattern, and `git check-ignore`
+# resolves that against what is on disk: on a machine that has built before,
+# `dist/` exists and the check passes; on a clean checkout it does not exist,
+# git declines to call the path a directory, the pattern does not match, and
+# the candidate refuses to build. That is why this passed locally and failed
+# the first time the release workflow ran it.
+git check-ignore --quiet -- "${output%/}/" || {
 	echo "release output must be an ignored directory: $output" >&2
 	exit 2
 }
@@ -43,7 +50,7 @@ output_real=$(cd "$output" && pwd -P)
 	exit 2
 }
 output_relative=${output_real#"$repository_root/"}
-git check-ignore --quiet -- "$output_relative" || {
+git check-ignore --quiet -- "${output_relative%/}/" || {
 	echo "release output resolves to a non-ignored directory: $output" >&2
 	exit 2
 }
