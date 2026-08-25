@@ -3,6 +3,12 @@
 Everything below links from the [README](../README.md); the design rationale
 lives in [BLUEPRINT.md](../BLUEPRINT.md), the design of record.
 
+## Start here
+
+- [Questions people ask](FAQ.md) — whether it costs you your routing rules,
+  proxying only some applications, whether to keep your proxy's TUN on, what
+  happens when it crashes, and why DNS broke that one time.
+
 ## Using tunless
 
 - [Containers and virtual machines](CONTAINERS.md) — Docker, Podman,
