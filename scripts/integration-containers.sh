@@ -52,7 +52,10 @@ engine_command() {
 			echo "engine command timed out after ${engine_timeout}s: $engine $*"
 			timeout 15 "$engine" ps --all 2>&1 | head -20 || true
 			timeout 15 ps -eo pid,ppid,stat,etime,args 2>&1 | grep -E "[t]unless|[c]onmon" | head -20 || true
-			timeout 15 bpftool link show 2>&1 | head -20 || true
+			# One attachment is seven links, and this fires when two containers
+			# are attached. A twenty-line cap cut the second set out of the
+			# first report that needed it.
+			timeout 15 bpftool link show 2>&1 | head -60 || true
 		} >&2
 	fi
 	return "$status"
