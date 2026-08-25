@@ -7,9 +7,9 @@ boundary.
 
 ## Development setup
 
-Source builds require Go 1.25 or newer. Install Go 1.26.6 or a compatible
+Source builds require Go 1.25 or newer. Install Go 1.27.0 or a compatible
 newer Go release: the module toolchain directive and container build pin Go
-1.26.6 so released binaries do not silently inherit known standard-library
+1.27.0 so released binaries do not silently inherit known standard-library
 vulnerabilities from an older local compiler. Linux BPF regeneration also
 requires clang 14, llvm 14, and libbpf headers; macOS work requires the Xcode
 toolchain. The committed eBPF object is built from
@@ -18,7 +18,7 @@ toolchain. The committed eBPF object is built from
 ```console
 go test -race ./...
 go vet ./...
-go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 bash -n scripts/*.sh
 cd macos && swift test
 ```

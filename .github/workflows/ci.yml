@@ -18,7 +18,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: 1.26.6
+          go-version: 1.27.0
           cache: true
       - run: go test -race ./...
       - run: TUNLESS_STRESS_CONNECTIONS=10000 ./scripts/stress.sh
@@ -26,7 +26,7 @@ jobs:
       - run: go mod verify
       - name: Static analysis across platform build tags
         run: |
-          GOBIN=/tmp/tunless-tools go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          GOBIN=/tmp/tunless-tools go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
           GOOS=linux /tmp/tunless-tools/staticcheck ./...
           GOOS=darwin /tmp/tunless-tools/staticcheck ./...
           GOOS=windows /tmp/tunless-tools/staticcheck ./...
@@ -45,7 +45,7 @@ jobs:
       - run: docker build --file packaging/docker/Dockerfile .
       - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1
         with:
-          go-version-input: 1.26.6
+          go-version-input: 1.27.0
           go-package: ./...
           check-latest: false
           cache: false
@@ -60,7 +60,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: 1.26.6
+          go-version: 1.27.0
           cache: true
       - run: go test ./...
       - run: swift test
@@ -75,7 +75,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: 1.26.6
+          go-version: 1.27.0
           cache: true
       - run: go test ./...
       - name: Parse PowerShell launchers
