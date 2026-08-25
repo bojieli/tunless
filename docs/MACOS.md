@@ -426,6 +426,33 @@ underneath as a backstop, and should accept fake IP as the price.
 
 Whichever way, change one layer at a time and run `check` between changes.
 
+### Capturing only some applications
+
+`--include-process` turns capture into an allowlist: name the applications that
+should use the proxy and nothing else is claimed. Patterns match a signing
+identifier, the executable path, or its basename, so a program the toolchain
+left with a generic identifier can still be named precisely.
+
+```console
+Tunless start --preset clash-verge --upstream 127.0.0.1:7897 \
+  --include-process /usr/bin/curl
+```
+
+Demonstrated on build 14: with that include list, ambient traffic from other
+processes produced no captured flows over twenty seconds, while `curl` resolved
+`www.debian.org` to a real address through the override rather than the fake-IP
+answer the upstream's TUN hands to everything else.
+
+Changing the selection on a running capture is applied by the provider, not
+assumed: `start` sends the new configuration and restarts the session if the
+provider does not confirm it. Before build 14 the reply was discarded, so
+narrowing capture on a running session reported success while leaving the old
+rules in force.
+
+Downstream `PROCESS-NAME` rules cannot see through this — every captured flow
+reaches the proxy as `tunless` — but domain, rule-set, GEOIP, node, and
+subscription rules match exactly, because the hostname is what tunless sends.
+
 ### Bounding what one application can consume
 
 `--max-flows` (default 4096, or `TUNLESS_MAX_FLOWS`) caps the flows the

@@ -238,9 +238,40 @@ Point `TUNLESS_UPSTREAM` at `127.0.0.1:7890`. References: sing-box
 [mixed inbound](https://sing-box.sagernet.org/configuration/inbound/mixed/).
 
 Downstream `PROCESS-NAME` rules see `tunless`, not the original application.
-Move capture-time process selection into the cgroup on Linux or signing-ID
-filters on macOS. Destination, domain, node, and subscription rules remain
-downstream.
+Move capture-time process selection into the cgroup on Linux or process filters
+on macOS. Destination, domain, node, and subscription rules remain downstream.
+
+## Proxying only some applications
+
+Your proxy keeps its rules. Tunless hands the upstream an ordinary SOCKS5
+request carrying the **hostname**, so domain rules, rule-sets, GEOIP, node
+selection, and subscriptions all match exactly as they did — in fact more
+exactly than a TUN carrying a real address, which has only the address to match
+on and falls back to IP rules or SNI sniffing.
+
+The one thing that does not survive is a `PROCESS-NAME` rule in the proxy:
+SOCKS5 has no field for process identity, so every captured flow looks like it
+came from `tunless`. That is not a loss of capability, because process
+selection moves to where the operating system still knows the answer:
+
+```console
+# macOS: capture two applications and leave everything else alone.
+Tunless start --preset clash-verge --upstream 127.0.0.1:7897   --include-process /usr/bin/curl   --include-process com.apple.Safari
+```
+
+Patterns match a signing identifier, an executable path, or its basename, so
+`--include-process '/opt/homebrew/*/xray'` picks out one program even when the
+toolchain gave it a generic identifier. On Linux the same selection is the
+capture scope itself: run the applications you want proxied inside one cgroup
+and point `--cgroup` at it.
+
+Everything not selected never reaches the proxy at all — it goes direct, with
+no rule evaluation and no proxy involvement. That is the difference from TUN
+mode, where every flow enters the proxy and is filtered once inside it.
+
+If you need different applications on *different nodes*, give each group its own
+tunless instance pointed at its own listener on the proxy, and write the
+per-listener rules downstream where node selection already lives.
 
 Linux unconnected UDP associations are deliberately single-destination. A
 second destination on the same socket fails with a permission error while the
