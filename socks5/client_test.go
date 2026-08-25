@@ -617,3 +617,27 @@ func TestCheckValidatesTCPAndUDPCommands(t *testing.T) {
 		t.Fatalf("commands = %d, %d", first, second)
 	}
 }
+
+func TestUsableHostnameFallsBackInsteadOfFailingTheFlow(t *testing.T) {
+	// A name that fits and reads cleanly is passed through, so routing keeps
+	// its precision.
+	for _, ok := range []string{"github.com", "xn--80ak6aa92e.com", strings.Repeat("a", 255)} {
+		if got := usableHostname(ok); got != ok {
+			t.Fatalf("usableHostname(%q) = %q, want it kept", ok, got)
+		}
+	}
+	// Anything the SOCKS5 domain field cannot carry, or that a downstream
+	// proxy would misread, yields "" so the caller uses the address.
+	for _, bad := range []string{
+		"",
+		strings.Repeat("a", 256),
+		"exa mple.com",
+		"example.com\x00extra",
+		"example.com\n",
+		"example.com\x7f",
+	} {
+		if got := usableHostname(bad); got != "" {
+			t.Fatalf("usableHostname(%q) = %q, want the address fallback", bad, got)
+		}
+	}
+}

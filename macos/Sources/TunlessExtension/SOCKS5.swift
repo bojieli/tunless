@@ -61,6 +61,21 @@ struct SOCKSAddress: Equatable, Sendable {
     let host: String
     let port: UInt16
 
+    /// The hostname if a SOCKS5 request can carry it, or nil if the caller
+    /// should use the numeric address instead.
+    ///
+    /// The domain field has a single length byte, so anything past 255 bytes
+    /// cannot be represented. The rest is about what a downstream proxy does
+    /// with the value: a name carrying spaces, control bytes, or a NUL is
+    /// either rejected or parsed as something other than what was sent.
+    static func usableHostname(_ hostname: String?) -> String? {
+        guard let hostname, !hostname.isEmpty else { return nil }
+        let bytes = Data(hostname.utf8)
+        guard bytes.count <= 255 else { return nil }
+        guard !bytes.contains(where: { $0 <= 0x20 || $0 == 0x7f }) else { return nil }
+        return hostname
+    }
+
     func encoded() throws -> Data {
         var output = Data()
         if let address = IPv4Address(host) {
