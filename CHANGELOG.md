@@ -84,6 +84,21 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Security
 
+- Linux destination filters mean the same thing whatever socket a program
+  used. An IPv4 prefix now also covers the IPv4-mapped form that a dual-stack
+  socket presents, so `--exclude-destination 10.0.0.0/8` is no longer silently
+  inapplicable to runtimes that open one socket for both families, and a prefix
+  written in mapped form is loaded into the IPv6 map at its own length instead
+  of being unmapped into an IPv4 map that cannot hold it.
+- A Linux include list is an allowlist across both address families, matching
+  macOS. Naming only IPv4 prefixes used to leave `has_include6` unset, which
+  captured every IPv6 destination — the opposite of narrowing.
+- The Linux capture floor now actually covers what the macOS one does. Only
+  loopback was refused outright; link-local, multicast, broadcast, and the
+  unspecified address were left to the operator, so
+  `--include-destination 0.0.0.0/0` — the example in this project's own README
+  — sent mDNS, router discovery, and a cloud instance's queries to
+  169.254.169.254 into the upstream, which cannot answer any of them.
 - Observed address-to-name mappings expire after at most a day, whatever TTL
   the answer carried. A record may claim a century, which is a claim on every
   future tenant of a recycled address rather than a statement about freshness.

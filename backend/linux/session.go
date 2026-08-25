@@ -26,6 +26,59 @@ type udpSessionKey struct {
 	cookie  uint64
 }
 
+// reservedCapturePrefixes are the destinations Linux capture refuses to claim
+// whatever the filters say, matching the floor the macOS provider applies.
+//
+// Loopback and the unspecified address mean nothing on the far side of a proxy.
+// Link-local carries DHCP fallback, router discovery, and — on a cloud
+// instance — the metadata service at 169.254.169.254, which answers about the
+// machine asking and cannot answer for a proxy somewhere else. Multicast and
+// broadcast are not routable through SOCKS5 at all. Sending any of them to an
+// upstream does not reroute them, it loses them.
+//
+// These are loaded into the exclusion maps rather than left to the operator,
+// because a filter wide enough to want — `--include-destination 0.0.0.0/0` is
+// in this project's own README — is wide enough to swallow all of them, and
+// the failure is discovered as a machine that stopped finding printers, or an
+// instance that stopped knowing its own identity.
+func reservedCapturePrefixes() []netip.Prefix {
+	return []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"),
+		netip.MustParsePrefix("0.0.0.0/32"),
+		netip.MustParsePrefix("169.254.0.0/16"),
+		netip.MustParsePrefix("224.0.0.0/4"),
+		netip.MustParsePrefix("255.255.255.255/32"),
+		netip.MustParsePrefix("::1/128"),
+		netip.MustParsePrefix("::/128"),
+		netip.MustParsePrefix("fe80::/10"),
+		netip.MustParsePrefix("ff00::/8"),
+	}
+}
+
+// withMappedForms returns prefixes plus the IPv4-mapped IPv6 form of every
+// IPv4 one among them.
+//
+// A socket opened as AF_INET6 reaches an IPv4 destination as ::ffff:a.b.c.d,
+// and the capture program matches the address it is handed. Without the mapped
+// form, `--exclude-destination 10.0.0.0/8` would not cover a dual-stack client
+// reaching 10.0.0.1 — the filter would be silently inapplicable to exactly the
+// runtimes that default to one socket for both families, which is where nobody
+// thinks to check.
+func withMappedForms(prefixes []netip.Prefix) []netip.Prefix {
+	result := make([]netip.Prefix, 0, len(prefixes)*2)
+	for _, prefix := range prefixes {
+		result = append(result, prefix)
+		if !prefix.Addr().Is4() {
+			continue
+		}
+		mapped := netip.PrefixFrom(netip.AddrFrom16(prefix.Addr().As16()), prefix.Bits()+96)
+		if mapped.IsValid() {
+			result = append(result, mapped)
+		}
+	}
+	return result
+}
+
 func parseRedirectListenPort(address string) (uint16, error) {
 	if address == "" {
 		return 0, nil

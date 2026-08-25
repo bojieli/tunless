@@ -152,6 +152,18 @@ sudo ./tunless --upstream 127.0.0.1:7890 \
   --exclude-destination fc00::/7
 ```
 
+`--include-destination` is an allowlist for both address families at once, so
+naming only IPv4 prefixes leaves IPv6 direct rather than capturing all of it,
+and a prefix covers a destination however the program reached it — a runtime
+that opens one dual-stack socket for both families is filtered the same as one
+that opens an IPv4 socket.
+
+Some destinations stay direct no matter what the filters say: loopback, the
+unspecified address, link-local — which is where a cloud instance asks about
+itself — and multicast and broadcast. A proxy has no way to carry any of them,
+so capturing them loses the traffic rather than routing it, and
+`--include-destination 0.0.0.0/0` above is wide enough to swallow all of them.
+
 Captured queries whose original destination port is 53 are sent to the numeric
 `--dns-upstream` through SOCKS5 by default, with query IDs randomly
 translated per outstanding request. Use `--disable-dns-override` to retain each application's
