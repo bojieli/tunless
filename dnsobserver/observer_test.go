@@ -359,3 +359,20 @@ func TestDirectExchangeWaitsForTheAnswerToItsOwnQuery(t *testing.T) {
 		t.Fatalf("reply = %x, want the answer to transaction 0x1234", reply)
 	}
 }
+
+func TestObservedTTLIsBoundedAtBothEnds(t *testing.T) {
+	tests := []struct {
+		ttl  uint32
+		want time.Duration
+	}{
+		{0, time.Second},
+		{60, time.Minute},
+		{86400, maxObservedTTL},
+		{^uint32(0), maxObservedTTL},
+	}
+	for _, tt := range tests {
+		if got := observedTTL(tt.ttl); got != tt.want {
+			t.Fatalf("observedTTL(%d) = %s, want %s", tt.ttl, got, tt.want)
+		}
+	}
+}

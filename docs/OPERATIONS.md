@@ -77,7 +77,10 @@ timeout.
 
 The observer forwards UDP and TCP DNS without changing answers, records A/AAAA
 TTL mappings, and supplies a hostname only when exactly one unexpired name maps
-to the address. Ambiguous CDN addresses remain IP-only.
+to the address. A recorded mapping expires with the answer's TTL, bounded to a
+day: an address outlives the name that pointed at it, and an attribution that
+outlives its answer routes the address's next tenant under the old name's
+rules. Ambiguous CDN addresses remain IP-only.
 
 ```console
 tunless --upstream 127.0.0.1:7890 \

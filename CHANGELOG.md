@@ -84,6 +84,9 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Security
 
+- Observed address-to-name mappings expire after at most a day, whatever TTL
+  the answer carried. A record may claim a century, which is a claim on every
+  future tenant of a recycled address rather than a statement about freshness.
 - The Linux IPv4 redirect socket drops datagrams that were not delivered to a
   loopback address. It binds the wildcard because each captured UDP association
   is redirected to its own 127.x relay address and a socket bound to one

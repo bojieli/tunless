@@ -543,11 +543,25 @@ func (o *Observer) observe(query, reply []byte) {
 	}
 }
 
+// maxObservedTTL bounds how long one answer may keep claiming an address.
+//
+// The TTL belongs to whoever wrote the record, and a record is free to say a
+// century. That is not a claim about freshness, it is a claim on every future
+// tenant of the address — cloud and CDN addresses are recycled constantly, and
+// an attribution that outlives its answer hands someone else's traffic to the
+// old name's routing rules. A day is what common resolvers cap their own
+// caches at, and already far longer than the window this cache exists to
+// serve: the connection that follows the lookup.
+const maxObservedTTL = 24 * time.Hour
+
 func observedTTL(value uint32) time.Duration {
 	if value == 0 {
 		return time.Second
 	}
-	return time.Duration(value) * time.Second
+	if ttl := time.Duration(value) * time.Second; ttl < maxObservedTTL {
+		return ttl
+	}
+	return maxObservedTTL
 }
 
 func (o *Observer) pruneExpiredLocked(now time.Time) {
