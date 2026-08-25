@@ -28,6 +28,34 @@ release, and the Windows source must keep saying what it is. A user who
 installs a driver believing it was qualified is the failure this scoping
 exists to prevent.
 
+## Going public
+
+Branch protection, rulesets, and private vulnerability reporting are all
+refused on a private repository on GitHub Free. That makes the flip to public a
+window rather than an event: for as long as it stays open, `main` is public and
+unprotected, and someone who finds a vulnerability in code they can now read
+has no private way to report it.
+
+Close it with one command rather than a memory:
+
+```console
+gh repo edit bojieli/tunless --visibility public --accept-visibility-change-consequences
+./scripts/github-harden.sh
+```
+
+`github-harden.sh` applies branch protection with the CI checks named exactly
+as the workflow reports them, enforces linear history and conversation
+resolution, refuses force pushes and deletions, enables private vulnerability
+reporting and Dependabot alerts, and then reads every one of them back. It
+refuses to do anything while the repository is still private, and is safe to
+re-run.
+
+CodeQL, dependency review, and Scorecard only produce results on a public
+repository, so their first real output arrives after this point. Re-run the
+security workflows and read what they find **before** creating a tag — that
+ordering is the whole reason the release is not tagged at the same moment
+visibility changes.
+
 ## Prepare a candidate
 
 1. Ensure `main` is clean, CI/security/kernel workflows pass, and the version's

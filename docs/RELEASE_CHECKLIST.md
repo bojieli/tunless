@@ -15,6 +15,8 @@ qualified. Link each completed item to a run, commit, or measurement.
 - [x] Repository history contains no secrets or oversized unintended artifacts
 - [x] Discussions, issue templates, dependency alerts, and automated security
       fixes configured while the repository remains private
+- [ ] `./scripts/github-harden.sh` run immediately after the repository becomes
+      public, reporting every setting verified
 - [ ] Branch protection and required hosted CI/security checks enabled during
       the public visibility transition and before a tag is created
 - [ ] Private vulnerability reporting enabled after the repository becomes public
