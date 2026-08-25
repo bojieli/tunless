@@ -326,25 +326,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                 if let error { self.fail("save proxy preferences", error: error) }
                 manager.loadFromPreferences { error in
                     if let error { self.fail("reload proxy preferences", error: error) }
-                    if manager.connection.status == .connected,
-                       let session = manager.connection as? NETunnelProviderSession {
-                        do {
-                            try session.sendProviderMessage(encoded) { _ in
-                                self.reportStarted(configuration, manager: manager)
-                            }
-                        } catch {
-                            self.fail("update transparent proxy", error: error)
-                        }
-                    } else {
-                        do {
-                            try manager.connection.startVPNTunnel()
-                            self.reportStarted(configuration, manager: manager)
-                        } catch {
-                            self.fail("start transparent proxy", error: error)
-                        }
-                    }
+                    self.deploy(configuration, encoded: encoded, to: manager)
                 }
             }
+        }
+    }
+
+    /// Gets `configuration` into the running provider, or restarts it so the
+    /// provider reads the saved configuration itself.
+    ///
+    /// A provider only reads `providerConfiguration` in `startProxy`, so a
+    /// `start` against an already-running session has to hand the new
+    /// configuration over as a message — and that message can be refused. It
+    /// used to be sent with its reply discarded, so an update the provider
+    /// rejected, or a session that was reasserting rather than connected, left
+    /// capture running the previous rules while `start` reported success. An
+    /// operator narrowing capture to one application would have been told it
+    /// worked while everything stayed captured.
+    ///
+    /// So believe the provider rather than the send: it answers a single byte
+    /// when it has taken the configuration, and anything else means restart.
+    private func deploy(
+        _ configuration: LauncherConfiguration,
+        encoded: Data,
+        to manager: NETransparentProxyManager
+    ) {
+        guard manager.connection.status == .connected,
+              let session = manager.connection as? NETunnelProviderSession else {
+            restart(configuration, on: manager)
+            return
+        }
+        do {
+            try session.sendProviderMessage(encoded) { response in
+                guard response == Data([1]) else {
+                    write(
+                        "Tunless: the running proxy did not accept the new configuration;"
+                            + " restarting it so the configuration you asked for is the one in effect.\n",
+                        to: .standardError)
+                    self.restart(configuration, on: manager)
+                    return
+                }
+                self.reportStarted(configuration, manager: manager)
+            }
+        } catch {
+            restart(configuration, on: manager)
+        }
+    }
+
+    /// Stops the session if it is running and starts it again, so `startProxy`
+    /// reads the configuration that was just saved. Capture is off in between,
+    /// which means flows go direct — the same safe direction as any other
+    /// moment tunless is not running.
+    private func restart(_ configuration: LauncherConfiguration, on manager: NETransparentProxyManager) {
+        if manager.connection.status != .disconnected && manager.connection.status != .invalid {
+            manager.connection.stopVPNTunnel()
+        }
+        waitUntilStopped(manager, attemptsRemaining: 40) {
+            do {
+                try manager.connection.startVPNTunnel()
+                self.reportStarted(configuration, manager: manager)
+            } catch {
+                self.fail("start transparent proxy", error: error)
+            }
+        }
+    }
+
+    private func waitUntilStopped(
+        _ manager: NETransparentProxyManager,
+        attemptsRemaining: Int,
+        then next: @escaping () -> Void
+    ) {
+        let status = manager.connection.status
+        if status == .disconnected || status == .invalid || attemptsRemaining <= 0 {
+            next()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            self.waitUntilStopped(manager, attemptsRemaining: attemptsRemaining - 1, then: next)
         }
     }
 
