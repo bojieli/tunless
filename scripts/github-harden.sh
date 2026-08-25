@@ -64,8 +64,14 @@ import json, sys
 print(json.dumps({
     "required_status_checks": {"strict": True, "contexts": json.loads(sys.argv[1])},
     "enforce_admins": True,
+    # A pull request is required, but no approval is: a single maintainer
+    # cannot approve their own, and requiring one alongside enforce_admins
+    # locks the only person who can merge out of their own main branch. The
+    # protections that matter here — status checks, linear history, no force
+    # pushes, no deletions — do not depend on an approving reviewer. Raise this
+    # to 1 when there is a second maintainer to give it.
     "required_pull_request_reviews": {
-        "required_approving_review_count": 1,
+        "required_approving_review_count": 0,
         "dismiss_stale_reviews": True,
     },
     "restrictions": None,
