@@ -135,9 +135,23 @@ qualified. Link each completed item to a run, commit, or measurement.
 - [x] SBOMs, checksums, package manifests, licenses, and versions reviewed;
       synchronized notices cover every embedded third-party Go module
 - [ ] GitHub provenance attestations generated and reviewed after public
-      visibility enables that service and before a tag is created
-- [ ] Candidate was produced by the manual non-publishing workflow and reviewed
-      without changing repository visibility, creating a tag, or publishing
+      visibility enables that service and before a tag is created. Generated:
+      one attestation is bound to each `0.1.0-rc.2` artifact digest, in-toto
+      with a signing certificate, confirmed through the repository API. **Not
+      reviewed**: `gh attestation verify` fails locally with `unsupported tlog
+      public key type: PKIX_ED25519`, which is `gh` 2.50.0 being older than the
+      current Sigstore trusted root rather than anything about the attestation.
+      Verify with a current `gh` before the tag; existence is not verification
+- [x] Candidate was produced by the manual non-publishing workflow and reviewed
+      without changing repository visibility, creating a tag, or publishing.
+      `0.1.0-rc.2` built from commit `920dda4` by run 32847424609 on
+      2026-08-25. All fifteen artifact checksums verified against `SHA256SUMS`
+      after downloading them separately, and `REPRODUCIBILITY.txt` reports
+      binaries, archives, DEB, RPM, OCI, per-platform SBOMs and third-party
+      notices all byte-identical across two builds. This is the first candidate
+      the workflow has ever produced: it failed on its first attempt because
+      the release output check could not run on a checkout that had never
+      built
 
 ## Explicit external platform gates
 
