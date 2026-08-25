@@ -84,6 +84,12 @@ use ISO 8601. The repository has not made a public release yet.
 
 ### Security
 
+- The Linux IPv4 redirect socket drops datagrams that were not delivered to a
+  loopback address. It binds the wildcard because each captured UDP association
+  is redirected to its own 127.x relay address and a socket bound to one
+  address would see only one of them, which leaves a port reachable from the
+  network; correlation refused a foreign datagram already, and now the receive
+  path says so where it is relied on.
 - Both DNS forwarding paths now check that a datagram answers the query before
   treating it as the answer: the transaction ID has to match and the response
   bit has to be set. Previously the first datagram to reach the socket was
