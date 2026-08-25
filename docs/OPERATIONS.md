@@ -174,6 +174,31 @@ validation prevents a recycled PID from being attached. An upstream restart
 can break an existing association, but the next datagram recreates SOCKS5 UDP
 state while retaining kernel socket correlation.
 
+## Soaking a live capture
+
+Short checks answer whether capture works. They cannot answer whether it keeps
+working, and on this project that is where the serious defects have been: a
+watchdog that mistook a sleeping laptop for a failing upstream left a macOS
+host resolving names unprotected for nine hours, and nothing shorter than hours
+could have seen it.
+
+`scripts/tunless-linux-soak.sh` watches a running deployment on its own
+schedule. Each tick resolves a name from inside the captured cgroup — not
+beside it, because a lookup made outside the scope keeps working precisely when
+capture has stopped carrying anything — and reads whether capture is still
+claiming flows. Point `--status` at the controller's status API for the
+stronger of the two readings: without it the soak can only see that BPF links
+are attached, not that they are being used.
+
+```console
+sudo ./scripts/tunless-linux-soak.sh --status 127.0.0.1:6060 --interval 60
+```
+
+Ctrl-C prints the summary, and `--summary FILE` prints it for an earlier run.
+It names three things a graph would hide: intervals where the host resolved
+names while capture was gone, controller restarts that systemd performed
+without comment, and wall-clock holes where no tick was written at all.
+
 ## Logs and privacy
 
 JSON logs go to stderr. Debug flow logs may contain destinations, process paths,
