@@ -17,7 +17,11 @@ import (
 )
 
 type Client struct {
-	Address          string
+	Address string
+	// Alternates are further upstream addresses, tried in order when Address
+	// does not connect. A named upstream is resolved once before capture
+	// starts, and this is what a name's remaining addresses become.
+	Alternates       []string
 	Username         string
 	Password         string
 	MetadataUsername bool
@@ -143,7 +147,7 @@ func (c *Client) connect(ctx context.Context, command byte, dst netip.AddrPort, 
 	// not happen at all. Only the routing precision is lost, and only for the
 	// unusual names this rejects.
 	hostname = usableHostname(hostname)
-	conn, err := dialContext(ctx, c.Dialer, "tcp", c.Address, redirectRecords)
+	conn, err := c.dialUpstream(ctx, redirectRecords)
 	if err != nil {
 		return nil, netip.AddrPort{}, func() {}, fmt.Errorf("dial SOCKS5 upstream: %w", err)
 	}
@@ -241,6 +245,46 @@ func (c *Client) connect(ctx context.Context, command byte, dst netip.AddrPort, 
 		}
 	}
 	return conn, bound, cleanup, nil
+}
+
+// dialUpstream connects to the upstream, walking the addresses a named one
+// resolved to until one answers.
+//
+// Handed a name, Go's dialer does this itself, and staggers the attempts so a
+// host with broken IPv6 still reaches an IPv4 address quickly. Pinning the name
+// before capture starts is what keeps a lookup out of the datapath, and it
+// takes that fallback away, so the attempts happen here instead: in order, each
+// bounded by the handshake timeout, so one unreachable address of a multi-homed
+// proxy costs a bounded wait rather than the flow.
+func (c *Client) dialUpstream(ctx context.Context, redirectRecords []byte) (net.Conn, error) {
+	if len(c.Alternates) == 0 {
+		return dialContext(ctx, c.Dialer, "tcp", c.Address, redirectRecords)
+	}
+	timeout := c.HandshakeTimeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	var failures []error
+	for _, address := range append([]string{c.Address}, c.Alternates...) {
+		attempt, cancel := ctx, context.CancelFunc(nil)
+		if timeout > 0 {
+			attempt, cancel = context.WithTimeout(ctx, timeout)
+		}
+		conn, err := dialContext(attempt, c.Dialer, "tcp", address, redirectRecords)
+		if cancel != nil {
+			// Cancelling after a successful dial does not disturb the
+			// connection; the context covers the dial alone.
+			cancel()
+		}
+		if err == nil {
+			return conn, nil
+		}
+		failures = append(failures, err)
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, errors.Join(failures...)
 }
 
 func (c *Client) emitTCP(ctx context.Context, flow tunless.Flow) error {

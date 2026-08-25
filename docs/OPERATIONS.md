@@ -65,7 +65,11 @@ source on reply, so reused IDs and out-of-order responses are unambiguous. The
 translated ID is drawn at random, keeping the off-path spoofing resistance the
 application's own random ID was there to provide. Use
 `--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to retain each
-application's original resolver. `--flow-idle-timeout` and
+application's original resolver. An `--upstream` written as a hostname is
+resolved once at startup, and the numeric addresses it returned are what every
+flow dials, in order, until one answers; the startup log records the name and
+the addresses. Resolving per flow would put a lookup inside the path that
+carries lookups. A record that changes later is picked up by restarting. `--flow-idle-timeout` and
 `--udp-idle-timeout` bound abandoned flows; zero disables the corresponding
 timeout.
 

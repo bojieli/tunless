@@ -71,6 +71,17 @@ use ISO 8601. The repository has not made a public release yet.
   plus synchronized third-party license notices carried by every archive and
   native package.
 
+### Fixed
+
+- A `--upstream` given as a hostname is resolved once at startup and pinned to
+  the addresses it returned, instead of being resolved again on every flow. The
+  per-flow lookup was a loop: tunless normally shares the captured cgroup, so
+  dialing the upstream needed a name lookup, and capturing that lookup needed
+  the dial. Resolution recursed until the flow ceiling rejected it, which
+  presents as a machine whose DNS stopped working. Every pinned address is
+  tried in turn, so a proxy named `localhost` still reaches whichever of ::1
+  and 127.0.0.1 it listens on, and all of them are reserved from capture.
+
 ### Security
 
 - The private DNS transaction ID that replaces an application's own while a

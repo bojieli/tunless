@@ -641,3 +641,69 @@ func TestUsableHostnameFallsBackInsteadOfFailingTheFlow(t *testing.T) {
 		}
 	}
 }
+
+func TestDialUpstreamWalksAlternatesUntilOneAnswers(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		accepted <- struct{}{}
+		_ = conn.Close()
+	}()
+	// A closed listener leaves an address that refuses immediately, which is
+	// what a proxy bound to only one address of a name looks like.
+	refused, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedAddress := refused.Addr().String()
+	_ = refused.Close()
+
+	client := &Client{Address: refusedAddress, Alternates: []string{listener.Addr().String()}}
+	conn, err := client.dialUpstream(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("dialUpstream: %v", err)
+	}
+	defer conn.Close()
+	if conn.RemoteAddr().String() != listener.Addr().String() {
+		t.Fatalf("connected to %s, want the alternate %s", conn.RemoteAddr(), listener.Addr())
+	}
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the alternate address was never dialed")
+	}
+}
+
+func TestDialUpstreamReportsEveryFailure(t *testing.T) {
+	first, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAddress := first.Addr().String()
+	_ = first.Close()
+	second, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAddress := second.Addr().String()
+	_ = second.Close()
+
+	client := &Client{Address: firstAddress, Alternates: []string{secondAddress}}
+	_, err = client.dialUpstream(context.Background(), nil)
+	if err == nil {
+		t.Fatal("dialUpstream succeeded with no reachable address")
+	}
+	for _, address := range []string{firstAddress, secondAddress} {
+		if !strings.Contains(err.Error(), address) {
+			t.Fatalf("error %v omits the attempt on %s", err, address)
+		}
+	}
+}

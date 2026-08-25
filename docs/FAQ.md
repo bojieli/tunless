@@ -111,6 +111,12 @@ until it times out, which feels exactly like a dead network. Current builds
 reserve the resolver's address from capture so this cannot happen, whichever
 proxy you run and whether or not you named its process.
 
+Giving `--upstream` a hostname was a second door into the same room: dialing the
+proxy needed a lookup, and capturing that lookup needed the dial. The name is
+now resolved once at startup and the address is what the datapath uses, so
+nothing in the path depends on the DNS it is carrying. Restart to pick up a
+record that changed.
+
 **A stale fake IP.** If your proxy's TUN handed out an address from
 `198.18.0.0/15` and something cached it, a connection to that address opens
 successfully and then transfers nothing. No error anywhere. That range is

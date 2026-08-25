@@ -132,7 +132,7 @@ func TestReservedDestinationsKeepTheDatapathDirect(t *testing.T) {
 	// The loop this prevents: the upstream dials the resolver to answer a
 	// query tunless rewrote, and capturing that dial hands the query back to
 	// the upstream that is waiting on it.
-	reserved, err := reservedDestinations("192.0.2.10:1080", netip.MustParseAddrPort("1.1.1.1:53"), nil)
+	reserved, err := reservedDestinations([]string{"192.0.2.10:1080"}, netip.MustParseAddrPort("1.1.1.1:53"), nil)
 	if err != nil {
 		t.Fatalf("reservedDestinations: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestReservedDestinationsKeepTheDatapathDirect(t *testing.T) {
 
 func TestReservedDestinationsSkipLoopbackAndExplicitIncludes(t *testing.T) {
 	// A loopback upstream is already skipped in the capture path itself.
-	reserved, err := reservedDestinations("127.0.0.1:7897", netip.MustParseAddrPort("1.1.1.1:53"), nil)
+	reserved, err := reservedDestinations([]string{"127.0.0.1:7897"}, netip.MustParseAddrPort("1.1.1.1:53"), nil)
 	if err != nil {
 		t.Fatalf("reservedDestinations: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestReservedDestinationsSkipLoopbackAndExplicitIncludes(t *testing.T) {
 		t.Fatalf("reserved = %v, want only the resolver", reserved)
 	}
 	// Naming a prefix explicitly is the operator saying they know.
-	reserved, err = reservedDestinations("127.0.0.1:7897", netip.MustParseAddrPort("1.1.1.1:53"), []string{"1.1.1.1/32"})
+	reserved, err = reservedDestinations([]string{"127.0.0.1:7897"}, netip.MustParseAddrPort("1.1.1.1:53"), []string{"1.1.1.1/32"})
 	if err != nil {
 		t.Fatalf("reservedDestinations: %v", err)
 	}
@@ -167,11 +167,79 @@ func TestReservedDestinationsSkipLoopbackAndExplicitIncludes(t *testing.T) {
 }
 
 func TestReservedDestinationsOmitDisabledOverride(t *testing.T) {
-	reserved, err := reservedDestinations("127.0.0.1:7897", netip.AddrPort{}, nil)
+	reserved, err := reservedDestinations([]string{"127.0.0.1:7897"}, netip.AddrPort{}, nil)
 	if err != nil {
 		t.Fatalf("reservedDestinations: %v", err)
 	}
 	if len(reserved) != 0 {
 		t.Fatalf("reserved = %v, want none when DNS override is off", reserved)
+	}
+}
+
+func TestPinUpstreamAddressesResolvesNamesOnceAndKeepsEveryAddress(t *testing.T) {
+	calls := 0
+	lookup := func(context.Context, string, string) ([]netip.Addr, error) {
+		calls++
+		return []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("::ffff:192.0.2.10")}, nil
+	}
+	pinned, err := pinUpstreamAddresses(context.Background(), "proxy.example:1080", lookup)
+	if err != nil {
+		t.Fatalf("pinUpstreamAddresses: %v", err)
+	}
+	// The resolver's order is kept, and a v4-mapped result becomes a plain
+	// IPv4 address so the dialer does not treat it as IPv6.
+	want := []string{"[2001:db8::1]:1080", "192.0.2.10:1080"}
+	if len(pinned) != len(want) || pinned[0] != want[0] || pinned[1] != want[1] {
+		t.Fatalf("pinned = %v, want %v", pinned, want)
+	}
+	// Reserving the upstream from capture depends on every address it may dial
+	// being numeric by the time the filter is built.
+	reserved, err := reservedDestinations(pinned, netip.MustParseAddrPort("1.1.1.1:53"), nil)
+	if err != nil {
+		t.Fatalf("reservedDestinations: %v", err)
+	}
+	wantPrefixes := []netip.Prefix{
+		netip.MustParsePrefix("2001:db8::1/128"),
+		netip.MustParsePrefix("192.0.2.10/32"),
+		netip.MustParsePrefix("1.1.1.1/32"),
+	}
+	if len(reserved) != len(wantPrefixes) {
+		t.Fatalf("reserved = %v, want %v", reserved, wantPrefixes)
+	}
+	for i, prefix := range wantPrefixes {
+		if reserved[i] != prefix {
+			t.Fatalf("reserved[%d] = %v, want %v", i, reserved[i], prefix)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("lookups = %d, want exactly one", calls)
+	}
+}
+
+func TestPinUpstreamAddressesLeavesNumericAddressesAlone(t *testing.T) {
+	lookup := func(context.Context, string, string) ([]netip.Addr, error) {
+		t.Fatal("a numeric upstream must not reach the resolver")
+		return nil, nil
+	}
+	for _, address := range []string{"127.0.0.1:7890", "[2001:db8::1]:1080"} {
+		pinned, err := pinUpstreamAddresses(context.Background(), address, lookup)
+		if err != nil || len(pinned) != 1 || pinned[0] != address {
+			t.Fatalf("pinUpstreamAddresses(%q) = %v, %v", address, pinned, err)
+		}
+	}
+}
+
+func TestPinUpstreamAddressesReportsUnusableResults(t *testing.T) {
+	failure := errors.New("no such host")
+	if _, err := pinUpstreamAddresses(context.Background(), "proxy.example:1080", func(context.Context, string, string) ([]netip.Addr, error) {
+		return nil, failure
+	}); !errors.Is(err, failure) {
+		t.Fatalf("error = %v, want %v", err, failure)
+	}
+	_, err := pinUpstreamAddresses(context.Background(), "proxy.example:1080", func(context.Context, string, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.IPv4Unspecified(), netip.MustParseAddr("224.0.0.1")}, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "usable") {
+		t.Fatalf("error = %v, want a usable-address failure", err)
 	}
 }
