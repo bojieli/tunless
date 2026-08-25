@@ -402,9 +402,9 @@ func TestServeReportsAFixedPortConflictInsteadOfMoving(t *testing.T) {
 		_ = observer.Close()
 		t.Fatal("a fixed port whose TCP half was taken was accepted")
 	}
-	if !strings.Contains(err.Error(), "address already in use") {
-		t.Fatalf("conflict reported as %v", err)
-	}
+	// Not asserted on the message text: Windows phrases this as "Only one usage
+	// of each socket address ... is normally permitted". The contract is that
+	// the observer refuses and stays put, not how a platform words the refusal.
 	if observer.Listen != address {
 		t.Fatalf("observer moved from the requested %s to %s", address, observer.Listen)
 	}
