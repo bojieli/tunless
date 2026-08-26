@@ -813,8 +813,15 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             group.addTask {
                 try await Task.sleep(nanoseconds: 10_000_000_000)
                 let error = SOCKSError.timeout("application flow open")
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
+                // Streams are closed so the application sees the failure and
+                // retries directly. A datagram flow is left alone even here:
+                // the open timing out says nothing about the socket above it,
+                // and closing the flow would end that socket for good. The
+                // handler unwinds either way.
+                if flow is NEAppProxyTCPFlow {
+                    flow.closeReadWithError(error)
+                    flow.closeWriteWithError(error)
+                }
                 throw error
             }
             defer { group.cancelAll() }
