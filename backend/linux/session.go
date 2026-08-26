@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/bojieli/tunless"
 	"net"
 	"net/netip"
 	"strconv"
@@ -41,19 +42,7 @@ type udpSessionKey struct {
 // in this project's own README — is wide enough to swallow all of them, and
 // the failure is discovered as a machine that stopped finding printers, or an
 // instance that stopped knowing its own identity.
-func reservedCapturePrefixes() []netip.Prefix {
-	return []netip.Prefix{
-		netip.MustParsePrefix("127.0.0.0/8"),
-		netip.MustParsePrefix("0.0.0.0/32"),
-		netip.MustParsePrefix("169.254.0.0/16"),
-		netip.MustParsePrefix("224.0.0.0/4"),
-		netip.MustParsePrefix("255.255.255.255/32"),
-		netip.MustParsePrefix("::1/128"),
-		netip.MustParsePrefix("::/128"),
-		netip.MustParsePrefix("fe80::/10"),
-		netip.MustParsePrefix("ff00::/8"),
-	}
-}
+func reservedCapturePrefixes() []netip.Prefix { return tunless.ReservedCapturePrefixes() }
 
 // withMappedForms returns prefixes plus the IPv4-mapped IPv6 form of every
 // IPv4 one among them.
