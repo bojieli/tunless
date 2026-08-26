@@ -7,6 +7,15 @@ use ISO 8601.
 
 ### Fixed
 
+- macOS: `--disable-dns-override` switched off every check that watches DNS —
+  the preflight proof, the post-start verification, and the runtime watchdog —
+  on the premise that capture does not touch port 53 without an override. It
+  does: the flag preserves each application's resolver and keeps relaying the
+  query, so the upstream could still take resolution down host-wide with
+  nothing watching. Verification now runs whenever `--skip-verify` was not
+  passed, and the watchdog probes the resolver capture is actually carrying,
+  learned from the flows, over the transport those flows used.
+
 - macOS: the extension and app build numbers are bumped to 15, in
   `macos/project.yml`, which is where they actually come from — the checked-in
   `Info.plist` files are xcodegen output, so editing them looks like a bump and

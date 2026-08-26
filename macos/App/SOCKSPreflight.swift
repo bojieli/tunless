@@ -119,8 +119,12 @@ final class SOCKSPreflight {
     /// upstreams refuse it while still relaying TCP correctly.
     private func checkDNSRelay() {
         guard let dnsHost = configuration.dnsHost, let dnsPort = configuration.dnsPort else {
-            // DNS override is disabled, so capture does not redirect port 53
-            // and there is no additional resolver path to prove.
+            // No override means no resolver this check could name: capture will
+            // relay each application's own choice, which is not known until
+            // flows arrive. Relaying still happens, so the proof is not skipped
+            // — it moves to where the resolver is known. The post-start check
+            // resolves through the assembled path, and the provider's watchdog
+            // then re-proves it against the resolver capture actually carries.
             finish(.success(()))
             return
         }

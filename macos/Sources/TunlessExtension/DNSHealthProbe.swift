@@ -43,21 +43,55 @@ struct DNSProbeOutcome: Equatable {
 /// says why. Probing only the transport that happens to work is how a watchdog
 /// misses the failure it exists to catch.
 enum DNSHealthProbe {
+    /// A resolver capture is carrying, learned from the flows themselves.
+    ///
+    /// It exists for the case where the operator turned the DNS override off.
+    /// Capture still relays every port-53 flow to the upstream then — the flag
+    /// preserves each application's choice of resolver, it does not stop
+    /// proxying the query — so the upstream can still take DNS down host-wide,
+    /// and there is no configured resolver to prove that against. The flows say
+    /// which resolver to ask, and which transport the host asks it over.
+    struct CarriedResolver: Equatable, Sendable {
+        let address: SOCKSAddress
+        let overUDP: Bool
+    }
+
+    /// Which resolver a probe round should ask, and whether to ask over UDP.
+    ///
+    /// Nil means there is nothing to prove: no override is configured and
+    /// capture has not carried a port-53 flow yet, so capture is making no
+    /// claim about resolution that could be false.
+    static func target(
+        configuration: ProviderConfiguration,
+        carried: CarriedResolver?
+    ) -> (resolver: SOCKSAddress, probeUDP: Bool)? {
+        if let dnsHost = configuration.dnsHost, let dnsPort = configuration.dnsPort {
+            return (SOCKSAddress(host: dnsHost, port: dnsPort), configuration.expectUDPRelay == true)
+        }
+        guard let carried else { return nil }
+        // Preflight never tested UDP relaying in this configuration, because it
+        // had no resolver to test against. What the flows show is better
+        // evidence than that absence: if this host resolves over UDP through
+        // capture, a UDP relay that stops answering is the failure the watchdog
+        // exists to catch.
+        return (carried.address, carried.overUDP)
+    }
+
     static func run(
         configuration: ProviderConfiguration,
+        carried: CarriedResolver? = nil,
         timeoutSeconds: TimeInterval = 6
     ) async -> DNSProbeOutcome {
-        guard let dnsHost = configuration.dnsHost, let dnsPort = configuration.dnsPort else {
-            // Without a DNS override, capture does not touch port 53 and there
-            // is no resolver path of ours that can fail.
+        guard let target = target(configuration: configuration, carried: carried) else {
             return DNSProbeOutcome(tcp: true, udp: nil)
         }
-        let resolver = SOCKSAddress(host: dnsHost, port: dnsPort)
-        let tcp = await probeTCP(configuration: configuration, resolver: resolver, timeoutSeconds: timeoutSeconds)
-        guard configuration.expectUDPRelay == true else {
+        let tcp = await probeTCP(
+            configuration: configuration, resolver: target.resolver, timeoutSeconds: timeoutSeconds)
+        guard target.probeUDP else {
             return DNSProbeOutcome(tcp: tcp, udp: nil)
         }
-        let udp = await probeUDP(configuration: configuration, resolver: resolver, timeoutSeconds: timeoutSeconds)
+        let udp = await probeUDP(
+            configuration: configuration, resolver: target.resolver, timeoutSeconds: timeoutSeconds)
         return DNSProbeOutcome(tcp: tcp, udp: udp)
     }
 

@@ -374,8 +374,14 @@ which threw that buffer away — destroying the one message that explained why
 the host had lost capture.
 
 If the upstream genuinely cannot relay DNS and capture is still wanted, start
-with `--disable-dns-override` so each application keeps its own resolver and
-capture no longer touches port 53.
+with `--disable-dns-override` so each application keeps its own resolver.
+Capture still relays those port-53 flows — the flag changes where they are
+addressed, not whether they are proxied — so the upstream can still take
+resolution down host-wide. The watchdog therefore keeps watching: with no
+configured resolver to prove, it probes the resolver capture is actually
+carrying, learned from the flows themselves, over whichever transport those
+flows used. Until capture has carried a port-53 flow there is nothing to prove
+and nothing is probed.
 
 **When the upstream runs a TUN device.** Clash Verge and similar upstreams can
 run their own TUN interface with `auto-route` and `dns-hijack`, which puts a
@@ -708,7 +714,9 @@ rewritten query is no easier to answer falsely than the one the application
 wrote (RFC 5452). Entries expire after 30 seconds and are capped at 4,096. Set
 `TUNLESS_DNS_UPSTREAM` to choose another trusted resolver. Use
 `--disable-dns-override` or `TUNLESS_DISABLE_DNS_OVERRIDE=true` to preserve the
-original DNS destination while continuing to proxy the flow.
+original DNS destination while continuing to proxy the flow. Post-start
+verification runs either way, since it resolves through the assembled path
+rather than through a configured resolver; only `--skip-verify` opts out.
 
 The 30-second expiry above applies to transaction-ID attribution, not to the
 macOS resolver flow. Port-53 UDP flows remain open for the lifetime chosen by

@@ -225,3 +225,57 @@ final class CaptureHealthTests: XCTestCase {
     }
 
 }
+
+/// What the watchdog probes when the operator turned the DNS override off.
+///
+/// The flag preserves each application's resolver; it does not stop capture
+/// relaying the query. So the upstream can still take resolution down
+/// host-wide, and a watchdog that treats "no override" as "nothing of ours can
+/// fail" is not watching the failure it exists for.
+final class HealthProbeTargetTests: XCTestCase {
+    private let upstream = ProviderConfiguration(upstreamHost: "127.0.0.1", upstreamPort: 7897)
+    private let carried = DNSHealthProbe.CarriedResolver(
+        address: SOCKSAddress(host: "223.6.6.6", port: 53), overUDP: true)
+
+    func testConfiguredOverrideIsProbedAsBefore() {
+        var configuration = upstream
+        configuration.dnsHost = "1.1.1.1"
+        configuration.dnsPort = 53
+        configuration.expectUDPRelay = true
+        let target = DNSHealthProbe.target(configuration: configuration, carried: carried)
+        XCTAssertEqual(target?.resolver, SOCKSAddress(host: "1.1.1.1", port: 53))
+        XCTAssertEqual(target?.probeUDP, true)
+    }
+
+    func testAnOverrideThatNeverRelayedUDPIsNotProbedOverUDP() {
+        var configuration = upstream
+        configuration.dnsHost = "1.1.1.1"
+        configuration.dnsPort = 53
+        configuration.expectUDPRelay = false
+        XCTAssertEqual(
+            DNSHealthProbe.target(configuration: configuration, carried: carried)?.probeUDP,
+            false)
+    }
+
+    func testWithoutAnOverrideTheResolverCaptureCarriesIsProbed() {
+        let target = DNSHealthProbe.target(configuration: upstream, carried: carried)
+        XCTAssertEqual(target?.resolver, SOCKSAddress(host: "223.6.6.6", port: 53))
+        XCTAssertEqual(
+            target?.probeUDP, true,
+            "a host resolving over UDP through capture is exactly what a broken UDP relay breaks")
+    }
+
+    func testATCPOnlyResolverIsNotProbedOverUDP() {
+        let overTCP = DNSHealthProbe.CarriedResolver(
+            address: SOCKSAddress(host: "223.6.6.6", port: 53), overUDP: false)
+        XCTAssertEqual(
+            DNSHealthProbe.target(configuration: upstream, carried: overTCP)?.probeUDP,
+            false)
+    }
+
+    func testNothingIsProbedUntilCaptureHasCarriedAResolver() {
+        XCTAssertNil(
+            DNSHealthProbe.target(configuration: upstream, carried: nil),
+            "capture that has carried no port-53 flow is claiming nothing that could be false")
+    }
+}
