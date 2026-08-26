@@ -7,6 +7,28 @@ use ISO 8601.
 
 ### Fixed
 
+- macOS: a captured UDP flow is no longer closed by the provider, ever. It used
+  to end whenever the transport under it did — a watchdog pause, a SOCKS5
+  handshake that timed out against a busy mixed port, an upstream that dropped
+  its UDP association, or two minutes of an idle one — and macOS treats a
+  datagram flow the provider closed as final: it neither re-captures the
+  socket above it nor hands it back to the kernel, so every later send on that
+  socket fails locally. `mDNSResponder` holds one resolver socket per
+  delegated client and never replaces it, so one closed flow ended name
+  resolution for one application, for as long as the daemon ran, while the
+  rest of the host resolved normally and made it look like a problem with the
+  site. The upstream association is now the disposable half: it is retired and
+  rebuilt underneath a flow that stays open, datagrams go out directly while it
+  cannot carry them, and the application's socket is never touched. Observed on
+  a live host as `sending ... failed: [22: Invalid argument]` repeating for
+  hours after a single pause, with one application's lookups timing out at
+  thirty seconds and everything else unaffected.
+- macOS: a reply that arrives from the resolver the DNS override rewrites to,
+  answering no query it rewrote, is withheld rather than handed up carrying a
+  transaction identifier the application never chose. Replies from any other
+  peer are untouched, so an unconnected socket talking to many peers is
+  unaffected.
+
 - `doctor` reported "privilege-free backend selected" for `--backend redirect`,
   which is the answer every backend that is not the eBPF one received. That
   backend is the opposite of privilege-free: it wants `NET_ADMIN` and a

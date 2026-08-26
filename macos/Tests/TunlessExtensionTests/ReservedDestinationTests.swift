@@ -160,7 +160,7 @@ final class DirectDatagramRelayTests: XCTestCase {
     }
 
     func testTheRelayBoundsHowManyDestinationsOneFlowCanOpen() async {
-        let relay = DirectDatagramRelay()
+        let relay = DirectDatagramRelay(sink: RecordingSink())
         // Cancelling releases everything and refuses further sends, so a torn
         // down flow cannot leave sockets behind.
         await relay.cancelAll()

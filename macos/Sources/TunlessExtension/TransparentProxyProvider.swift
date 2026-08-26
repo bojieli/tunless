@@ -13,15 +13,6 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         case cancelled
     }
 
-    private enum UDPPumpResult {
-        case applicationEOF(String)
-        case networkEOF(String)
-        case controlEOF
-        case failed(String)
-        case idleTimeout
-        case cancelled
-    }
-
     private final class ActiveFlow {
         let flow: NEAppProxyFlow
         let task: Task<Void, Never>
@@ -291,12 +282,19 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let records = Array(activeFlows.values)
         lock.unlock()
         for record in records {
-            // UDP sockets, especially mDNSResponder's resolver sockets, can
-            // outlive this provider session. End their flow cleanly so macOS
-            // replaces it instead of retaining an error-poisoned socket.
-            let error: Error? = record.survivesCapturePause ? nil : SOCKSError.closed
-            record.flow.closeReadWithError(error)
-            record.flow.closeWriteWithError(error)
+            // Streams are closed so the application sees the connection end
+            // and retries, which now goes direct. Datagram flows are left
+            // alone. Their sockets outlive this session — mDNSResponder holds
+            // one resolver socket per delegated client for as long as it runs
+            // — and a flow the provider closes is a socket macOS will not
+            // reroute and will not replace: every later send on it fails
+            // locally, so name resolution ends for that client until the
+            // resolver is restarted. Ending the session releases the diverted
+            // sockets; closing their flows first is what prevents that.
+            if !record.survivesCapturePause {
+                record.flow.closeReadWithError(SOCKSError.closed)
+                record.flow.closeWriteWithError(SOCKSError.closed)
+            }
             record.task.cancel()
         }
         Task {
@@ -535,116 +533,67 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             event: event)
     }
 
+    /// Relays one datagram flow, for as long as the application keeps its
+    /// socket open.
+    ///
+    /// The flow outlives the upstream on purpose. macOS hands a datagram flow
+    /// to the provider once and does not hand it over again: a socket whose
+    /// flow was closed underneath it is not re-captured and not released back
+    /// to the kernel, it is finished, and every later send on it fails
+    /// locally. `mDNSResponder` is the case that matters, because it holds one
+    /// long-lived resolver socket per delegated client and never replaces it —
+    /// so a flow closed under one of those sockets ends name resolution for
+    /// that client until the daemon is restarted, while every other client on
+    /// the host keeps resolving and hides the failure.
+    ///
+    /// An upstream that stops answering is therefore not a reason to end the
+    /// flow. It is a reason to carry the datagrams the way the kernel would
+    /// have, which is what capture already promises whenever it declines
+    /// something, and to keep trying the upstream underneath. The flow ends
+    /// when the application closes its socket, or when the provider stops.
     private func handleUDP(
         _ flow: NEAppProxyUDPFlow,
         initialDestination: SOCKSAddress,
         configuration: ProviderConfiguration
     ) async {
-        var control: SOCKSConnection?
-        var event: String
         let routedForTelemetry = configuration.routedDestination(for: initialDestination)
+        let writer = FlowWriter(flow: flow)
+        let direct = DirectDatagramRelay(sink: writer)
+        let dnsResponses = DNSResponseMap(maxEntries: 4096, ttlSeconds: 30)
+        // mDNSResponder keeps its UDP resolver sockets for much longer than an
+        // individual lookup, so port-53 flows carry no association idle limit.
+        // Ordinary UDP keeps the bounded two-minute one, which now retires the
+        // upstream association rather than the flow above it.
+        let association = UDPAssociation(
+            configuration: configuration,
+            sink: writer,
+            dnsResponses: dnsResponses,
+            idleTimeoutSeconds: DatagramFlowContinuity.idleTimeoutSeconds(for: initialDestination))
+        var event: String
         do {
             try Task.checkCancellation()
             try await open(flow)
-            let controlConnection = SOCKSConnection(configuration: configuration)
-            control = controlConnection
-            var relay = try await controlConnection.open(
+            event = await pumpDatagrams(
+                flow,
+                association: association,
+                direct: direct,
                 configuration: configuration,
-                command: 3,
-                destination: SOCKSAddress(host: "0.0.0.0", port: 0),
-                timeoutSeconds: 10)
-            if Self.unspecified(relay.host) || (Self.loopback(relay.host) && !Self.loopback(configuration.upstreamHost)) {
-                relay = SOCKSAddress(host: configuration.upstreamHost, port: relay.port)
-            }
-            guard relay.port > 0, IPv4Address(relay.host) != nil || IPv6Address(relay.host) != nil else {
-                throw SOCKSError.invalidAddress
-            }
-            let datagrams = NWConnection(
-                host: NWEndpoint.Host(relay.host),
-                port: NWEndpoint.Port(rawValue: relay.port)!,
-                using: .udp)
-            let dnsResponses = DNSResponseMap(maxEntries: 4096, ttlSeconds: 30)
-            // mDNSResponder keeps its UDP resolver sockets for much longer
-            // than an individual lookup. Expiring the provider flow underneath
-            // one leaves macOS reusing a socket whose proxy flow no longer
-            // exists; its later sends fail with EINVAL instead of opening a new
-            // flow. Ordinary UDP retains the bounded two-minute association.
-            let deadline = InactivityDeadline(
-                timeoutSeconds: DatagramFlowContinuity.idleTimeoutSeconds(
-                    for: initialDestination))
-            let direct = DirectDatagramRelay()
-            defer { Task { await direct.cancelAll() } }
-            datagrams.start(queue: .global(qos: .userInitiated))
-            event = await withTaskGroup(of: UDPPumpResult.self) { group -> String in
-                group.addTask {
-                    await self.appToUDP(
-                        flow,
-                        connection: datagrams,
-                        configuration: configuration,
-                        dnsResponses: dnsResponses,
-                        deadline: deadline,
-                        direct: direct)
-                }
-                group.addTask {
-                    await self.udpToApp(
-                        datagrams,
-                        flow: flow,
-                        dnsResponses: dnsResponses,
-                        deadline: deadline)
-                }
-                group.addTask {
-                    do {
-                        _ = try await controlConnection.receiveSome()
-                        return .failed("unexpected-control-data")
-                    } catch SOCKSError.closed {
-                        return Task.isCancelled ? .cancelled : .controlEOF
-                    } catch {
-                        return Task.isCancelled ? .cancelled : .failed("control:\(error)")
-                    }
-                }
-                group.addTask { await deadline.waitForExpiry() ? .idleTimeout : .cancelled }
-                guard let result = await group.next() else { return "no-pump-result" }
-                datagrams.cancel()
-                await controlConnection.cancel()
-                group.cancelAll()
-                switch result {
-                case .applicationEOF(let detail):
-                    flow.closeReadWithError(nil)
-                    flow.closeWriteWithError(nil)
-                    return "application-eof:\(detail)"
-                case .networkEOF(let detail):
-                    flow.closeReadWithError(nil)
-                    flow.closeWriteWithError(nil)
-                    return "network-eof:\(detail)"
-                case .controlEOF:
-                    flow.closeReadWithError(nil)
-                    flow.closeWriteWithError(nil)
-                    return "control-eof"
-                case .failed(let detail):
-                    flow.closeReadWithError(SOCKSError.closed)
-                    flow.closeWriteWithError(SOCKSError.closed)
-                    return "failed:\(detail)"
-                case .idleTimeout:
-                    let error = SOCKSError.timeout("UDP flow idle")
-                    flow.closeReadWithError(error)
-                    flow.closeWriteWithError(error)
-                    return "idle-timeout"
-                case .cancelled:
-                    flow.closeReadWithError(nil)
-                    flow.closeWriteWithError(nil)
-                    return "cancelled"
-                }
-            }
+                dnsResponses: dnsResponses)
         } catch is CancellationError {
             event = "cancelled-during-setup"
-            flow.closeReadWithError(nil)
-            flow.closeWriteWithError(nil)
         } catch {
             event = "setup-error:\(error)"
-            flow.closeReadWithError(error)
-            flow.closeWriteWithError(error)
         }
-        if let control { await control.cancel() }
+        await association.shutDown()
+        await direct.cancelAll()
+        await writer.cancel()
+        // Nothing is closed here, with an error or without one. Every way this
+        // loop ends is already a way the flow is over: the application closed
+        // its socket, or the provider is stopping and Network Extension is
+        // tearing its flows down itself. Closing on top of that is the one
+        // thing that turns a recoverable moment into a permanently unusable
+        // application socket, and a close the provider did not perform is a
+        // close macOS can undo.
         recordCompletion(
             flow: flow,
             protocolName: "udp-completion",
@@ -652,6 +601,115 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             routedDestination: routedForTelemetry,
             event: event)
     }
+
+    /// Reads from the flow and places each datagram on the transport that can
+    /// carry it. The single reader of the flow, and the only thing that ends
+    /// it: everything below can fail and be rebuilt without the application
+    /// seeing anything but a lost datagram, which UDP already tolerates.
+    private func pumpDatagrams(
+        _ flow: NEAppProxyUDPFlow,
+        association: UDPAssociation,
+        direct: DirectDatagramRelay,
+        configuration: ProviderConfiguration,
+        dnsResponses: DNSResponseMap
+    ) async -> String {
+        while !Task.isCancelled {
+            let packets: [(Data, Network.NWEndpoint)]
+            do {
+                packets = try await readDatagrams(flow)
+            } catch {
+                if Task.isCancelled { return "cancelled" }
+                let flowError = error as NSError
+                if flowError.domain == "NEAppProxyFlowErrorDomain" {
+                    return "application-eof:\(flowError.code)"
+                }
+                return "application-read:\(error)"
+            }
+            if packets.isEmpty { return "application-eof:empty-read" }
+            for (payload, endpoint) in packets {
+                guard let original = Self.address(endpoint) else { continue }
+                await deliver(
+                    payload,
+                    to: original,
+                    from: flow,
+                    association: association,
+                    direct: direct,
+                    configuration: configuration,
+                    dnsResponses: dnsResponses)
+            }
+        }
+        return "cancelled"
+    }
+
+    /// Sends one datagram, through the upstream when it can carry it and
+    /// directly when it cannot.
+    ///
+    /// The direct route is not a fallback bolted on here: it is the same path
+    /// a flow takes while capture is paused, and the same one a reserved
+    /// destination has always taken. What is new is that an upstream failure
+    /// reaches it too, instead of reaching the application's socket.
+    private func deliver(
+        _ payload: Data,
+        to original: SOCKSAddress,
+        from flow: NEAppProxyUDPFlow,
+        association: UDPAssociation,
+        direct: DirectDatagramRelay,
+        configuration: ProviderConfiguration,
+        dnsResponses: DNSResponseMap
+    ) async {
+        func sendDirect(_ reason: String?) async {
+            await direct.send(payload, to: original)
+            record(flow: flow, destination: original, routedDestination: original)
+            if let reason {
+                Self.logDirectFallback(reason: reason, destination: original)
+            }
+        }
+        if DatagramFlowContinuity.routesDirect(
+            capturePaused: decliningFlows(),
+            destination: original,
+            configuration: configuration) {
+            await sendDirect(nil)
+            return
+        }
+        guard await association.establish() else {
+            await sendDirect("upstream unavailable")
+            return
+        }
+        // The transaction ID is only rewritten once the datagram is actually
+        // going through the upstream. Rewriting first and then falling back
+        // would hand the resolver a query carrying an ID it never chose.
+        let routed = payload.count >= 12
+            ? configuration.routedDestination(for: original)
+            : original
+        let prepared = await dnsResponses.prepare(query: payload, original: original, routed: routed)
+        await association.remember(destination: original)
+        var frame = Data([0, 0, 0])
+        guard let encoded = try? routed.encoded() else { return }
+        frame.append(encoded)
+        frame.append(prepared)
+        if await association.send(frame) {
+            record(flow: flow, destination: original, routedDestination: routed)
+        } else {
+            await sendDirect("upstream send failed")
+        }
+    }
+
+    /// Says once per interval that datagrams are going direct, so an operator
+    /// reading the log sees the degradation without a busy socket turning it
+    /// into a flood.
+    private static func logDirectFallback(reason: String, destination: SOCKSAddress) {
+        let now = Date()
+        directFallbackLock.lock()
+        let due = now.timeIntervalSince(lastDirectFallbackLog) >= 30
+        if due { lastDirectFallbackLog = now }
+        directFallbackLock.unlock()
+        guard due else { return }
+        log.notice(
+            "\(reason, privacy: .public): datagrams for \(destination.host, privacy: .public):\(destination.port, privacy: .public) are going direct, as they would if tunless were not installed. The application's socket is kept open")
+    }
+
+    private static let directFallbackLock = NSLock()
+    private nonisolated(unsafe) static var lastDirectFallbackLog = Date.distantPast
 
     private func record(flow: NEAppProxyFlow, destination: SOCKSAddress, routedDestination: SOCKSAddress) {
         let routed = routedDestination == destination ? nil : "\(routedDestination.host):\(routedDestination.port)"
@@ -805,104 +863,6 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         return .cancelled
     }
 
-    private func appToUDP(
-        _ flow: NEAppProxyUDPFlow,
-        connection: NWConnection,
-        configuration: ProviderConfiguration,
-        dnsResponses: DNSResponseMap,
-        deadline: InactivityDeadline,
-        direct: DirectDatagramRelay
-    ) async -> UDPPumpResult {
-        while !Task.isCancelled {
-            do {
-                let packets = try await readDatagrams(flow)
-                if packets.isEmpty { return .applicationEOF("empty-read") }
-                for (originalPayload, endpoint) in packets {
-                    guard let originalAddress = Self.address(endpoint) else { continue }
-                    // A flow that predates a watchdog pause cannot be handed
-                    // back to the kernel without closing the application's
-                    // socket. Keep it alive and reproduce the direct path here.
-                    // The same route handles an unconnected socket that was
-                    // admitted on one destination and later addresses a
-                    // reserved one. Sending out of the extension is not itself
-                    // captured, and the reply is written back as though the
-                    // flow had never been claimed.
-                    if DatagramFlowContinuity.routesDirect(
-                        capturePaused: decliningFlows(),
-                        destination: originalAddress,
-                        configuration: configuration) {
-                        await direct.send(
-                            originalPayload,
-                            to: originalAddress,
-                            from: flow,
-                            deadline: deadline)
-                        record(flow: flow, destination: originalAddress, routedDestination: originalAddress)
-                        continue
-                    }
-                    let routedAddress = originalPayload.count >= 12
-                        ? configuration.routedDestination(for: originalAddress)
-                        : originalAddress
-                    let payload = await dnsResponses.prepare(
-                        query: originalPayload,
-                        original: originalAddress,
-                        routed: routedAddress)
-                    record(flow: flow, destination: originalAddress, routedDestination: routedAddress)
-                    var frame = Data([0, 0, 0])
-                    frame.append(try routedAddress.encoded())
-                    frame.append(payload)
-                    try await sendDatagram(frame, on: connection)
-                    await deadline.touch()
-                }
-            } catch {
-                return Task.isCancelled ? .cancelled : .failed("application-pump:\(error)")
-            }
-        }
-        return .cancelled
-    }
-
-    private func sendDatagram(_ data: Data, on connection: NWConnection) async throws {
-        try Task.checkCancellation()
-        let gate = AsyncResultGate<Void>()
-        try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                guard gate.install(continuation) else { return }
-                connection.send(content: data, completion: .contentProcessed { error in
-                    if let error { gate.resume(with: .failure(error)) }
-                    else { gate.resume(with: .success(())) }
-                })
-            }
-        }, onCancel: {
-            gate.resume(with: .failure(CancellationError()))
-        })
-    }
-
-    private func udpToApp(
-        _ connection: NWConnection,
-        flow: NEAppProxyUDPFlow,
-        dnsResponses: DNSResponseMap,
-        deadline: InactivityDeadline
-    ) async -> UDPPumpResult {
-        while !Task.isCancelled {
-            do {
-                let frame = try await receiveDatagram(connection)
-                guard frame.count > 3, frame[0] == 0, frame[1] == 0, frame[2] == 0 else { continue }
-                var offset = 3
-                let source = try SOCKSAddress.decode(frame, offset: &offset)
-                let payload = Data(frame[offset...])
-                let restored = await dnsResponses.restore(response: payload, receivedFrom: source)
-                guard let port = NWEndpoint.Port(rawValue: restored.source.port) else { throw SOCKSError.invalidAddress }
-                let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(restored.source.host), port: port)
-                try await writeDatagrams([(restored.payload, endpoint)], to: flow)
-                await deadline.touch()
-            } catch SOCKSError.closed {
-                return Task.isCancelled ? .cancelled : .networkEOF("closed")
-            } catch {
-                return Task.isCancelled ? .cancelled : .failed("network-pump:\(error)")
-            }
-        }
-        return .cancelled
-    }
-
     private static func readData(_ flow: NEAppProxyTCPFlow) async throws -> Data {
         try Task.checkCancellation()
         let gate = AsyncResultGate<Data>()
@@ -972,15 +932,396 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     }
 }
 
+/// Where a datagram addressed to the application is handed over.
+///
+/// The upstream association and the direct relay both produce replies, and
+/// neither should know which kind of flow — or, in a test, which kind of
+/// recorder — is on the other side of them.
+protocol DatagramSink: Sendable {
+    func write(_ payload: Data, from source: SOCKSAddress) async
+}
+
+/// The one writer into a datagram flow.
+///
+/// `NEAppProxyUDPFlow.writeDatagrams` must not be called again until its
+/// completion handler has run, and a flow now has two sources of replies: the
+/// upstream association and the direct relay that carries what the upstream
+/// cannot. Both go through here, so at most one write is ever outstanding and
+/// neither has to know the other exists.
+actor FlowWriter: DatagramSink {
+    private let flow: NEAppProxyUDPFlow
+    private var pending: [(Data, Network.NWEndpoint)] = []
+    private var writing = false
+    private var cancelled = false
+    /// How many replies may wait for the flow to accept them.
+    ///
+    /// Only one write may be outstanding, so a sender faster than the flow
+    /// drains would otherwise grow this without limit and turn one busy socket
+    /// into unbounded memory inside the extension. Past this point the oldest
+    /// reply is dropped: these are datagrams, the sender already tolerates
+    /// loss, and dropping the stale one keeps the answers still worth having.
+    private let maxPending = 64
+    private(set) var droppedReplies = 0
+
+    init(flow: NEAppProxyUDPFlow) {
+        self.flow = flow
+    }
+
+    func write(_ payload: Data, from source: SOCKSAddress) {
+        guard !cancelled, let port = Network.NWEndpoint.Port(rawValue: source.port) else { return }
+        let endpoint = Network.NWEndpoint.hostPort(
+            host: Network.NWEndpoint.Host(source.host), port: port)
+        enqueue((payload, endpoint))
+    }
+
+    func cancel() {
+        cancelled = true
+        pending.removeAll()
+    }
+
+    private func enqueue(_ datagram: (Data, Network.NWEndpoint)) {
+        pending.append(datagram)
+        if pending.count > maxPending {
+            pending.removeFirst(pending.count - maxPending)
+            droppedReplies += 1
+        }
+        guard !writing else { return }
+        writing = true
+        drain()
+    }
+
+    private func drain() {
+        guard !pending.isEmpty, !cancelled else {
+            writing = false
+            return
+        }
+        let batch = pending
+        pending.removeAll(keepingCapacity: true)
+        flow.writeDatagrams(batch) { [weak self] _ in
+            Task { await self?.drain() }
+        }
+    }
+}
+
+/// One SOCKS5 UDP association, rebuilt as often as the upstream needs it to
+/// be.
+///
+/// The association is the disposable half of a datagram flow. It is
+/// established on demand, torn down when the upstream drops it or when nothing
+/// has used it for a while, and established again on the next datagram — all
+/// without the application above ever losing its socket. That inversion is the
+/// point: the old shape tied the two together, so a proxy restart, a node
+/// switch, or ten seconds of a busy mixed port ended the flow, and ending the
+/// flow ended the socket.
+actor UDPAssociation {
+    private enum State {
+        case idle
+        case opening
+        case ready(Live)
+        case failed(Date)
+    }
+
+    private final class Live {
+        let control: SOCKSConnection
+        let datagrams: NWConnection
+        var pump: Task<Void, Never>?
+        var watcher: Task<Void, Never>?
+
+        init(control: SOCKSConnection, datagrams: NWConnection) {
+            self.control = control
+            self.datagrams = datagrams
+        }
+    }
+
+    private let configuration: ProviderConfiguration
+    private let sink: any DatagramSink
+    private let dnsResponses: DNSResponseMap
+    private let idleTimeoutSeconds: TimeInterval
+    private var state = State.idle
+    private var lastActivity = Date()
+    private var idleTimer: Task<Void, Never>?
+    private var shuttingDown = false
+    /// Destinations the application addressed through this association, kept
+    /// only so a flow that genuinely queries the override resolver itself is
+    /// not mistaken for one that never asked. Bounded, and only ever consulted
+    /// for that one address, so a socket talking to hundreds of peers neither
+    /// grows it without limit nor loses replies once it is full.
+    private var addressed: Set<String> = []
+    private let maxAddressed = 32
+    /// How long a failed association waits before the next datagram tries
+    /// again, so an upstream that is down is not dialled once per query.
+    private static let retryBackoffSeconds: TimeInterval = 5
+    private static let handshakeTimeoutSeconds: TimeInterval = 10
+
+    init(
+        configuration: ProviderConfiguration,
+        sink: any DatagramSink,
+        dnsResponses: DNSResponseMap,
+        idleTimeoutSeconds: TimeInterval
+    ) {
+        self.configuration = configuration
+        self.sink = sink
+        self.dnsResponses = dnsResponses
+        self.idleTimeoutSeconds = idleTimeoutSeconds
+    }
+
+    /// Makes sure an association exists, returning whether one is available
+    /// now. A failure is remembered rather than raised: the caller sends the
+    /// datagram directly instead, and asks again later.
+    ///
+    /// The caller waits for the handshake rather than being handed a "not
+    /// yet". Returning early and relaying the first datagram directly would
+    /// send it to the resolver the application named rather than the one the
+    /// operator chose, and short-lived resolver sockets — a browser opens one
+    /// per lookup — would take that path almost every time, quietly turning
+    /// the DNS override off. The wait is bounded by the handshake timeout.
+    func establish() async -> Bool {
+        switch state {
+        case .ready: return true
+        case .opening: return false
+        case let .failed(at):
+            guard Date().timeIntervalSince(at) >= Self.retryBackoffSeconds else { return false }
+        case .idle: break
+        }
+        guard !shuttingDown, !Task.isCancelled else { return false }
+        state = .opening
+        let selected = configuration
+        let control = SOCKSConnection(configuration: selected)
+        do {
+            var relay = try await control.open(
+                configuration: selected,
+                command: 3,
+                destination: SOCKSAddress(host: "0.0.0.0", port: 0),
+                timeoutSeconds: Self.handshakeTimeoutSeconds)
+            if Self.unspecified(relay.host)
+                || (Self.loopback(relay.host) && !Self.loopback(selected.upstreamHost)) {
+                relay = SOCKSAddress(host: selected.upstreamHost, port: relay.port)
+            }
+            guard relay.port > 0,
+                  IPv4Address(relay.host) != nil || IPv6Address(relay.host) != nil,
+                  let port = NWEndpoint.Port(rawValue: relay.port)
+            else { throw SOCKSError.invalidAddress }
+            // The provider may have been told to stop while the handshake was
+            // in flight, and an association nobody will read from is a leak.
+            guard !shuttingDown else {
+                await control.cancel()
+                state = .idle
+                return false
+            }
+            let datagrams = NWConnection(
+                host: NWEndpoint.Host(relay.host), port: port, using: .udp)
+            datagrams.start(queue: .global(qos: .userInitiated))
+            let live = Live(control: control, datagrams: datagrams)
+            state = .ready(live)
+            lastActivity = Date()
+            live.pump = Task { [weak self] in await self?.receiveLoop(live) }
+            live.watcher = Task { [weak self] in await self?.watchControl(live) }
+            startIdleTimer()
+            return true
+        } catch {
+            await control.cancel()
+            state = shuttingDown ? .idle : .failed(Date())
+            return false
+        }
+    }
+
+    func remember(destination: SOCKSAddress) {
+        guard addressed.count < maxAddressed else { return }
+        addressed.insert("\(destination.host):\(destination.port)")
+    }
+
+    func send(_ frame: Data) async -> Bool {
+        guard case let .ready(live) = state else { return false }
+        lastActivity = Date()
+        do {
+            try await Self.send(frame, on: live.datagrams)
+            return true
+        } catch {
+            noteUpstreamEnded(live)
+            return false
+        }
+    }
+
+    func shutDown() {
+        shuttingDown = true
+        idleTimer?.cancel()
+        idleTimer = nil
+        tearDown(remembering: .idle)
+    }
+
+    /// What the association is doing, for tests that have to observe a rebuild
+    /// rather than infer one.
+    var isReady: Bool {
+        if case .ready = state { return true }
+        return false
+    }
+
+    /// Watches the association's control connection.
+    ///
+    /// A SOCKS5 UDP association lives exactly as long as the TCP connection
+    /// that requested it, so the proxy closing that connection — a restart, a
+    /// node switch, its own idle limit — retires the relay whether or not
+    /// anything else notices. Nothing else does notice: datagrams to a dead
+    /// relay are still accepted locally, so without this the flow would go on
+    /// sending into a socket nobody is reading. Any traffic on the control
+    /// connection means the same thing, since a well-behaved upstream sends
+    /// none.
+    private func watchControl(_ live: Live) async {
+        _ = try? await live.control.receiveSome()
+        guard !Task.isCancelled else { return }
+        noteUpstreamEnded(live)
+    }
+
+    /// Carries replies up into the flow until the association ends.
+    private func receiveLoop(_ live: Live) async {
+        while !Task.isCancelled {
+            do {
+                let frame = try await Self.receive(on: live.datagrams)
+                guard frame.count > 3, frame[0] == 0, frame[1] == 0, frame[2] == 0 else { continue }
+                var offset = 3
+                let source = try SOCKSAddress.decode(frame, offset: &offset)
+                let payload = Data(frame[offset...])
+                await deliverReply(payload, from: source)
+            } catch {
+                noteUpstreamEnded(live)
+                return
+            }
+        }
+    }
+
+    /// Hands one reply up, unless nothing on this flow can have asked for it.
+    ///
+    /// The only replies worth withholding are the ones that arrive from the
+    /// resolver the DNS override rewrites to and answer no query it rewrote:
+    /// those carry a transaction ID the application never chose, from an
+    /// address it never wrote to, and the application's own resolver traffic
+    /// went out under different identifiers entirely. Everything else is
+    /// delivered. In particular an unconnected socket may address more peers
+    /// than any bookkeeping here should try to remember, and dropping a reply
+    /// because a set filled up would break a working application to tidy up
+    /// after a case that cannot occur on it.
+    private func deliverReply(_ payload: Data, from source: SOCKSAddress) async {
+        lastActivity = Date()
+        let restored = await dnsResponses.restore(response: payload, receivedFrom: source)
+        if !restored.matched, isOverrideResolver(source),
+           !addressed.contains("\(source.host):\(source.port)") {
+            return
+        }
+        await sink.write(restored.payload, from: restored.source)
+    }
+
+    private func isOverrideResolver(_ source: SOCKSAddress) -> Bool {
+        guard let host = configuration.dnsHost, let port = configuration.dnsPort else { return false }
+        return source.port == port && source.host == host
+    }
+
+    private func noteUpstreamEnded(_ live: Live) {
+        guard case let .ready(current) = state, current === live else { return }
+        tearDown(remembering: .failed(Date()))
+    }
+
+    /// Retires an association that nothing has used, freeing the upstream
+    /// connection and the relay socket while leaving the flow — and therefore
+    /// the application's socket — untouched. The next datagram opens a new one.
+    private func startIdleTimer() {
+        guard idleTimeoutSeconds > 0 else { return }
+        idleTimer?.cancel()
+        idleTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let remaining = await self.remainingIdleTime()
+                if remaining <= 0 {
+                    await self.retireIfIdle()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            }
+        }
+    }
+
+    private func remainingIdleTime() -> TimeInterval {
+        guard idleTimeoutSeconds > 0 else { return .greatestFiniteMagnitude }
+        return idleTimeoutSeconds - Date().timeIntervalSince(lastActivity)
+    }
+
+    private func retireIfIdle() {
+        guard case .ready = state, remainingIdleTime() <= 0 else { return }
+        tearDown(remembering: .idle)
+    }
+
+    private func tearDown(remembering next: State) {
+        if case let .ready(live) = state {
+            live.pump?.cancel()
+            live.watcher?.cancel()
+            live.datagrams.cancel()
+            let control = live.control
+            Task { await control.cancel() }
+        }
+        state = next
+        idleTimer?.cancel()
+        idleTimer = nil
+    }
+
+    private static func send(_ data: Data, on connection: NWConnection) async throws {
+        try Task.checkCancellation()
+        let gate = AsyncResultGate<Void>()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard gate.install(continuation) else { return }
+                connection.send(content: data, completion: .contentProcessed { error in
+                    if let error { gate.resume(with: .failure(error)) }
+                    else { gate.resume(with: .success(())) }
+                })
+            }
+        }, onCancel: {
+            gate.resume(with: .failure(CancellationError()))
+        })
+    }
+
+    private static func receive(on connection: NWConnection) async throws -> Data {
+        try Task.checkCancellation()
+        let gate = AsyncResultGate<Data>()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                guard gate.install(continuation) else { return }
+                connection.receiveMessage { data, _, _, error in
+                    if let error { gate.resume(with: .failure(error)) }
+                    else if let data { gate.resume(with: .success(data)) }
+                    else { gate.resume(with: .failure(SOCKSError.closed)) }
+                }
+            }
+        }, onCancel: {
+            gate.resume(with: .failure(CancellationError()))
+        })
+    }
+
+    private static func unspecified(_ host: String) -> Bool { host == "0.0.0.0" || host == "::" }
+
+    private static func loopback(_ host: String) -> Bool {
+        if host.lowercased() == "localhost" { return true }
+        if let address = IPv4Address(host) { return address.rawValue.first == 127 }
+        if let address = IPv6Address(host) { return address.rawValue == IPv6Address("::1")!.rawValue }
+        return false
+    }
+}
+
 /// The lifecycle rules that keep a macOS UDP socket usable across capture
 /// transitions.
 ///
 /// Network Extension owns the proxy flow, but the application still owns the
-/// socket above it. In particular, mDNSResponder reuses resolver sockets. An
-/// error or idle timeout below one does not make mDNSResponder replace it; the
-/// next send fails with EINVAL. Datagram flows therefore stay admitted while
-/// capture is paused and send directly for that interval, and port-53 flows do
-/// not get the generic association idle timeout.
+/// socket above it, and the two do not have the same lifetime. Closing a
+/// datagram flow does not hand its socket back to the kernel and does not get
+/// it a replacement flow: the socket is finished, and every later send on it
+/// fails locally — EPIPE on an ordinary connected socket, EINVAL on the
+/// resolver sockets mDNSResponder holds. mDNSResponder never replaces one, so
+/// that ends name resolution for the client the socket belongs to while the
+/// rest of the host keeps resolving.
+///
+/// So a datagram flow is closed for exactly one reason: the application
+/// finished with its socket. Capture pauses, upstream failures, and idle
+/// expiry all act on the transport underneath instead, which the application
+/// cannot see. Port-53 flows additionally carry no association idle limit,
+/// since a resolver socket is idle between lookups by design.
 enum DatagramFlowContinuity {
     static let survivesCapturePause = true
     private static let ordinaryIdleTimeoutSeconds: TimeInterval = 120
@@ -1036,6 +1377,13 @@ actor DNSResponseMap {
     struct RestoredResponse {
         let payload: Data
         let source: SOCKSAddress
+        /// Whether this response answered a query the map had rewritten.
+        ///
+        /// A miss is not automatically a response to throw away — a flow that
+        /// asked its own resolver directly was never rewritten in the first
+        /// place — but it is the difference the caller needs in order to tell
+        /// those apart from a datagram nothing on this flow asked for.
+        let matched: Bool
     }
 
     private struct Entry {
@@ -1087,19 +1435,20 @@ actor DNSResponseMap {
 
     func restore(response: Data, receivedFrom source: SOCKSAddress) -> RestoredResponse {
         guard response.count >= 12, let translatedID = Self.identifier(in: response) else {
-            return RestoredResponse(payload: response, source: source)
+            return RestoredResponse(payload: response, source: source, matched: false)
         }
         let now = Date()
         guard let entry = entries[translatedID], now < entry.expires, entry.routed == source else {
             if let entry = entries[translatedID], now >= entry.expires {
                 entries.removeValue(forKey: translatedID)
             }
-            return RestoredResponse(payload: response, source: source)
+            return RestoredResponse(payload: response, source: source, matched: false)
         }
         entries.removeValue(forKey: translatedID)
         return RestoredResponse(
             payload: Self.replacingIdentifier(in: response, with: entry.originalID),
-            source: entry.original)
+            source: entry.original,
+            matched: true)
     }
 
     func outstandingCount() -> Int { entries.count }
