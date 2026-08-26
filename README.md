@@ -359,6 +359,8 @@ open work is listed in
 | [docs/MACOS.md](docs/MACOS.md) | Network Extension build, signing, Clash Verge preset, recovery |
 | [docs/WINDOWS.md](docs/WINDOWS.md) | WFP driver design, build, and release gates |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Preflight checks, health API, capacity, DNS override, metadata, recovery |
+| [docs/FLOW_ATTRIBUTION.md](docs/FLOW_ATTRIBUTION.md) | What the agent knows about the process behind a flow, and what it refuses to guess |
+| [docs/REDIRECT_BACKEND.md](docs/REDIRECT_BACKEND.md) | The netfilter fallback for kernels the eBPF backend cannot run on |
 | [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md) | Dated performance and gate evidence, including what is not demonstrated |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Assets, trust boundaries, risks, and explicit non-goals |
 | [docs/RELEASING.md](docs/RELEASING.md) · [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) · [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) | Release procedure, review gates, and the notes for the version being prepared (maintainers) |

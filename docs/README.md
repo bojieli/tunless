@@ -19,6 +19,12 @@ lives in [BLUEPRINT.md](../BLUEPRINT.md), the design of record.
   (source-complete, not release-qualified).
 - [Operations](OPERATIONS.md) — preflight checks, health API, DNS override and
   observation, process metadata, capacity, and recovery.
+- [Flow attribution](FLOW_ATTRIBUTION.md) — what the agent can say about the
+  process behind a flow, what it deliberately refuses to guess, and the wire
+  shape a consumer reads.
+- [The netfilter fallback](REDIRECT_BACKEND.md) — capturing on a host whose
+  kernel cannot run the eBPF backend, what you give up by doing so, and why it
+  is netfilter rather than a tunnel device.
 
 ## Evaluating the project
 
