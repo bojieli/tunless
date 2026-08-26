@@ -13,6 +13,10 @@ use ISO 8601.
   separation rather than an exception list, and the remaining gap, that an
   agent can't capture other pods in its own QoS class this way, is reported
   rather than worked around. See [docs/CONTAINERS.md](docs/CONTAINERS.md).
+- The metadata endpoint's JSON shape is pinned by a test, since consumers live
+  in other repositories and decode it by hand. Renaming a field would otherwise
+  break one silently: the lookup keeps returning 200 and the consumer keeps
+  reading zeroes. See [docs/FLOW_ATTRIBUTION.md](docs/FLOW_ATTRIBUTION.md).
 - Per-flow workload attribution on Linux. The cgroup a captured process belongs
   to resolves to a Kubernetes pod UID, a container ID, or a systemd unit, and
   travels alongside the existing process fields. We parse both cgroup drivers,

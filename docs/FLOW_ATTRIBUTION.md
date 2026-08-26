@@ -47,6 +47,37 @@ fields empty. Neither is an error, and neither makes the flow less valid.
 `workload.FromCgroupPath` parses something, redo it yourself from
 `Workload.Cgroup`. None of our parsing decisions are final.
 
+## The wire shape
+
+Consumers decode these bytes by hand, so the JSON is the contract rather than
+the Go type. `GET /v1/flow?source_port=N` over the Unix socket returns:
+
+```json
+{
+  "process": {
+    "PID": 991,
+    "Path": "/app/voice-gateway",
+    "SigningID": "",
+    "CgroupID": 77,
+    "Workload": {
+      "kind": "kubernetes",
+      "pod_uid": "1a2b3c4d-5e6f-7081-92a3-b4c5d6e7f809",
+      "container_id": "9f8e7d6c5b4a39281706152433425160",
+      "cgroup": "/kubepods.slice/..."
+    }
+  },
+  "expires": "2026-08-26T11:27:03+08:00"
+}
+```
+
+A flow the agent doesn't know returns 404, which is ordinary rather than an
+error: a connection it never captured, or one it has already forgotten.
+
+`TestWireShapeForConsumers` pins this from the producing side. Renaming a field
+or moving one under a different object would otherwise break a consumer
+silently, since the lookup keeps returning 200 and the consumer keeps reading
+zeroes.
+
 ## Why you'd want this
 
 A transport downstream of `tunless` has to decide what kind of flow it's
