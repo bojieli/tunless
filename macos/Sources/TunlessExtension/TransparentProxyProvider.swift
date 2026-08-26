@@ -35,6 +35,9 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     private var pathMonitor: NWPathMonitor?
     private var pathIsSatisfied = true
     private var rejectedFlows: UInt64 = 0
+    /// The resolver capture last carried a port-53 flow to, when no override is
+    /// configured. See `DNSHealthProbe.CarriedResolver`.
+    private var carriedResolver: DNSHealthProbe.CarriedResolver?
     private let healthQueue = DispatchQueue(label: "com.bojieli.tunless.capture-health")
     /// How often the provider re-proves that the upstream still resolves.
     private static let healthIntervalSeconds = 30
@@ -162,12 +165,13 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let satisfied = pathIsSatisfied
         let probation = health.probationDecision(at: Date())
         let stoppingNow = stopping
+        let carried = carriedResolver
         lock.unlock()
         guard !stoppingNow else { return }
         apply(probation)
         Task { [weak self] in
             guard let self else { return }
-            let outcome = await DNSHealthProbe.run(configuration: selected)
+            let outcome = await DNSHealthProbe.run(configuration: selected, carried: carried)
             self.apply(self.observeHealth(outcome: outcome, pathSatisfied: satisfied))
         }
     }
@@ -325,6 +329,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let routeHost = SOCKSAddress.usableHostname(tcp.remoteHostname) ?? originalDestination.host
         let requestedDestination = SOCKSAddress(host: routeHost, port: originalDestination.port)
         let routedDestination = selected.routedDestination(for: requestedDestination)
+        noteCarriedResolver(originalDestination, overUDP: false)
         guard launch(flow: flow, operation: { [weak self] in
             await self?.handleTCP(
                 tcp,
@@ -688,6 +693,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         frame.append(encoded)
         frame.append(prepared)
         if await association.send(frame) {
+            noteCarriedResolver(original, overUDP: true)
             record(flow: flow, destination: original, routedDestination: routed)
         } else {
             await sendDirect("upstream send failed")
@@ -747,6 +753,21 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         lock.lock()
         if telemetry.count >= 4096 { telemetry.removeFirst(1024) }
         telemetry.append(item)
+        lock.unlock()
+    }
+
+    /// Remembers a resolver capture is relaying on an application's behalf.
+    ///
+    /// Only recorded while no override is configured. With one, the probe
+    /// already knows which resolver to ask, and that resolver is reserved from
+    /// capture so its flows never arrive here in the first place.
+    private func noteCarriedResolver(_ destination: SOCKSAddress, overUDP: Bool) {
+        guard destination.port == 53 else { return }
+        lock.lock()
+        if configuration.dnsHost == nil {
+            carriedResolver = DNSHealthProbe.CarriedResolver(
+                address: destination, overUDP: overUDP)
+        }
         lock.unlock()
     }
 

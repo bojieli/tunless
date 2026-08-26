@@ -412,7 +412,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         // it does not. Preflight tested the upstream directly; only this check
         // exercises the provider itself, and a stall here is what leaves a host
         // unable to resolve anything.
-        guard !arguments.skipVerify, configuration.dnsHost != nil else {
+        // Verification does not depend on the DNS override. Turning that off
+        // preserves each application's resolver; it does not stop capture
+        // relaying the query, so the upstream can still take resolution down
+        // host-wide and this is still the only check that would notice. Only
+        // an explicit --skip-verify opts out.
+        guard !arguments.skipVerify else {
             // The provider is holding capture on probation and disables it
             // unless something confirms resolution. Nothing here is going to,
             // so say so explicitly rather than letting the window expire under
