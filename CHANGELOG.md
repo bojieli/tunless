@@ -36,7 +36,10 @@ use ISO 8601.
   rest of the host resolved normally and made it look like a problem with the
   site. The upstream association is now the disposable half: it is retired and
   rebuilt underneath a flow that stays open, datagrams go out directly while it
-  cannot carry them, and the application's socket is never touched. Observed on
+  cannot carry them, and the application's socket is never touched. The
+  ten-second guard around opening a flow follows the same rule: it closes
+  streams, so the application retries directly, and leaves datagram flows
+  alone. Observed on
   a live host as `sending ... failed: [22: Invalid argument]` repeating for
   hours after a single pause, with one application's lookups timing out at
   thirty seconds and everything else unaffected.
