@@ -321,12 +321,27 @@ which is the exposure the DNS override exists to remove.
 
 Flows already admitted need separate treatment. TCP streams cannot change
 their route in place, so the provider closes them and lets applications retry
-directly. UDP sockets can outlive a Network Extension transition — notably the
-resolver sockets owned by `mDNSResponder`. The provider therefore leaves their
-flows open and sends new datagrams directly while paused, then returns them to
-SOCKS when the probe succeeds. Error-closing those flows made macOS retain a
-resolver socket whose later sends failed with `EINVAL`, defeating the recovery
-the watchdog was meant to provide.
+directly. Datagram flows are never closed by the provider at all.
+
+That rule is absolute, and it is the one this platform got wrong for longest.
+A UDP socket outlives the flow underneath it, and macOS neither re-captures
+such a socket nor releases it back to the kernel: once the provider has closed
+its flow, every later send on that socket fails locally — `EPIPE` on an
+ordinary connected socket, `EINVAL` on the resolver sockets `mDNSResponder`
+holds. `mDNSResponder` keeps one of those per delegated client and does not
+replace it, so a single closed flow ends name resolution for whichever
+application owned that socket, while every other application on the host keeps
+resolving normally and hides the failure. Recovery took a `killall
+mDNSResponder`; nothing tunless did could undo it.
+
+So the association is what fails, never the flow. A capture pause, a proxy
+restart, a node switch, a SOCKS handshake that times out on a busy mixed port,
+an idle association past its two-minute limit — each of those tears down the
+upstream half and leaves the flow untouched. Datagrams go out directly for as
+long as the upstream cannot carry them, exactly as they would if tunless were
+not installed, and the association is rebuilt underneath the same flow when
+the upstream answers again. Port-53 flows additionally carry no idle limit at
+all, since a resolver socket is idle between lookups by design.
 
 Sleep is excluded from the evidence. A machine going to sleep tears its network
 down and fails every probe, so the provider suspends the watchdog on
@@ -648,10 +663,14 @@ authoritative record and the configured DNS server are not the missing pieces.
 curl is blocked in the macOS `getaddrinfo` path through `mDNSResponder`; `dig`
 opened a separate socket and did not test that state.
 
-Affected older Tunless builds could leave `mDNSResponder` reusing a UDP socket
-after its transparent-proxy flow was error-closed by a watchdog pause or idle
-expiry. The unified log identifies that state with repeated messages like
-`sending ... failed: [22: Invalid argument]`:
+Builds up to and including 1.0.8/14 could leave `mDNSResponder` reusing a UDP
+socket after its transparent-proxy flow was closed by a watchdog pause, an
+upstream failure, or idle expiry. Because that daemon holds one resolver socket
+per delegated client, the damage is per-application: one program's lookups hang
+for thirty seconds and then fail while every other program on the host resolves
+normally, which reads like a problem with the site rather than with DNS. The
+unified log identifies the state with repeated messages like `sending ...
+failed: [22: Invalid argument]`:
 
 ```console
 /usr/bin/log show --last 10m --style compact \
@@ -666,11 +685,12 @@ sudo killall mDNSResponder
 curl --connect-timeout 10 -v https://api.anthropic.com/
 ```
 
-Verify that the PID changed with `pgrep -x mDNSResponder` if necessary. Current
-builds keep admitted UDP flows alive and direct while capture is paused, end
-them cleanly on provider shutdown, and exempt port-53 flows from the ordinary
-two-minute UDP idle limit. Upgrade after recovery; otherwise another pause can
-reproduce the stale resolver state.
+Verify that the PID changed with `pgrep -x mDNSResponder` if necessary. Builds
+from 1.0.8/15 never close a datagram flow: the upstream association is what is
+retired and rebuilt, so a pause, an upstream failure, or an idle interval
+cannot reach the application's socket. Upgrade after recovery, and confirm with
+`systemextensionsctl list` that the build actually changed — otherwise another
+pause reproduces the stale resolver state.
 
 ## DNS override
 
@@ -692,9 +712,9 @@ original DNS destination while continuing to proxy the flow.
 
 The 30-second expiry above applies to transaction-ID attribution, not to the
 macOS resolver flow. Port-53 UDP flows remain open for the lifetime chosen by
-`mDNSResponder`; applying the generic two-minute UDP association idle timeout
-under that socket can make the next system lookup fail locally instead of
-opening a replacement flow.
+`mDNSResponder`, and a reply that matches no outstanding rewritten query is
+dropped unless the application actually addressed the server it came from,
+rather than being handed up under an address that application never wrote to.
 
 The resolver's own address and port are reserved from capture while the
 override is on, so the upstream can reach it to answer the queries tunless
