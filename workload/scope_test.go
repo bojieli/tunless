@@ -114,3 +114,18 @@ func TestNonKubernetesNodeSaysSo(t *testing.T) {
 		t.Error("a non-kubernetes node returned scopes without error")
 	}
 }
+
+// On Windows the scope is built by joining a filesystem root with the host
+// separator, so it arrives with backslashes while the cgroup path from /proc
+// still uses forward slashes. The comparison has to survive that, and this
+// test runs on every host rather than only on the one where it would fail.
+func TestContainmentSurvivesHostSeparators(t *testing.T) {
+	root := `C:\Users\RUNNER~1\AppData\Local\Temp\TestScope`
+	scope := root + `\kubepods.slice`
+	if containsSelf(root, scope, "/system.slice/tunless.service") {
+		t.Error("a scope with host separators wrongly contained an outside process")
+	}
+	if !containsSelf(root, scope, "/kubepods.slice/kubepods-burstable.slice/pod.scope") {
+		t.Error("a scope with host separators did not contain a process inside it")
+	}
+}

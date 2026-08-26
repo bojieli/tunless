@@ -71,9 +71,20 @@ func KubernetesRoot(fsRoot string) (Scope, bool) {
 // `/kubepods` must not be judged to contain `/kubepods-other`, and a plain
 // prefix test says it does.
 func containsSelf(fsRoot, scope, selfCgroup string) bool {
+	// Cgroup paths out of /proc always use forward slashes, but fsRoot is
+	// joined with the host's separator, so on Windows the scope arrives with
+	// backslashes and nothing matches.
+	//
+	// The normalization replaces backslashes directly rather than calling
+	// filepath.ToSlash, which is a no-op on any host whose separator is
+	// already "/". That would make this correct on Windows and untestable
+	// anywhere else, which is the wrong trade for a comparison this load
+	// bearing.
+	fsRoot = slashed(fsRoot)
+	scope = slashed(scope)
 	rel := strings.TrimPrefix(scope, strings.TrimSuffix(fsRoot, "/"))
 	rel = "/" + strings.Trim(rel, "/")
-	self := "/" + strings.Trim(selfCgroup, "/")
+	self := "/" + strings.Trim(slashed(selfCgroup), "/")
 	if rel == "/" {
 		return true // the whole hierarchy contains everything
 	}
@@ -135,3 +146,7 @@ func SelfCgroup() string {
 	}
 	return cgroupV2Path(string(b))
 }
+
+// slashed normalizes a path to forward slashes on every host, so the same
+// input produces the same answer whatever built it.
+func slashed(p string) string { return strings.ReplaceAll(p, `\`, "/") }
