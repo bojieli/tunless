@@ -78,6 +78,16 @@ removes reachability instead of adding a route, so no filter can put them back
 — `--include-destination 0.0.0.0/0` included. The upstream and the trusted
 resolver are reserved alongside them, for the loop described below.
 
+How much of the resolver is reserved differs by platform, and it is worth
+knowing which one you are on. macOS reserves the endpoint: the resolver's
+address at the port capture rewrites to, so a connection to that same address
+on another port is still captured. Linux reserves the address, at every port,
+because its exclusions are prefixes and carry no port. Loop prevention only
+needs port 53, so the Linux rule is the broader of the two: if the resolver's
+address also serves something you meant to proxy — DNS-over-HTTPS on the same
+IP is the usual case — that traffic goes direct on Linux. Choosing a resolver
+address you do not otherwise talk to keeps the two rules equivalent.
+
 ## DNS override
 
 Captured TCP and UDP queries whose original destination port is 53 are sent to
