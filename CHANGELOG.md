@@ -16,7 +16,10 @@ use ISO 8601.
   second TCP/IP stack in userspace. It gives up fail-open, since the rule
   outlives the process, and it cannot attribute processes, so process filters
   are refused rather than silently matching nothing. `auto` never selects it.
-  See [docs/REDIRECT_BACKEND.md](docs/REDIRECT_BACKEND.md).
+  See [docs/REDIRECT_BACKEND.md](docs/REDIRECT_BACKEND.md), which also records
+  why there is no third, TUN-based backend: the host it would serve, one that
+  can create a tunnel device but cannot filter, has not been produced, and a
+  virtual interface is a permanent non-goal for this project.
 - `--cgroup kubernetes` picks a node's pod hierarchy for capture and refuses
   the setups that would capture the agent's own traffic. A DaemonSet is itself
   a pod, so attaching at the pod root loops. Loop avoidance stays cgroup

@@ -43,8 +43,21 @@ and `SO_ORIGINAL_DST` says where it was headed. That's strictly less machinery
 for the same result on any host that has netfilter, which is nearly every host
 that has `NET_ADMIN`.
 
-TUN would still be the answer where you can create a tunnel device but cannot
-filter, which is unusual. It isn't built.
+That leaves one case uncovered: a host where you can create a tunnel device but
+cannot filter. We looked for it and could not find a realistic one. `NET_ADMIN`
+grants both, and a kernel without netfilter is not a kernel this agent runs on
+for other reasons.
+
+So a TUN backend is a decided no rather than a pending item. Two backends cover
+the hosts that exist: eBPF where `CAP_BPF` is available, netfilter where only
+`NET_ADMIN` is. Adding a third would mean a second TCP/IP stack in userspace,
+in the latency path, for a host nobody has produced, and it would put a virtual
+interface inside a project whose [BLUEPRINT](../BLUEPRINT.md) lists not having
+one as a permanent non-goal.
+
+If you have that host, open an issue with the kernel version and the
+capabilities you can grant. That is the evidence that would reopen this, and it
+is the only thing that would.
 
 ## Using it
 
