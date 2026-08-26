@@ -71,36 +71,19 @@ That is the whole idea. The rest follows from it:
 If you want the longer argument, including what was rejected and why, that is
 in [BLUEPRINT.md](BLUEPRINT.md).
 
-## The other place this turned out to matter
+## The same argument on a fleet
 
-The story above is one machine and one person's proxy. The same argument gets
-stronger on a fleet, and that is where `tunless` has been doing most of its
-recent work.
+Most of the recent work has been for a different reader: a cluster calling
+inference in another region. Those calls come from containers and vendor SDKs
+nobody is going to reconfigure, and TUN is worse on a node than on a laptop,
+because a capture agent is itself a pod and attaching at the pod root captures
+its own upstream connection.
 
-Inference gets deployed across regions because GPU capacity concentrates in a
-few of them, so an application in one region calls speech recognition or a
-language model in another. The calls come from containers and vendor SDKs
-nobody is going to reconfigure, and setting `HTTPS_PROXY` in every one of them
-is a migration rather than a config change. A TUN device on the node is worse
-here than on a laptop: a capture agent is itself a pod, so attaching at the pod
-root captures the agent's own connection to its upstream and re-captures every
-packet it forwards.
-
-Socket-layer capture answers both. `--cgroup` scopes it to the workloads you
-mean and leaves the agent outside, which is loop avoidance by construction
-rather than by an exception list that a misconfiguration drops first.
-
-There is a second thing the socket layer knows that turns out to matter more
-than we expected. A transport carrying this traffic has to decide what each
-flow is: whether to spend parity on it, whether to give it its own lane. From
-byte counts alone that decision cannot be made, because a speech request and
-the first slice of a checkpoint pull are the same size, and inferring it from
-behaviour takes about a second, by which point a 200ms request has been over
-for 800ms. The kernel already knows which process opened the flow, and on a
-host running containers that process sits in a cgroup naming its pod. `tunless`
-hands that along, so the transport knows what it is carrying before it carries
-anything. See [flow attribution](docs/FLOW_ATTRIBUTION.md) and
-[containers](docs/CONTAINERS.md).
+`--cgroup` scopes capture to the workloads you mean and leaves the agent
+outside. The socket layer also knows which process opened each flow, which is
+how a transport downstream tells a speech request from the first slice of a
+checkpoint pull: they are the same size, so byte counts cannot. See [flow
+attribution](docs/FLOW_ATTRIBUTION.md) and [containers](docs/CONTAINERS.md).
 
 ## How it works
 
