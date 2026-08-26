@@ -59,6 +59,28 @@ If you have that host, open an issue with the kernel version and the
 capabilities you can grant. That is the evidence that would reopen this, and it
 is the only thing that would.
 
+## Checking a host before you commit to it
+
+```sh
+tunless --backend redirect --listen 127.0.0.1:1080 --upstream 127.0.0.1:7890 --check
+```
+
+Four checks, and each one is a way this backend goes wrong in production rather
+than a way it goes wrong in general:
+
+- **redirect_listener** fails on anything but a literal loopback address. A
+  routable listener is an open proxy, because this backend cannot tell a
+  redirected connection from one that arrived on its own.
+- **redirect_filters** fails if `--include-process` or `--exclude-process` is
+  set, matching the refusal at startup. A filter that silently matches nothing
+  is worse than one that is refused.
+- **so_original_dst** asks the kernel for the option on a socket that was never
+  redirected. `ENOENT` is the answer that proves support: the option is
+  understood and this connection has no original destination.
+- **redirect_rule** looks for a rule mentioning the listener's port. This is a
+  warning rather than a failure, because the rule belongs to the operator and
+  may be installed after the check.
+
 ## Using it
 
 The rule is yours to install and remove. This backend does not install it,

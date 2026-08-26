@@ -253,7 +253,7 @@ func run() error {
 		}
 		checkCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		return runDoctor(checkCtx, backendName, cgroupPath, networkNamespace, filter, client, target)
+		return runDoctor(checkCtx, backendName, listen, cgroupPath, networkNamespace, filter, client, target)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

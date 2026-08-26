@@ -29,7 +29,7 @@ type doctorReport struct {
 	Checks    []doctorCheck `json:"checks"`
 }
 
-func runDoctor(ctx context.Context, backendName, cgroupPath, networkNamespace string, filter tunless.Filter, client *socks5.Client, target netip.AddrPort) error {
+func runDoctor(ctx context.Context, backendName, listen, cgroupPath, networkNamespace string, filter tunless.Filter, client *socks5.Client, target netip.AddrPort) error {
 	report := doctorReport{
 		Version:   version,
 		OS:        runtime.GOOS,
@@ -37,7 +37,7 @@ func runDoctor(ctx context.Context, backendName, cgroupPath, networkNamespace st
 		CheckedAt: time.Now().UTC(),
 		OK:        true,
 	}
-	report.Checks = append(report.Checks, doctorPlatform(ctx, backendName, cgroupPath, networkNamespace, filter)...)
+	report.Checks = append(report.Checks, doctorPlatform(ctx, backendName, listen, cgroupPath, networkNamespace, filter)...)
 	result, err := client.Check(ctx, target)
 	if err != nil {
 		report.Checks = append(report.Checks, doctorCheck{Name: "socks5_upstream", Status: "fail", Detail: err.Error()})

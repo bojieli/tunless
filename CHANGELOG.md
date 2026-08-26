@@ -5,6 +5,17 @@ use ISO 8601.
 
 ## Unreleased
 
+### Fixed
+
+- `doctor` reported "privilege-free backend selected" for `--backend redirect`,
+  which is the answer every backend that is not the eBPF one received. That
+  backend is the opposite of privilege-free: it wants `NET_ADMIN` and a
+  netfilter rule somebody else installed. It now checks what the backend
+  actually needs, which is a loopback listener, no process filters, a kernel
+  that answers `SO_ORIGINAL_DST`, and a rule pointing at the listener. The rule
+  is reported as a warning rather than a failure, because it may legitimately
+  be installed after the check runs.
+
 ### Added
 
 - `--backend redirect` captures flows that netfilter has already redirected to
