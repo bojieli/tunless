@@ -1,14 +1,14 @@
 # Flow attribution
 
-Capturing at the socket layer knows more about a flow than a proxy protocol can
-carry. SOCKS5 expresses a destination and nothing else; the kernel handed over
-the calling process, and on a host running containers that process sits in a
-cgroup that names the pod or container it belongs to.
+Capturing at the socket layer tells us more about a flow than a proxy protocol
+can carry. SOCKS5 gives you a destination and nothing else. The kernel already
+handed us the calling process, and on a host running containers that process
+sits in a cgroup that names the pod or container it belongs to.
 
-This document describes what `tunless` makes available about a flow, and the
-terms on which a consumer may rely on it.
+This document lists what `tunless` makes available about a flow, and what you
+can rely on.
 
-## What is available
+## What's available
 
 | Field | Source | Present when |
 |---|---|---|
@@ -16,48 +16,50 @@ terms on which a consumer may rely on it.
 | `Path` | `/proc/PID/exe` | the process still exists at lookup |
 | `SigningID` | code signature | macOS |
 | `CgroupID` | the capture hook | Linux |
-| `Workload.Kind` | cgroup path | Linux, one of `kubernetes`, `container`, `systemd`, `unknown` |
+| `Workload.Kind` | cgroup path | Linux; one of `kubernetes`, `container`, `systemd`, `unknown` |
 | `Workload.PodUID` | cgroup path | the process is in a Kubernetes pod |
 | `Workload.ContainerID` | cgroup path | the process is in a container |
 | `Workload.Unit` | cgroup path | the process is in a systemd unit |
 | `Workload.Cgroup` | `/proc/PID/cgroup` | Linux |
 
-## What is deliberately absent
+## What we deliberately don't provide
 
 **A pod's namespace and name.** The cgroup path carries the pod's UID and the
-container's ID, and nothing else. Namespace and name live in the API server.
-Reporting the UID and calling it a UID is accurate; deriving a name for it
-would be a guess that reads like a fact, and a consumer cannot tell the two
-apart after the fact.
+container's ID. Namespace and name live in the API server. We report the UID
+and call it a UID. Deriving a name for it would be a guess, and once it's in
+the output you can't tell a guess from a fact.
 
-**Anything about the flow's contents.** Attribution says what produced a flow,
-never what is in it.
+**Anything about a flow's contents.** Attribution says what produced a flow. It
+never says what's in it.
 
-## The terms
+## What you can rely on
 
-**It is optional.** Every field may be empty, and a consumer that ignores all
-of them behaves exactly as it did before they existed. `tunless` emits plain
-SOCKS5 to any listener; attribution is carried alongside, over the local
-metadata endpoint, for consumers that ask.
+**It's optional.** Every field can be empty, and a consumer that ignores all of
+them works exactly as it did before they existed. `tunless` still emits plain
+SOCKS5 to any listener. Attribution rides alongside, over the local metadata
+endpoint, for consumers that ask.
 
-**It is advisory.** A process that exits between capture and lookup leaves the
+**It's advisory.** A process that exits between capture and lookup leaves the
 process fields empty. A host with no container runtime leaves the workload
-fields empty. Neither is an error and neither invalidates the flow.
+fields empty. Neither is an error, and neither makes the flow less valid.
 
-**The raw cgroup path is retained.** A consumer that disagrees with the parse
-in `workload.FromCgroupPath` can redo it from `Workload.Cgroup`, so no parsing
-decision made here is final.
+**The raw cgroup path is kept.** If you disagree with how
+`workload.FromCgroupPath` parses something, redo it yourself from
+`Workload.Cgroup`. None of our parsing decisions are final.
 
-## Why a consumer would want it
+## Why you'd want this
 
-A transport downstream of `tunless` has to decide what kind of flow it is
-carrying: whether to spend parity on it, whether to give it a lane of its own,
-whether to protect it from something else. Without attribution those decisions
-are made by inference from byte counts and elapsed time, which has two
-problems. Volume does not separate a large request from a small transfer -- they
-are the same size by construction. And inference needs a second or so of
-evidence, by which time a request that completes in 200ms has finished.
+A transport downstream of `tunless` has to decide what kind of flow it's
+carrying: whether to spend parity on it, whether to give it its own lane,
+whether to protect it from something else. Without attribution, those decisions
+come from byte counts and elapsed time, and that has two problems.
 
-Attribution replaces the inference with a fact that was available before the
-first byte moved. What the consumer does with it remains the consumer's policy;
-`tunless` states what produced the flow and stops there.
+Volume doesn't separate a large request from a small transfer. They're the same
+size.
+
+Inference needs a second or so of evidence. A request that finishes in 200ms is
+already done by then.
+
+Attribution replaces the guess with something that was available before the
+first byte moved. What you do with it is your policy. `tunless` reports what
+produced the flow and stops there.
