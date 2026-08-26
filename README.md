@@ -71,20 +71,6 @@ That is the whole idea. The rest follows from it:
 If you want the longer argument, including what was rejected and why, that is
 in [BLUEPRINT.md](BLUEPRINT.md).
 
-## The same argument on a fleet
-
-Most of the recent work has been for a different reader: a cluster calling
-inference in another region. Those calls come from containers and vendor SDKs
-nobody is going to reconfigure, and TUN is worse on a node than on a laptop,
-because a capture agent is itself a pod and attaching at the pod root captures
-its own upstream connection.
-
-`--cgroup` scopes capture to the workloads you mean and leaves the agent
-outside. The socket layer also knows which process opened each flow, which is
-how a transport downstream tells a speech request from the first slice of a
-checkpoint pull: they are the same size, so byte counts cannot. See [flow
-attribution](docs/FLOW_ATTRIBUTION.md) and [containers](docs/CONTAINERS.md).
-
 ## How it works
 
 <p align="center">
