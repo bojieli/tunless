@@ -59,7 +59,7 @@ func run() error {
 	}
 	flag.StringVar(&upstream, "upstream", os.Getenv("TUNLESS_UPSTREAM"), "SOCKS5 upstream, e.g. 127.0.0.1:7890 or socks5://user:pass@host:port")
 	flag.StringVar(&listen, "listen", "127.0.0.1:1080", "numeric loopback address for redirect/reference listeners")
-	flag.StringVar(&backendName, "backend", "auto", "capture backend: auto, linux, or loopback")
+	flag.StringVar(&backendName, "backend", "auto", "capture backend: auto, linux, redirect, or loopback")
 	flag.StringVar(&cgroupPath, "cgroup", os.Getenv("TUNLESS_CGROUP"), "cgroup v2 path captured by the Linux backend, or \"kubernetes\" to select the node's pod hierarchy without capturing this process")
 	flag.StringVar(&networkNamespace, "network-namespace", "", "optional Linux network namespace path for namespace-local redirect listeners")
 	flag.IntVar(&containerPID, "container-pid", 0, "optional Linux container init PID; derives its cgroup and network namespace")
@@ -225,6 +225,11 @@ func run() error {
 		}
 		backend = &linuxbackend.Backend{Address: listen, CgroupPath: cgroupPath, NetworkNamespace: networkNamespace, Filter: filter}
 		coreFilter = tunless.Filter{}
+	case "redirect":
+		if runtime.GOOS != "linux" {
+			return errors.New("the redirect backend is Linux only")
+		}
+		backend = newRedirectBackend(listen, filter)
 	case "loopback":
 		if networkNamespace != "" {
 			return errors.New("--network-namespace requires the Linux backend")

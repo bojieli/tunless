@@ -7,6 +7,16 @@ use ISO 8601.
 
 ### Added
 
+- `--backend redirect` captures flows that netfilter has already redirected to
+  a local listener, for hosts where the eBPF backend cannot run: an older
+  kernel, a distribution that disables unprivileged BPF, or an operator who
+  will grant `NET_ADMIN` and not `CAP_BPF`. The kernel still terminates TCP, so
+  a connection arrives as an ordinary socket and `SO_ORIGINAL_DST` says where
+  it was going, which is why this rather than a TUN device that would need a
+  second TCP/IP stack in userspace. It gives up fail-open, since the rule
+  outlives the process, and it cannot attribute processes, so process filters
+  are refused rather than silently matching nothing. `auto` never selects it.
+  See [docs/REDIRECT_BACKEND.md](docs/REDIRECT_BACKEND.md).
 - `--cgroup kubernetes` picks a node's pod hierarchy for capture and refuses
   the setups that would capture the agent's own traffic. A DaemonSet is itself
   a pod, so attaching at the pod root loops. Loop avoidance stays cgroup

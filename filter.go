@@ -81,3 +81,49 @@ func matchesAddr(prefixes []netip.Prefix, addr netip.Addr) bool {
 	}
 	return false
 }
+
+// ReservedCapturePrefixes are the destinations no backend captures, whatever
+// the filters say.
+//
+// Loopback and the unspecified address mean nothing on the far side of a
+// proxy. Link-local carries DHCP fallback, router discovery, and on a cloud
+// instance the metadata service at 169.254.169.254, which answers about the
+// machine asking and cannot answer for a proxy somewhere else. Multicast and
+// broadcast are not routable through SOCKS5 at all. Sending any of them
+// upstream does not reroute them, it loses them.
+//
+// This is the floor rather than a default because a filter wide enough to want
+// -- this project's own README suggests --include-destination 0.0.0.0/0 -- is
+// wide enough to swallow all of them, and the failure shows up as a machine
+// that stopped finding printers, or an instance that stopped knowing its own
+// identity.
+//
+// It lives here rather than in one backend because every backend needs the
+// same floor, and a second copy is a second thing to forget.
+func ReservedCapturePrefixes() []netip.Prefix {
+	return []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"),
+		netip.MustParsePrefix("0.0.0.0/32"),
+		netip.MustParsePrefix("169.254.0.0/16"),
+		netip.MustParsePrefix("224.0.0.0/4"),
+		netip.MustParsePrefix("255.255.255.255/32"),
+		netip.MustParsePrefix("::1/128"),
+		netip.MustParsePrefix("::/128"),
+		netip.MustParsePrefix("fe80::/10"),
+		netip.MustParsePrefix("ff00::/8"),
+	}
+}
+
+// IsReservedDestination reports whether an address is under the capture floor.
+func IsReservedDestination(addr netip.Addr) bool {
+	probe := addr
+	if probe.Is4In6() {
+		probe = probe.Unmap()
+	}
+	for _, prefix := range ReservedCapturePrefixes() {
+		if prefix.Contains(probe) || prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
