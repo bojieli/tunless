@@ -80,3 +80,32 @@ service at 169.254.169.254), multicast, and broadcast are never captured,
 whatever your rule says. Sending any of them upstream loses them rather than
 routing them. The floor is shared with every other backend rather than copied
 into each.
+
+## Verified end to end
+
+On a Linux host in China reaching a server in California, with an unmodified
+application:
+
+```
+app -> netfilter REDIRECT -> tunless (redirect backend) -> SOCKS5
+    -> queqiao client -> WAN -> queqiao gateway -> destination
+```
+
+| path | 300KB cold | warm |
+|---|---|---|
+| direct, not redirected | 1089.3ms | 1001.4ms |
+| through the stack | **624.9ms** | **381.2ms** |
+
+The application was never configured for any of it. It connected to the
+destination normally and the rule did the rest.
+
+Connect time through the stack is 0.2ms against 187.3ms direct, because the
+application's connection terminates on loopback and the round trip is paid once
+by a tunnel that was already warm. That is the whole reason for a local capture
+agent in front of a transport: every constraint on a long path is credit per
+round trip, and putting a zero-round-trip segment at each end confines them to
+the middle.
+
+tunless logged `flow started destination=155.103.252.95:12600 pid=0` -- the
+original destination recovered from `SO_ORIGINAL_DST`, and no process, which is
+what this backend documents. The rule and the agent both left no state behind.
