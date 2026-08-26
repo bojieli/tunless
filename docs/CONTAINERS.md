@@ -263,43 +263,43 @@ See also: [README](../README.md) ·
 ## Kubernetes nodes
 
 Capturing other pods' traffic means attaching above them, which on a node is
-`kubepods.slice` or `kubepods` depending on the cgroup driver. Both are
-recognised.
+`kubepods.slice` or `kubepods` depending on the cgroup driver. We recognize
+both.
 
-The obstacle is that a DaemonSet is itself a pod. Attaching at the pod root
+The problem is that a DaemonSet is itself a pod. Attaching at the pod root
 would capture the agent's own connection to its upstream, and every packet it
-forwarded would be captured again on the way out. There is no exception list
-that fixes this -- an exception keyed on the agent's own address is the first
-thing a misconfiguration silently removes, and avoiding exception lists is why
-this project exists.
+forwarded would get captured again on the way out. An exception list doesn't
+fix this. An exception keyed on the agent's own address is the first thing a
+misconfiguration drops, and avoiding exception lists is the point of this
+project.
 
-Loop avoidance is cgroup separation here, exactly as it is on the desktop,
-where `user.slice` is captured from `system.slice`. Two arrangements give it:
+What fixes it is cgroup separation, same as on the desktop, where we capture
+`user.slice` from `system.slice`. There are two ways to get it:
 
-**Outside the pod hierarchy, attaching at the root.** Run tunless as a systemd
-unit on the node, or as a static pod placed in `system.slice`. Then
-`--cgroup kubernetes` resolves to the pod root and every pod on the node is
-captured. This is the arrangement to prefer.
+**Run outside the pod hierarchy and attach at the root.** Run tunless as a
+systemd unit on the node, or as a static pod in `system.slice`. Then
+`--cgroup kubernetes` resolves to the pod root and you capture every pod on the
+node. Prefer this.
 
-**Inside the hierarchy, attaching below it.** An ordinary DaemonSet can attach
-to the QoS subtrees it is not in. `--cgroup kubernetes` reports which those are
-and asks you to name one, because the backend attaches to a single cgroup and
-selecting several silently would capture a subset while reporting success.
+**Run inside and attach below.** An ordinary DaemonSet can attach to the QoS
+subtrees it isn't in. `--cgroup kubernetes` tells you which ones those are and
+asks you to pick, because the backend attaches to one cgroup and picking for
+you would capture a subset while reporting success.
 
-The second arrangement has a real gap: an agent in the burstable class cannot
-capture other burstable pods this way. That is reported rather than worked
-around. If you need those pods, move the agent out of the hierarchy.
+The second option has a real gap: an agent in the burstable class can't capture
+other burstable pods this way. We report that rather than working around it. If
+you need those pods, move the agent out of the hierarchy.
 
 ```console
 # preferred: systemd unit or static pod, outside kubepods
 tunless --cgroup kubernetes --upstream 127.0.0.1:7890
 
-# DaemonSet: tunless names the subtrees it may use
+# DaemonSet: tunless tells you which subtrees it can use
 tunless --cgroup kubernetes
 # error: this process is inside the pod hierarchy, so capture must attach
 # below it; pass --cgroup with one of /sys/fs/cgroup/kubepods.slice/
 # kubepods-besteffort.slice, ... or run tunless outside the hierarchy
 ```
 
-Per-flow attribution resolves each captured flow to its pod UID and container
-ID from the cgroup path; see [FLOW_ATTRIBUTION.md](FLOW_ATTRIBUTION.md).
+Each captured flow resolves to its pod UID and container ID from the cgroup
+path. See [FLOW_ATTRIBUTION.md](FLOW_ATTRIBUTION.md).

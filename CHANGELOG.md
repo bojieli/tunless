@@ -7,21 +7,21 @@ use ISO 8601.
 
 ### Added
 
-- `--cgroup kubernetes` selects a node's pod hierarchy for capture, refusing
-  the arrangements that would capture the agent's own traffic. A DaemonSet is
-  itself a pod, so attaching at the pod root loops; loop avoidance stays cgroup
-  separation rather than an exception list, and the remaining gap -- an agent
-  cannot capture other pods in its own QoS class this way -- is reported rather
-  than worked around. See [docs/CONTAINERS.md](docs/CONTAINERS.md).
-- Per-flow workload attribution on Linux: the cgroup a captured process belongs
-  to is resolved to a Kubernetes pod UID, a container ID, or a systemd unit,
-  and carried alongside the existing process fields. Both cgroup drivers are
-  parsed, because both are deployed and reading one as the other yields a pod
-  UID that looks plausible and matches nothing. The pod's namespace and name
-  are deliberately not derived: they live in the API server, and inventing them
-  would produce a guess a consumer cannot distinguish from a fact. See
-  [docs/FLOW_ATTRIBUTION.md](docs/FLOW_ATTRIBUTION.md) for what is available and
-  on what terms.
+- `--cgroup kubernetes` picks a node's pod hierarchy for capture and refuses
+  the setups that would capture the agent's own traffic. A DaemonSet is itself
+  a pod, so attaching at the pod root loops. Loop avoidance stays cgroup
+  separation rather than an exception list, and the remaining gap, that an
+  agent can't capture other pods in its own QoS class this way, is reported
+  rather than worked around. See [docs/CONTAINERS.md](docs/CONTAINERS.md).
+- Per-flow workload attribution on Linux. The cgroup a captured process belongs
+  to resolves to a Kubernetes pod UID, a container ID, or a systemd unit, and
+  travels alongside the existing process fields. We parse both cgroup drivers,
+  since both are deployed and reading one as the other gives you a pod UID that
+  looks plausible and matches nothing. We deliberately don't derive the pod's
+  namespace and name: those live in the API server, and inventing them would
+  produce a guess you can't distinguish from a fact. See
+  [docs/FLOW_ATTRIBUTION.md](docs/FLOW_ATTRIBUTION.md) for what's available and
+  what you can rely on.
 
 ## 0.1.0 — 2026-08-25
 
