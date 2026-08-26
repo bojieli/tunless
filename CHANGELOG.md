@@ -7,6 +7,23 @@ use ISO 8601.
 
 ### Fixed
 
+- macOS: both DNS probes read a relayed answer at a fixed ten-byte offset,
+  which is the SOCKS5 UDP header length only when the upstream reports an IPv4
+  source. An upstream answering from an IPv6 address, or naming the resolver
+  rather than addressing it, had a perfectly good answer read at the wrong
+  offset and reported as no answer at all. At preflight that tells an operator
+  UDP relaying does not work and switches the watchdog to TCP-only probing for
+  the whole session; on the watchdog it fails a healthy upstream until capture
+  stands aside. The header is parsed now.
+- A datagram the flow declines no longer ends the UDP association. A resolver
+  answering the same query twice produces one: the first answer consumes the
+  DNS transaction, so the second arrives still naming the trusted resolver as
+  its source, the backend rejects it against its record of where the
+  application actually wrote, and every other query in flight on that socket
+  used to go with it. Duplicate answers are most common exactly when the
+  network is already retransmitting. Datagrams neither side can carry are
+  counted and reported when the association ends.
+
 - macOS: `--disable-dns-override` switched off every check that watches DNS —
   the preflight proof, the post-start verification, and the runtime watchdog —
   on the premise that capture does not touch port 53 without an override. It

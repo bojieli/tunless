@@ -65,6 +65,20 @@ func (p Packet) Validate() error {
 	return nil
 }
 
+// ErrDatagramRejected marks a datagram a PacketPort declined to deliver
+// because it does not belong to the flow, as opposed to one it could not
+// deliver because the transport underneath has failed.
+//
+// The distinction decides whether a UDP session lives. A datagram that does
+// not belong is ordinary: a resolver answering a query twice produces one,
+// because the first answer consumes the DNS transaction the second would have
+// matched, and the second then arrives claiming the trusted resolver as its
+// source while the application only ever wrote to its own. Ending the session
+// over that discards every other query in flight on the same socket, and the
+// duplicate answers that cause it are most common exactly when the network is
+// already retransmitting.
+var ErrDatagramRejected = errors.New("datagram does not belong to this flow")
+
 // PacketPort is the datagram equivalent of net.Conn. ReadPacket returns a
 // packet sent by the captured application; WritePacket sends one back.
 type PacketPort interface {

@@ -68,4 +68,47 @@ final class DNSProbeMessageTests: XCTestCase {
         XCTAssertNil(DNSProbeMessage.tcpPayloadLength(Data([0x01])))
         XCTAssertEqual(DNSProbeMessage.tcpPayloadLength(Data([0x00, 0x2a])), 42)
     }
+
+    // MARK: - Unwrapping a relayed datagram
+
+    /// The address in a SOCKS5 UDP header is four bytes only when the upstream
+    /// reports an IPv4 source. Both probes used to assume that, so a healthy
+    /// upstream answering from an IPv6 address was read at the wrong offset and
+    /// reported as a broken UDP relay — which at preflight tells an operator
+    /// UDP relaying does not work and drops the watchdog to TCP-only probing,
+    /// and at the watchdog stands capture down over an answer that arrived.
+    private func relayed(_ address: [UInt8], payload: Data) -> Data {
+        var datagram = Data([0, 0, 0])
+        datagram.append(contentsOf: address)
+        datagram.append(contentsOf: [0x00, 0x35])
+        datagram.append(payload)
+        return datagram
+    }
+
+    func testPayloadIsFoundAfterEveryAddressForm() {
+        let answer = Data([0x12, 0x34, 0x81, 0x80]) + Data(repeating: 0, count: 8)
+        let ipv4 = relayed([1, 1, 1, 1, 1], payload: answer)
+        let ipv6 = relayed([4] + [UInt8](repeating: 0x20, count: 16), payload: answer)
+        let named = relayed([3, 3] + Array("one".utf8), payload: answer)
+        for datagram in [ipv4, ipv6, named] {
+            guard let payload = DNSProbeMessage.relayedPayload(datagram) else {
+                return XCTFail("a relayed answer must be found whatever addresses it")
+            }
+            XCTAssertEqual(Data(payload), answer)
+            XCTAssertTrue(DNSProbeMessage.isResponse(payload, transactionID: 0x1234))
+        }
+    }
+
+    func testDatagramsThatAreNotRelayedAnswersAreRejected() {
+        let answer = Data(repeating: 0, count: 12)
+        // A fragmented datagram, which this relay never asks for.
+        XCTAssertNil(DNSProbeMessage.relayedPayload(Data([0, 0, 1, 1, 1, 1, 1, 1, 0, 0x35]) + answer))
+        // An address type SOCKS5 does not define.
+        XCTAssertNil(DNSProbeMessage.relayedPayload(Data([0, 0, 0, 9, 1, 1, 1, 1, 0, 0x35]) + answer))
+        // A header that claims more address than the datagram carries.
+        XCTAssertNil(DNSProbeMessage.relayedPayload(Data([0, 0, 0, 4, 1, 2, 3])))
+        // Header only, with nothing behind it.
+        XCTAssertNil(DNSProbeMessage.relayedPayload(Data([0, 0, 0, 1, 1, 1, 1, 1, 0, 0x35])))
+        XCTAssertNil(DNSProbeMessage.relayedPayload(Data()))
+    }
 }

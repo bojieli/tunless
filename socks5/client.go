@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bojieli/tunless"
@@ -353,6 +354,9 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 		}
 	}
 	translations := newDNSTransactionMap(4096, 30*time.Second)
+	// Datagrams neither side could carry. Counted rather than ignored, so a
+	// session that quietly loses traffic still says so when it ends.
+	var dropped atomic.Uint64
 	var workers sync.WaitGroup
 	workers.Add(3)
 	go func() {
@@ -373,14 +377,14 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 				return
 			}
 			if err = packet.Validate(); err != nil {
-				errCh <- fmt.Errorf("invalid captured UDP packet: %w", err)
-				return
+				dropped.Add(1)
+				continue
 			}
 			payload, destination := translations.prepare(packet.Payload, packet.Dst, c.DNSOverride)
 			address := encodeAddr(destination)
 			if 3+len(address)+len(payload) > maxUDPDatagramSize(udpNetwork) {
-				errCh <- errors.New("captured UDP packet exceeds the SOCKS5 relay datagram limit")
-				return
+				dropped.Add(1)
+				continue
 			}
 			buf := make([]byte, 3, 3+len(address)+len(payload))
 			buf = append(buf, address...)
@@ -414,6 +418,10 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 			payload := append([]byte(nil), buf[3+used:n]...)
 			payload, dst = translations.restore(payload, dst)
 			if err = flow.Packets.WritePacket(workerCtx, tunless.Packet{Payload: payload, Dst: dst}); err != nil {
+				if errors.Is(err, tunless.ErrDatagramRejected) {
+					dropped.Add(1)
+					continue
+				}
 				errCh <- err
 				return
 			}
@@ -456,6 +464,9 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 	workers.Wait()
 	if ctx.Err() != nil {
 		return nil
+	}
+	if count := dropped.Load(); count > 0 && err != nil {
+		return fmt.Errorf("%w (dropped %d datagram(s) this association could not carry)", err, count)
 	}
 	return err
 }

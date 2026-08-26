@@ -46,6 +46,35 @@ public enum DNSProbeMessage {
         return bytes[2] & 0x80 != 0  // QR bit: this is a response
     }
 
+    /// The DNS message inside a SOCKS5 UDP relay datagram, or nil when the
+    /// datagram is not one.
+    ///
+    /// The header is `RSV(2) FRAG(1) ATYP(1) ADDR PORT(2)`, and the address is
+    /// four bytes only when the upstream reports an IPv4 source. Both probes
+    /// used to assume that and skip a fixed ten bytes, so an upstream that
+    /// answered from an IPv6 address — or named the resolver rather than
+    /// addressing it — had its perfectly good answer read at the wrong offset
+    /// and reported as "no DNS answer came back through the UDP relay". At
+    /// preflight that tells an operator UDP relaying is broken when it is not
+    /// and switches the watchdog to TCP-only probing for the whole session; on
+    /// the watchdog it fails a healthy upstream until capture stands aside.
+    public static func relayedPayload(_ datagram: Data) -> Data? {
+        guard datagram.count > 4, datagram[datagram.startIndex] == 0,
+              datagram[datagram.startIndex + 1] == 0,
+              datagram[datagram.startIndex + 2] == 0
+        else { return nil }
+        let addressLength: Int
+        switch datagram[datagram.startIndex + 3] {
+        case 1: addressLength = 4
+        case 4: addressLength = 16
+        case 3: addressLength = 1 + Int(datagram[datagram.startIndex + 4])
+        default: return nil
+        }
+        let header = 4 + addressLength + 2
+        guard datagram.count > header else { return nil }
+        return datagram.dropFirst(header)
+    }
+
     /// Frames a query for DNS over TCP, which carries a two-byte length prefix.
     public static func tcpFramed(_ message: Data) -> Data {
         var framed = Data()

@@ -4,10 +4,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/bojieli/tunless"
 	"net"
 	"net/netip"
 	"strconv"
+
+	"github.com/bojieli/tunless"
 )
 
 const (
@@ -164,7 +165,8 @@ func validateUDPResponseRecord(value []byte, destination netip.AddrPort) error {
 	}
 	destination = netip.AddrPortFrom(destination.Addr().Unmap(), destination.Port())
 	if original != destination {
-		return fmt.Errorf("UDP response source %s does not match original destination %s", destination, original)
+		return fmt.Errorf("%w: UDP response source %s does not match original destination %s",
+			tunless.ErrDatagramRejected, destination, original)
 	}
 	return nil
 }
