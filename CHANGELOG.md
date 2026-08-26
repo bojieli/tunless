@@ -7,6 +7,12 @@ use ISO 8601.
 
 ### Fixed
 
+- macOS: the extension and app build numbers are bumped to 15. Build 14 was
+  published twice with different extension code, and macOS keys
+  system-extension replacement on that number, so an install could leave the
+  earlier binary running while `status` reported the newer version. The release
+  checklist now gates on it.
+
 - macOS: a captured UDP flow is no longer closed by the provider, ever. It used
   to end whenever the transport under it did — a watchdog pause, a SOCKS5
   handshake that timed out against a busy mixed port, an upstream that dropped

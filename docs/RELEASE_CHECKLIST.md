@@ -158,6 +158,14 @@ qualified. Link each completed item to a run, commit, or measurement.
 
 ## Explicit external platform gates
 
+- [ ] macOS extension `CFBundleVersion` bumped for every candidate that
+      changes extension code, and the running build re-read from
+      `systemextensionsctl list` after installing. macOS keys system-extension
+      replacement on that number: two different binaries sharing one build
+      means an install can silently leave the old code running, and the version
+      an operator reads back is then not the code they are running. Build 14
+      was published twice this way, which is how a fixed resolver defect kept
+      reproducing on a machine that had already "upgraded"
 - [ ] `scripts/macos-qualify.sh` run against the exact notarized candidate on a
       machine with no prior tunless installation, reporting zero failures
 - [ ] macOS Developer ID entitlements, activation, notarization, staple, and
