@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -570,6 +571,163 @@ func TestReachableRelayAddress(t *testing.T) {
 				t.Fatalf("relay = %s, want %s", got, tt.want)
 			}
 		})
+	}
+}
+
+// A datagram the flow declines does not end the association.
+//
+// A resolver answering the same query twice produces one: the first answer
+// consumes the DNS transaction, so the second arrives claiming the trusted
+// resolver as its source while the application only ever wrote to its own, and
+// the backend rejects it. Ending the association over that discards every other
+// query in flight on the same socket, and duplicate answers are most common
+// exactly when the network is already retransmitting.
+func TestUDPAssociationSurvivesADatagramTheFlowRejects(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	relay, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	go func() {
+		control, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer control.Close()
+		var greeting [3]byte
+		_, _ = io.ReadFull(control, greeting[:])
+		_, _ = control.Write([]byte{5, 0})
+		var request [10]byte
+		_, _ = io.ReadFull(control, request[:])
+		bound := relay.LocalAddr().(*net.UDPAddr).AddrPort()
+		reply := []byte{5, 0, 0, 1}
+		reply = append(reply, bound.Addr().AsSlice()...)
+		reply = append(reply, byte(bound.Port()>>8), byte(bound.Port()))
+		_, _ = control.Write(reply)
+		_, _ = io.Copy(io.Discard, control)
+	}()
+
+	original := netip.MustParseAddrPort("223.6.6.6:53")
+	// Answer every query twice, which is what produces the rejected datagram.
+	relayErr := make(chan error, 1)
+	go func() {
+		buffer := make([]byte, 65535)
+		n, peer, readErr := relay.ReadFromUDPAddrPort(buffer)
+		if readErr != nil {
+			relayErr <- readErr
+			return
+		}
+		frame := append([]byte(nil), buffer[:n]...)
+		for range 2 {
+			if _, writeErr := relay.WriteToUDPAddrPort(frame, peer); writeErr != nil {
+				relayErr <- writeErr
+				return
+			}
+		}
+		relayErr <- nil
+	}()
+
+	// The duplicate is the one the backend rejects: the first answer consumed
+	// the transaction, so the second still names the trusted resolver as its
+	// source while the application only ever wrote to 223.6.6.6.
+	port := &rejectingPacketPort{
+		scriptedPacketPort: scriptedPacketPort{
+			reads:  make(chan tunless.Packet, 1),
+			writes: make(chan tunless.Packet, 2),
+			done:   make(chan struct{}),
+		},
+		accept: original,
+	}
+	port.reads <- tunless.Packet{Payload: dnsMessage(0x1234), Dst: original}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emitDone := make(chan error, 1)
+	go func() {
+		emitDone <- (&Client{
+			Address:     listener.Addr().String(),
+			DNSOverride: netip.MustParseAddrPort("1.1.1.1:53"),
+		}).Emit(ctx, tunless.Flow{Proto: tunless.UDP, OrigDst: original, Packets: port})
+	}()
+
+	select {
+	case delivered := <-port.writes:
+		if delivered.Dst != original {
+			t.Fatalf("restored response source = %s, want %s", delivered.Dst, original)
+		}
+	case err = <-emitDone:
+		t.Fatalf("association ended instead of delivering the answer: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the restored answer")
+	}
+	if err = <-relayErr; err != nil {
+		t.Fatal(err)
+	}
+	// The duplicate follows; the association has to still be running after the
+	// flow refuses it.
+	if rejected := port.waitForRejection(2 * time.Second); !rejected {
+		t.Fatal("the duplicate answer never reached the flow")
+	}
+	select {
+	case err = <-emitDone:
+		t.Fatalf("association ended over a rejected datagram: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-emitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled UDP emitter did not return")
+	}
+}
+
+// Accepts datagrams addressed from where the application actually wrote and
+// rejects the rest, which is what a backend checking its own record of the
+// flow's original destination does.
+type rejectingPacketPort struct {
+	scriptedPacketPort
+	accept    netip.AddrPort
+	rejected  chan struct{}
+	rejectsMu sync.Mutex
+}
+
+func (p *rejectingPacketPort) WritePacket(ctx context.Context, packet tunless.Packet) error {
+	if packet.Dst == p.accept {
+		return p.scriptedPacketPort.WritePacket(ctx, packet)
+	}
+	p.rejectsMu.Lock()
+	if p.rejected == nil {
+		p.rejected = make(chan struct{}, 4)
+	}
+	channel := p.rejected
+	p.rejectsMu.Unlock()
+	select {
+	case channel <- struct{}{}:
+	default:
+	}
+	return fmt.Errorf("%w: UDP response source %s", tunless.ErrDatagramRejected, packet.Dst)
+}
+
+func (p *rejectingPacketPort) waitForRejection(timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	for {
+		p.rejectsMu.Lock()
+		if p.rejected == nil {
+			p.rejected = make(chan struct{}, 4)
+		}
+		channel := p.rejected
+		p.rejectsMu.Unlock()
+		select {
+		case <-channel:
+			return true
+		case <-deadline:
+			return false
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 

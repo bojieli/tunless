@@ -171,12 +171,14 @@ enum DNSHealthProbe {
                         case .ready:
                             connection.send(content: packet, completion: .contentProcessed { _ in })
                             connection.receiveMessage { data, _, _, _ in
-                                guard let data, data.count > 10 else {
+                                guard let data,
+                                      let payload = DNSProbeMessage.relayedPayload(data)
+                                else {
                                     gate.resume(with: .success(false))
                                     return
                                 }
                                 gate.resume(with: .success(DNSProbeMessage.isResponse(
-                                    data.dropFirst(10), transactionID: transactionID)))
+                                    payload, transactionID: transactionID)))
                             }
                         case .failed, .cancelled:
                             gate.resume(with: .success(false))

@@ -222,10 +222,9 @@ final class DNSRelayProbe {
                         datagrams.cancel()
                         control.cancel()
                     }
-                    // Strip the 10-byte SOCKS5 UDP header for an IPv4 address.
-                    guard let data, data.count > 10,
-                          DNSProbeMessage.isResponse(
-                            data.dropFirst(10), transactionID: self.transactionID)
+                    guard let data,
+                          let payload = DNSProbeMessage.relayedPayload(data),
+                          DNSProbeMessage.isResponse(payload, transactionID: self.transactionID)
                     else {
                         self.succeedTCPOnly("no DNS answer came back through the UDP relay")
                         return
