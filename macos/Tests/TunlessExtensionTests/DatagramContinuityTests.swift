@@ -47,11 +47,18 @@ final class DatagramContinuityTests: XCTestCase {
     func testAssociationIsRebuiltAfterTheUpstreamDies() async throws {
         let upstream = try FakeSOCKS5Upstream()
         let sink = RecordingSink()
+        // Short timeouts, because this test has to watch a dial fail before it
+        // can watch one succeed. A dial to a port whose listener just went away
+        // is refused immediately on some machines and hangs to the full timeout
+        // on others, and with the production values that difference is longer
+        // than any window worth waiting.
         let association = UDPAssociation(
             configuration: upstream.configuration,
             sink: sink,
             dnsResponses: DNSResponseMap(),
-            idleTimeoutSeconds: 0)
+            idleTimeoutSeconds: 0,
+            retryBackoffSeconds: 0.5,
+            handshakeTimeoutSeconds: 2)
         defer { Task { await association.shutDown() } }
         let opened = await association.establish()
         XCTAssertTrue(opened)
@@ -60,7 +67,7 @@ final class DatagramContinuityTests: XCTestCase {
         // The send either fails outright or the control connection drops; both
         // land in the same place, which is what the next assertion checks.
         _ = await association.send(Self.frame(to: "1.1.1.1", payload: Data([1, 2])))
-        try await Self.eventually(timeout: 5) {
+        try await Self.eventually(timeout: 15) {
             let ready = await association.isReady
             return ready == false
         }
@@ -70,7 +77,7 @@ final class DatagramContinuityTests: XCTestCase {
         // A failed association waits out its backoff before dialling again, so
         // an upstream that is down is not dialled once per query.
         var reopened = false
-        try await Self.eventually(timeout: 12) {
+        try await Self.eventually(timeout: 20) {
             reopened = await association.establish()
             return reopened
         }
