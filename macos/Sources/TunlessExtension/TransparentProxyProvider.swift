@@ -1077,20 +1077,28 @@ actor UDPAssociation {
     private var addressed: Set<String> = []
     private let maxAddressed = 32
     /// How long a failed association waits before the next datagram tries
-    /// again, so an upstream that is down is not dialled once per query.
-    private static let retryBackoffSeconds: TimeInterval = 5
-    private static let handshakeTimeoutSeconds: TimeInterval = 10
+    /// again, so an upstream that is down is not dialled once per query, and
+    /// how long one dial may take. Both are injectable because a test that has
+    /// to watch a rebuild otherwise has to outwait them: on a slow machine a
+    /// dial to a dead port hangs to the full timeout rather than being refused,
+    /// and the test then races the sum of the two.
+    private let retryBackoffSeconds: TimeInterval
+    private let handshakeTimeoutSeconds: TimeInterval
 
     init(
         configuration: ProviderConfiguration,
         sink: any DatagramSink,
         dnsResponses: DNSResponseMap,
-        idleTimeoutSeconds: TimeInterval
+        idleTimeoutSeconds: TimeInterval,
+        retryBackoffSeconds: TimeInterval = 5,
+        handshakeTimeoutSeconds: TimeInterval = 10
     ) {
         self.configuration = configuration
         self.sink = sink
         self.dnsResponses = dnsResponses
         self.idleTimeoutSeconds = idleTimeoutSeconds
+        self.retryBackoffSeconds = retryBackoffSeconds
+        self.handshakeTimeoutSeconds = handshakeTimeoutSeconds
     }
 
     /// Makes sure an association exists, returning whether one is available
@@ -1108,7 +1116,7 @@ actor UDPAssociation {
         case .ready: return true
         case .opening: return false
         case let .failed(at):
-            guard Date().timeIntervalSince(at) >= Self.retryBackoffSeconds else { return false }
+            guard Date().timeIntervalSince(at) >= retryBackoffSeconds else { return false }
         case .idle: break
         }
         guard !shuttingDown, !Task.isCancelled else { return false }
@@ -1120,7 +1128,7 @@ actor UDPAssociation {
                 configuration: selected,
                 command: 3,
                 destination: SOCKSAddress(host: "0.0.0.0", port: 0),
-                timeoutSeconds: Self.handshakeTimeoutSeconds)
+                timeoutSeconds: handshakeTimeoutSeconds)
             if Self.unspecified(relay.host)
                 || (Self.loopback(relay.host) && !Self.loopback(selected.upstreamHost)) {
                 relay = SOCKSAddress(host: selected.upstreamHost, port: relay.port)
