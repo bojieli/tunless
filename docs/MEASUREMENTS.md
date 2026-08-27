@@ -545,6 +545,47 @@ The Linux datapath is unchanged since — the reserved-destination work adds
 startup exclusions rather than touching the capture path — but the numbers have
 not been re-taken on the current tree and should be before a Linux tag.
 
+## macOS resolver-lifetime defect on a live host, 2026-08-26
+
+The first measurement this project has from running macOS capture on a working
+machine for a full day rather than for the length of a test. It is recorded
+because it found a defect no test here would have found, and because the shape
+of the evidence is the point: the host looked healthy throughout.
+
+Build 14 on the local Apple Silicon Mac, Clash Verge (`mixed-port: 7897`) with
+its TUN interface up, trusted resolver `1.1.1.1:53`, system resolver
+`223.6.6.6`. Capture was live from 05:36 with the soak script ticking every 60
+seconds.
+
+| Observation | Value |
+| --- | --- |
+| Capture pauses recorded by the watchdog | 3 (10:04:22, 16:47:16, 17:19:46) |
+| Port-53 UDP flows error-closed by the 16:47 pause | 26 |
+| `mDNSResponder` `sending ... failed: [22: Invalid argument]` after it | 6,307, from 16:47 to 22:05 |
+| Duration of the degraded window | 5h 18m, ending without intervention |
+| Applications affected | one at a time — the client whose delegated resolver socket was closed |
+| `getaddrinfo` behaviour for that client | 30-second timeout, then a negative answer |
+| Recovery available to an operator | `sudo killall mDNSResponder` |
+
+The soak script reported no gap for any of it. It resolves `example.com` on
+each tick through its own process, and a fresh process gets a fresh delegated
+socket, so the one thing that was broken was the one thing it could not see.
+`dig` had the same blind spot. What did see it was the unified log
+(`mDNSResponder` EINVAL sends) correlated against the provider's own flow log
+(port-53 `udp-completion` events carrying `setup-error` and `cancelled`).
+
+The mechanism was then reproduced deliberately, in 150 seconds, on an ordinary
+connected UDP socket: create a flow, stay idle past the 120-second association
+limit so the provider error-closes it, and send again. Every later send fails
+with `EPIPE` and never recovers. That is the same fatal close, on a socket
+whose owner can be watched directly.
+
+Fixed in 0.2.0: the provider no longer closes a datagram flow for any reason.
+**Not yet demonstrated:** the fix running on a live host. A locally signed
+system extension cannot activate while SIP is enabled — activation fails with
+`code signature invalid`, `spctl` reporting `source=Unnotarized Developer ID` —
+so qualifying it requires the notarized path.
+
 ## Linux datapath on the current tree
 
 Measured 2026-08-25 on Docker Desktop for macOS (server 27.3.1, kernel
@@ -718,7 +759,7 @@ names `6ead291`, not a candidate, and should be re-taken on the tag.
 | Linux kernel floor on the current tree | The 5.10 evidence is the Lima ARM64 guest from 2026-08-17/19. Every datapath change since — the upstream and resolver reservation, the capture floor, the both-family filter change, the DNS override work, and the dual-stack decode fix — is unexercised on the oldest kernel this project supports, and its hosted job is gated behind `workflow_dispatch` with `run_kernel_5_10: true`, skipped in every recent run. 6.1 and 6.8 were re-taken on 2026-08-25; the floor was not. |
 | Linux long-run soak | `scripts/tunless-linux-soak.sh` exists; no run has been recorded. `stress.sh` soaks the portable core under connection load, which is duration without the eBPF datapath and cannot see a capture that quietly stops claiming flows. |
 | Rootful Podman operations on a captured container | Podman commands against a container tunless is attached to hang until the harness's 120-second guard. Three occurrences on 2026-08-25, in roughly two runs in five, and **not one failure mode**: twice it was `podman rm --force` during the recreate step, once it was `podman exec` running the traffic probe, which repeated across all three of `probe_container`'s attempts. In the `exec` case both containers were up, both controllers and both conmons were alive, and the controller logged the probe's flows completing normally — name resolution, WAN TLS, and the closing DNS query all started and ended as expected — while the `exec` that ran them never returned. So the earlier framing of this as a teardown problem was too narrow: what is unreliable is podman operating on a captured container at all. Docker and containerd via kind pass the same lifecycle, and podman 3.4.4 with the CNI backend showed nothing in 18 removals and 6 full suite runs on a 6.8 host; the failures are on podman 5.8.4 with netavark. Cause unestablished. Removing or entering an attached container is an ordinary operator action, not a CI-only one. |
-| macOS exact release candidate | Builds 8 and 9 provide notarization, staple, Gatekeeper, activation, upgrade, and live-runtime evidence, but the current working tree is newer and has not completed exact-candidate clean-machine qualification. |
+| macOS exact release candidate | Builds 8 and 9 provide notarization, staple, Gatekeeper, activation, upgrade, and live-runtime evidence, but the current working tree is newer and has not completed exact-candidate clean-machine qualification. Build 15 carries the resolver-lifetime fix and has not run on a live host at all: a locally signed system extension cannot activate while SIP is enabled, so this needs the notarized path. See [the live-host measurement](#macos-resolver-lifetime-defect-on-a-live-host-2026-08-26). |
 | macOS `remoteHostname` fraction | Activation and representative declined-flow behavior are verified, but a statistically useful fraction still requires a defined realistic app corpus; no number is invented. |
 | macOS HTTP/3 | The installed curl lacks HTTP/3 support. HTTP/1.x, HTTP/2, TLS, DNS UDP/TCP, and non-DNS UDP passed, but no QUIC HTTP client was exercised. |
 | Windows WDK build/runtime/UDP | Deferred to contributors: the maintainer has no Windows host. UDP is intentionally left direct. The open work is enumerated in [Windows notes](WINDOWS.md#deferred-to-contributors). |
