@@ -334,6 +334,10 @@ application owned that socket, while every other application on the host keeps
 resolving normally and hides the failure. Recovery took a `killall
 mDNSResponder`; nothing tunless did could undo it.
 
+That rule is enforced rather than described: `DatagramFlowCloseGuardTests`
+reads this provider and fails if a flow close appears anywhere it could reach a
+datagram flow.
+
 So the association is what fails, never the flow. A capture pause, a proxy
 restart, a node switch, a SOCKS handshake that times out on a busy mixed port,
 an idle association past its two-minute limit — each of those tears down the
