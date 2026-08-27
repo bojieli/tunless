@@ -90,10 +90,10 @@ plain SOCKS5. Your proxy sees a normal SOCKS5 client.
 | macOS | `NETransparentProxyProvider` system extension | Notarized builds pass the recorded live suites, and capture stands aside on its own if the upstream stops resolving. Clean-machine qualification of the exact candidate is still open. |
 | Windows | WFP ALE connect-redirect callout | Source only. The driver has never been built by a WDK, loaded, or run under Driver Verifier, and it is not signed. Treat it as a design, not a download. |
 
-The three platforms ship at different maturities and the first release says so
-on its face: **0.1.0 is a preview — Linux is the platform it is meant for,
-macOS is beta, and Windows is source only.** See
-[what the first release covers](docs/RELEASING.md#what-the-first-release-covers)
+The three platforms ship at different maturities and the release says so on its
+face: **in 0.2.0 Linux is generally available, macOS is beta, and Windows is
+source only.** See
+[what a release covers](docs/RELEASING.md#what-the-first-release-covers)
 and [where the project actually is](#where-the-project-actually-is).
 
 The portable core does the SOCKS5 work for all three: TCP and UDP emission,
@@ -310,27 +310,32 @@ listener. Avoid shared-source `SO_REUSEPORT` for captured UDP6 workloads.
 
 ## Where the project actually is
 
-**0.1.0 is a preview.** It is released so it can be installed, read and argued
-with by people who want to try it — and that is not the same as a version you
-should put on a machine you cannot afford to have surprised. The difference is
-deliberate, and this section says exactly where the line is rather than leaving
-you to find it.
-
-What a preview means here is specific. The code is real: Linux capture is
+**0.2.0 is a release, not a preview.** Linux is generally available: capture is
 exercised against a live kernel on every pull request, the destination filters
 are demonstrated against an attached cgroup, artifacts rebuild byte-identically,
 and every performance claim in this file is backed by a dated measurement naming
-the host it ran on. What is missing is duration and breadth of evidence, not
-function.
+the host it ran on. macOS remains beta and Windows remains source only, for
+reasons given below rather than left for you to find.
 
-Three things in particular are worth knowing before you install it:
+That framing changed for a reason worth stating. 0.1.0 said the gap was
+duration of evidence rather than function, and the gap turned out to contain a
+real defect: running the macOS build on a live host for a day surfaced a
+resolver-lifetime bug that no test on this project would have caught, and
+0.2.0 closes it. The lesson is kept rather than declared solved — the list
+below is what is still unproven.
 
-- **Nobody has soaked it.** Almost every serious bug found here so far turned up
-  by running the thing for hours, not by running its tests — a watchdog that
-  mistook a sleeping laptop for a failing proxy and left a machine resolving
-  names unprotected for nine hours is the one that best makes the point. The
-  harnesses for a 48-hour soak now exist on both platforms. Neither has been
-  run. That class of bug is exactly the class still open.
+Four things in particular are worth knowing before you install it:
+
+- **The macOS fix in this release has not been qualified on a live host.** It
+  carries unit tests that stand a real SOCKS5 upstream up and kill it, and the
+  defect it closes was diagnosed on a live machine — but a locally signed system
+  extension cannot activate while SIP is enabled, so running the fixed build
+  requires the notarized path, and that has not been done. This is why macOS
+  stays beta.
+- **The 48-hour soak has still not been completed.** Almost every serious bug
+  found here turned up by running the thing for hours rather than by running its
+  tests, including this release's. The harnesses exist on both platforms and
+  neither has been run to completion.
 - **The kernel floor is unverified on this code.** Capture is tested on current
   kernels continuously, but the 5.10 evidence predates this release's datapath
   changes.
