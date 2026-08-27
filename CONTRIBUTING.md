@@ -52,6 +52,26 @@ tests for bug fixes. Avoid adding a second packet stack, environment-variable
 proxying, fake DNS answers, route hijacking, or silent fail-closed behavior: all
 conflict with the design goals in `BLUEPRINT.md`.
 
+### Invariants
+
+Two rules cost a working machine real downtime when they were broken. Both are
+enforced by tests; if one of those fails, the test is right.
+
+- **The macOS provider never closes a datagram flow.** macOS hands a UDP flow
+  over once: closing it neither returns the socket above to the kernel nor gets
+  it another flow, so every later send on that socket fails locally.
+  `mDNSResponder` keeps one resolver socket per delegated client and never
+  replaces it, so one close ends DNS for that one application until the daemon
+  restarts — while the rest of the host resolves normally and hides it. When the
+  upstream cannot carry a datagram, retire the association and send directly;
+  the flow stays open. Guarded by `DatagramFlowCloseGuardTests`, explained in
+  [docs/MACOS.md](docs/MACOS.md).
+- **The macOS bundle version lives in `macos/project.yml`.** The `Info.plist`
+  files are xcodegen output. Editing them looks like a version bump, survives
+  review, and is reverted by the next generate — and macOS keys
+  system-extension replacement on that number, so an install then silently
+  leaves the old code running.
+
 Never commit private keys, notarization credentials, certificates, proxy
 credentials, generated Xcode data, or release output. Logs and issue reports
 must redact credentials and addresses the reporter considers sensitive.
