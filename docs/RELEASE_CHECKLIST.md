@@ -116,17 +116,22 @@ qualified. Link each completed item to a run, commit, or measurement.
 
 - [x] [RELEASE_NOTES.md](RELEASE_NOTES.md) reviewed, its draft banner removed,
       and its text used as the GitHub Release body
-- [x] `CHANGELOG.md` heading changed from `0.1.0 — UNRELEASED` to `0.1.0` with
-      the tag's ISO date
-- [x] README's "Where the project actually is" section replaced: 0.1.0 is
-      described as a preview, with the three things worth knowing before
-      installing it — no soak on either platform, an unverified kernel floor,
-      and unreliable rootful Podman — stated there rather than left to the
-      evidence log
+- [x] `CHANGELOG.md` heading changed from `Unreleased` to `0.2.0` with the
+      tag's ISO date
+- [x] README's "Where the project actually is" section restated for 0.2.0: a
+      release rather than a preview, with the four things worth knowing before
+      installing it — the macOS fix unqualified on a live host, no completed
+      soak on either platform, an unverified kernel floor, and unreliable
+      rootful Podman — stated there rather than left to the evidence log
 - [x] Release notes state the per-platform maturity from
-      [RELEASING.md](RELEASING.md#what-the-first-release-covers), adjusted for
-      a preview: Linux is the platform this release is for, macOS beta, Windows
-      source only
+      [RELEASING.md](RELEASING.md#what-the-first-release-covers): Linux
+      generally available, macOS beta, Windows source only
+- [ ] macOS: the resolver-lifetime fix this release is named for has run on a
+      live host. It has not. A locally signed system extension cannot activate
+      while SIP is enabled, so the fixed build has only been exercised by unit
+      tests that stand a real SOCKS5 upstream up and kill it; the notarized
+      path is what qualification needs and it has not been run. Recorded here
+      rather than weakened, and stated in the release notes
 - [ ] No Windows binary or driver is attached to the release, and the Windows
       documentation still says it is not a shippable artifact
 
