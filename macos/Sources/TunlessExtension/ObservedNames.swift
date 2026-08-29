@@ -36,10 +36,23 @@ final class ObservedNames: @unchecked Sendable {
     private let now: @Sendable () -> Date
 
     /// Bounds how long one answer may keep claiming an address, whatever TTL it
-    /// carried, and how short a claim may be. A zero TTL still means "this is
-    /// true right now", which is exactly the moment the flow arrives.
+    /// carried, and how short a claim may be.
+    ///
+    /// The floor is not cosmetic. An association is recorded when the answer
+    /// arrives and read when the connection opens, and those are different
+    /// moments: a browser resolves once and then opens connections over the
+    /// seconds that follow, for the page and for every subresource on it.
+    /// Honouring a one-second TTL literally means the first connection is
+    /// recognised and the rest are not — `news.ycombinator.com` publishes a TTL
+    /// of exactly one second, and was measured losing its name every time.
+    ///
+    /// Holding a short-lived answer for half a minute is safe in a way that
+    /// holding a fake address is not. The risk being bounded is that an address
+    /// is reassigned to somebody else and inherits the old name's routing, which
+    /// does not happen inside thirty seconds; and if it somehow did, the flow
+    /// still reaches a real address that still works.
     private static let maxTTL: TimeInterval = 24 * 60 * 60
-    private static let minTTL: TimeInterval = 1
+    private static let minTTL: TimeInterval = 30
     /// Bounds on one message, so that a crafted answer cannot spend the whole
     /// table on itself.
     private static let maxNamesPerMessage = 256
@@ -203,8 +216,7 @@ final class ObservedNames: @unchecked Sendable {
     }
 
     private static func clampedTTL(_ value: UInt32) -> TimeInterval {
-        if value == 0 { return minTTL }
-        return min(TimeInterval(value), maxTTL)
+        min(max(TimeInterval(value), minTTL), maxTTL)
     }
 
     /// The lookup key for a flow's destination.

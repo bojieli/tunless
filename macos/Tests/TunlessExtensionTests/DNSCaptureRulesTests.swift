@@ -26,9 +26,15 @@ final class DNSCaptureRulesTests: XCTestCase {
         ])
 
     func testAResolverInsideAnExcludedRangeIsStillCapturedForDNS() {
+        // Datagrams, because that is the transport the override acts on: a
+        // query carries its question in the first packet, so a name only the
+        // local network can answer is recognised before the route is chosen.
+        // The stream case is covered in ResolverCaptureRulesTests.
         for resolver in ["192.168.3.1", "10.0.0.1", "100.64.0.1", "198.18.0.1"] {
             XCTAssertTrue(
-                installed.captures(host: resolver, port: 53, signingIdentifier: "com.apple.curl"),
+                installed.captures(
+                    host: resolver, port: 53, signingIdentifier: "com.apple.curl",
+                    isDatagram: true),
                 "\(resolver):53 must be captured so the override can rewrite it")
         }
     }
@@ -61,7 +67,9 @@ final class DNSCaptureRulesTests: XCTestCase {
             dnsPort: 53,
             includeDestinations: ["203.0.113.0/24"])
         XCTAssertTrue(
-            allowlist.captures(host: "192.168.3.1", port: 53, signingIdentifier: "com.apple.curl"))
+            allowlist.captures(
+                host: "192.168.3.1", port: 53, signingIdentifier: "com.apple.curl",
+                isDatagram: true))
         XCTAssertFalse(
             allowlist.captures(host: "192.168.3.1", port: 443, signingIdentifier: "com.apple.curl"))
     }
@@ -71,21 +79,37 @@ final class DNSCaptureRulesTests: XCTestCase {
         // discovery — none of which is on port 53. A router advertising itself
         // as the resolver over IPv6 does so at a link-local address, which makes
         // it exactly the resolver the override exists to replace.
-        XCTAssertTrue(installed.captures(host: "fe80::1", port: 53, signingIdentifier: "com.apple.curl"))
         XCTAssertTrue(
-            installed.captures(host: "169.254.1.1", port: 53, signingIdentifier: "com.apple.curl"))
+            installed.captures(
+                host: "fe80::1", port: 53, signingIdentifier: "com.apple.curl", isDatagram: true))
+        XCTAssertTrue(
+            installed.captures(
+                host: "169.254.1.1", port: 53, signingIdentifier: "com.apple.curl",
+                isDatagram: true))
         XCTAssertFalse(installed.captures(host: "fe80::1", port: 443, signingIdentifier: "com.apple.curl"))
     }
 
     func testTheDatapathIsStillReservedOnPortFiftyThree() {
         // Handing the upstream's own query back to the upstream is the loop
         // that takes DNS down host-wide, so the exemption must not reach it.
-        XCTAssertFalse(installed.captures(host: "1.1.1.1", port: 53, signingIdentifier: "com.apple.curl"))
-        XCTAssertFalse(installed.captures(host: "127.0.0.1", port: 53, signingIdentifier: "com.apple.curl"))
-        for unroutable in ["0.0.0.0", "224.0.0.251", "255.255.255.255", "::1", "ff02::1"] {
+        // The trusted resolver is reachable on datagrams now, policed by the
+        // loop guard rather than by address; see ResolverCaptureRulesTests. The
+        // upstream and the unroutable set stay reserved on every transport.
+        XCTAssertFalse(
+            installed.captures(
+                host: "1.1.1.1", port: 53, signingIdentifier: "com.apple.curl", isDatagram: false))
+        for isDatagram in [true, false] {
             XCTAssertFalse(
-                installed.captures(host: unroutable, port: 53, signingIdentifier: "com.apple.curl"),
-                "\(unroutable):53 must never be captured")
+                installed.captures(
+                    host: "127.0.0.1", port: 53, signingIdentifier: "com.apple.curl",
+                    isDatagram: isDatagram))
+            for unroutable in ["0.0.0.0", "224.0.0.251", "255.255.255.255", "::1", "ff02::1"] {
+                XCTAssertFalse(
+                    installed.captures(
+                        host: unroutable, port: 53, signingIdentifier: "com.apple.curl",
+                        isDatagram: isDatagram),
+                    "\(unroutable):53 must never be captured")
+            }
         }
     }
 
@@ -95,8 +119,11 @@ final class DNSCaptureRulesTests: XCTestCase {
         XCTAssertFalse(
             installed.captures(
                 host: "192.168.3.1", port: 53, signingIdentifier: "verge-mihomo",
-                executablePath: "/Applications/Clash Verge.app/Contents/MacOS/verge-mihomo"))
+                executablePath: "/Applications/Clash Verge.app/Contents/MacOS/verge-mihomo",
+                isDatagram: true))
         XCTAssertTrue(
-            installed.captures(host: "192.168.3.1", port: 53, signingIdentifier: "com.apple.curl"))
+            installed.captures(
+                host: "192.168.3.1", port: 53, signingIdentifier: "com.apple.curl",
+                isDatagram: true))
     }
 }

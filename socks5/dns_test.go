@@ -219,3 +219,59 @@ func TestOversizedQueriesAreNotRetainedForObservation(t *testing.T) {
 		t.Fatal("oversized query lost its reply mapping")
 	}
 }
+
+func TestTheUpstreamsForwardedQueryIsRecognisedAndNotRelayedAgain(t *testing.T) {
+	// Capture rewrites the transaction ID of every query it relays. The upstream
+	// forwards that query verbatim, so the dial that would close the loop is
+	// carrying an ID capture is still holding open, while an application's own
+	// query to the same resolver is not.
+	guard := newResolverLoopGuard()
+	m := newDNSTransactionMap(8, time.Minute)
+	m.loopGuard = guard
+	override := netip.MustParseAddrPort("1.1.1.1:53")
+
+	sent, destination, direct := m.prepare(dnsQuery(0x1234, "www", "google", "com"), override, override)
+	if destination != override || direct {
+		t.Fatalf("query was not relayed to the trusted resolver (dst=%s direct=%v)", destination, direct)
+	}
+	// The upstream's forwarded copy carries the ID capture assigned.
+	if !guard.relaying(sent) {
+		t.Fatal("a query in flight was not recognised")
+	}
+	// An application's own query, with an ID capture never issued, is not.
+	var unrelated uint16 = binary.BigEndian.Uint16(sent[:2]) + 1
+	if guard.relaying(dnsQuery(unrelated, "www", "example", "com")) {
+		t.Fatal("an unrelated query was mistaken for one in flight")
+	}
+	// Once the answer comes back the ID is no longer in flight.
+	m.restore(sent, override)
+	if guard.relaying(sent) {
+		t.Fatal("a completed exchange still counted as in flight")
+	}
+}
+
+func TestTheLoopGuardExpiresAndIsBounded(t *testing.T) {
+	guard := newResolverLoopGuard()
+	now := time.Now()
+	guard.now = func() time.Time { return now }
+	query := dnsQuery(0x4242, "www", "example", "com")
+	guard.register(0x4242)
+	if !guard.relaying(query) {
+		t.Fatal("registered ID was not in flight")
+	}
+	// An entry outlives its exchange only when a reply never came, and the
+	// lifetime is what bounds that.
+	now = now.Add(guard.lifetime + time.Second)
+	if guard.relaying(query) {
+		t.Fatal("an expired entry still counted as in flight")
+	}
+	// A full table stops registering rather than evicting: dropping an entry to
+	// make room would let the query it belonged to close the loop.
+	guard.max = 2
+	guard.register(1)
+	guard.register(2)
+	guard.register(3)
+	if len(guard.inFlight) > 2 {
+		t.Fatalf("guard held %d entries, want at most 2", len(guard.inFlight))
+	}
+}

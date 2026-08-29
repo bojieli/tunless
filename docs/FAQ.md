@@ -230,10 +230,20 @@ Two things close it, and both are on by default:
 
 - **The query is captured.** A port-53 flow is exempt from destination rules
   while a DNS override is configured, so the resolver your network handed out no
-  longer escapes the override by living on a private address.
+  longer escapes the override by living on a private address — and neither does
+  the resolver you configured yourself, including the one `tunless` relays to.
 - **The answer is remembered.** tunless is relaying those queries, so it records
   which name each address was answered for and gives a nameless flow its name
   back before emitting it.
+
+Name recovery applies to TCP. A browser's QUIC and HTTP/3 traffic is emitted on
+its address even when the name is known, which costs domain rules on that
+transport and nothing else — the address is a real one that reaches the right
+server. The reason is measurable rather than architectural: a SOCKS5 UDP relay
+reports the source of every reply, and an upstream asked to send to a name
+reports the address it resolved that name to, so a QUIC client's connected socket
+would see replies from an address it never wrote to and the kernel would drop
+them. Emitting the address keeps QUIC working.
 
 This is not fake-IP wearing a different hat. Every address here is real, so a
 mapping that has expired, or that two names claim, or that was never seen, costs
@@ -274,10 +284,12 @@ On macOS the flag is spelled the same way and `TUNLESS_LOCAL_DOMAIN` sets it in
 the environment file.
 
 One limit worth knowing: this split reads the query, so it applies to DNS over
-UDP. A DNS query over TCP has to be routed before any bytes arrive, so it is
-sent to the trusted resolver like anything else. Stub resolvers use UDP first
-and fall back to TCP only for answers too large to fit, so a local name reaching
-that path at all is unusual.
+UDP. A DNS query over TCP has to be routed before any bytes arrive, so `tunless`
+does not claim one aimed at a resolver on your own network — it goes out
+untouched, exactly as it would if nothing were installed, and your local resolver
+answers it. DNS over TCP to a public resolver is still captured and redirected,
+since a public resolver has no local names to lose. Stub resolvers use UDP first
+and fall back to TCP only for answers too large to fit.
 
 ## What happens if tunless crashes?
 
