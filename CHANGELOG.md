@@ -3,6 +3,25 @@
 This project follows semantic versioning after its first public release. Dates
 use ISO 8601.
 
+## 0.2.3 — 2026-08-29
+
+### Fixed
+
+- The fix 0.2.2 shipped for an application's own query to the trusted resolver
+  was inert on macOS. The flow was claimed — telemetry said so, which is what made
+  it read as working — and then every datagram on it was sent direct anyway,
+  because the datagram path asked whether the destination was reserved without
+  saying it was a datagram, and the parameter defaults to the answer for a
+  stream. On a host with the upstream's TUN underneath, `dig @1.1.1.1` kept
+  returning a fake address from the datapath the query was supposed to bypass.
+- A query already addressed to the trusted resolver is given an identifier of
+  capture's own even though its route does not change. Without one the loop guard
+  has nothing to recognise, so claiming those flows would have reopened exactly
+  the loop the old address reservation existed to close: the upstream's forwarded
+  copy would carry the application's identifier, look like an ordinary lookup, and
+  be relayed again. It did not happen in 0.2.2 only because the first defect kept
+  those flows from being relayed at all.
+
 ## 0.2.2 — 2026-08-29
 
 ### Fixed
