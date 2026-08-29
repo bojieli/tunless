@@ -118,3 +118,65 @@ final class ResolverCaptureRulesTests: XCTestCase {
                 host: "8.8.8.8", port: 53, signingIdentifier: "com.apple.curl", isDatagram: false))
     }
 }
+
+/// The datagram path has to ask the reservation question the way it means it.
+///
+/// Both of these were live defects that unit tests passed straight through: the
+/// flow was claimed, telemetry said so, and the answers still came from whatever
+/// the network wanted to say.
+final class ResolverDatagramPathTests: XCTestCase {
+    private let installed = ProviderConfiguration(
+        upstreamHost: "127.0.0.1", upstreamPort: 7897, dnsHost: "1.1.1.1", dnsPort: 53)
+
+    func testTheDatagramPathDoesNotReserveTheTrustedResolver() {
+        // routesDirect is the datagram path by construction. Asking without
+        // isDatagram gets the answer for a stream, which sends every datagram on
+        // an already-claimed flow straight back out.
+        XCTAssertFalse(
+            DatagramFlowContinuity.routesDirect(
+                capturePaused: false,
+                destination: SOCKSAddress(host: "1.1.1.1", port: 53),
+                configuration: installed))
+        // The upstream is still reserved on the datagram path.
+        XCTAssertTrue(
+            DatagramFlowContinuity.routesDirect(
+                capturePaused: false,
+                destination: SOCKSAddress(host: "127.0.0.1", port: 7897),
+                configuration: installed))
+        // And a paused capture still routes everything direct.
+        XCTAssertTrue(
+            DatagramFlowContinuity.routesDirect(
+                capturePaused: true,
+                destination: SOCKSAddress(host: "203.0.113.1", port: 443),
+                configuration: installed))
+    }
+
+    func testAQueryToTheResolverItselfStillGetsAnIdentifierToRecogniseItBy() async {
+        // Rewritten to itself, nothing distinguishes this datagram from the one
+        // the upstream forwards — so the guard has nothing to recognise unless an
+        // identifier is assigned anyway.
+        let guardian = ResolverLoopGuard()
+        let map = DNSResponseMap(maxEntries: 16, ttlSeconds: 30, loopGuard: guardian)
+        let resolver = SOCKSAddress(host: "1.1.1.1", port: 53)
+        var query = Data([0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        query.append(contentsOf: DNSWire.question("www.google.com"))
+
+        let unpoliced = await map.prepare(query: query, original: resolver, routed: resolver)
+        XCTAssertEqual(unpoliced, query, "an unpoliced identical route should be left alone")
+        XCTAssertFalse(guardian.isRelayedQuery(unpoliced))
+
+        let policed = await map.prepare(
+            query: query, original: resolver, routed: resolver, policed: true)
+        XCTAssertNotEqual(policed.prefix(2), query.prefix(2), "no identifier was assigned")
+        XCTAssertTrue(
+            guardian.isRelayedQuery(policed),
+            "the upstream's forwarded copy would not be recognised")
+
+        // The reply still maps back to the application's own identifier.
+        let restored = await map.restore(response: policed, receivedFrom: resolver)
+        XCTAssertTrue(restored.matched)
+        XCTAssertEqual(restored.payload.prefix(2), query.prefix(2))
+        XCTAssertEqual(restored.source, resolver)
+        XCTAssertFalse(guardian.isRelayedQuery(policed), "a finished exchange stayed in flight")
+    }
+}

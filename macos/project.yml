@@ -29,8 +29,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: tunless
-        CFBundleShortVersionString: 1.0.10
-        CFBundleVersion: "17"
+        CFBundleShortVersionString: 1.0.11
+        CFBundleVersion: "18"
         LSMinimumSystemVersion: "15.0"
         LSUIElement: true
     entitlements:
@@ -52,8 +52,8 @@ targets:
       properties:
         CFBundleDisplayName: tunless transparent proxy
         CFBundlePackageType: SYSX
-        CFBundleShortVersionString: 1.0.10
-        CFBundleVersion: "17"
+        CFBundleShortVersionString: 1.0.11
+        CFBundleVersion: "18"
         NetworkExtension:
           NEProviderClasses:
             com.apple.networkextension.app-proxy: $(PRODUCT_MODULE_NAME).TransparentProxyProvider

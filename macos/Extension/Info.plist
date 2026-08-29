@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>SYSX</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.10</string>
+	<string>1.0.11</string>
 	<key>CFBundleVersion</key>
-	<string>17</string>
+	<string>18</string>
 	<key>NSSystemExtensionUsageDescription</key>
 	<string>tunless transparently sends selected application connections to your local SOCKS5 proxy.</string>
 	<key>NetworkExtension</key>

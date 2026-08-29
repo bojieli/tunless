@@ -731,7 +731,14 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let routed = payload.count >= 12
             ? configuration.routedDestination(for: original)
             : original
-        let prepared = await dnsResponses.prepare(query: payload, original: original, routed: routed)
+        // A query already addressed to the trusted resolver is rewritten to
+        // itself, so nothing about it differs from the datagram the upstream
+        // will forward — and the loop guard works by recognising an identifier
+        // capture assigned. Ask for one anyway on exactly those flows, or
+        // claiming them reopens the loop the address reservation used to close.
+        let policed = original.port == 53 && Self.sameResolver(original, configuration: configuration)
+        let prepared = await dnsResponses.prepare(
+            query: payload, original: original, routed: routed, policed: policed)
         await association.remember(destination: original)
         var frame = Data([0, 0, 0])
         guard let encoded = try? routed.encoded() else { return }
@@ -1424,8 +1431,14 @@ enum DatagramFlowContinuity {
         destination: SOCKSAddress,
         configuration: ProviderConfiguration
     ) -> Bool {
+        // isDatagram is not optional here: this is the datagram path by
+        // construction, and asking without it gets the answer for a stream —
+        // which reserves the trusted resolver and sends every datagram on an
+        // already-claimed flow straight back out. The flow is claimed, the
+        // telemetry says so, and the answers still come from whatever the
+        // network wanted to say.
         capturePaused || configuration.reservedDestination(
-            host: destination.host, port: destination.port)
+            host: destination.host, port: destination.port, isDatagram: true)
     }
 }
 
@@ -1515,8 +1528,13 @@ actor DNSResponseMap {
         self.loopGuard = loopGuard
     }
 
-    func prepare(query: Data, original: SOCKSAddress, routed: SOCKSAddress) -> Data {
-        guard maxEntries > 0, routed != original, query.count >= 12 else { return query }
+    /// `policed` forces an identifier to be assigned even when the destination is
+    /// unchanged, so that the loop guard can recognise the upstream's forwarded
+    /// copy of a query aimed at the trusted resolver itself.
+    func prepare(
+        query: Data, original: SOCKSAddress, routed: SOCKSAddress, policed: Bool = false
+    ) -> Data {
+        guard maxEntries > 0, routed != original || policed, query.count >= 12 else { return query }
         let now = Date()
         prune(now: now)
         if entries.count >= maxEntries {

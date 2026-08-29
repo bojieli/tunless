@@ -194,9 +194,19 @@ final class DatagramFlowContinuityTests: XCTestCase {
             capturePaused: false,
             destination: SOCKSAddress(host: "223.6.6.6", port: 53),
             configuration: config))
-        XCTAssertTrue(DatagramFlowContinuity.routesDirect(
+        // A datagram to the trusted resolver is relayed now rather than sent
+        // direct. Reserving it here was how an application that had configured
+        // the same resolver got no override at all, and the loop that
+        // reservation existed for is caught by the identifier capture assigns
+        // instead — see ResolverLoopGuard.
+        XCTAssertFalse(DatagramFlowContinuity.routesDirect(
             capturePaused: false,
             destination: SOCKSAddress(host: "1.1.1.1", port: 53),
+            configuration: config))
+        // The upstream itself is still reserved on every transport.
+        XCTAssertTrue(DatagramFlowContinuity.routesDirect(
+            capturePaused: false,
+            destination: SOCKSAddress(host: config.upstreamHost, port: config.upstreamPort),
             configuration: config))
     }
 
