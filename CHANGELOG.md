@@ -3,6 +3,52 @@
 This project follows semantic versioning after its first public release. Dates
 use ISO 8601.
 
+## Unreleased
+
+### Fixed
+
+- Capture claims port-53 flows whatever the destination rules say, while a DNS
+  override is configured. The override could not see the resolver a home network
+  hands out: routers live inside `192.168.0.0/16`, that range is excluded by
+  default so nobody accidentally proxies their own LAN, and the exclusion was
+  applied before the port was ever considered. Nothing errored. Queries went out
+  on the network's own path, came back with whatever that path chose to answer,
+  and every name on the host resolved to it. Link-local is no longer reserved
+  against port 53 either, because a router advertising itself as the resolver
+  over IPv6 does so at a link-local address. Process rules and the rest of the
+  reserved set still apply, so the loop protection around the upstream and the
+  trusted resolver is unchanged.
+- macOS recovers the hostname for a flow that arrives without one. The system
+  attaches `remoteHostname` only for names it resolved itself, so an application
+  with its own DNS client — every Chromium browser, Firefox, anything shipping a
+  resolver — produced flows carrying a bare address, and the proxy lost every
+  rule written about names. Where the address came from a resolver that answered
+  falsely, relaying it faithfully relayed the lie: the browser connected to
+  somebody else's server while `curl`, whose name reached the proxy intact,
+  worked from the same machine. The provider now records which name each address
+  was answered for, from answers that came through the trusted resolver, and
+  hands the name over instead. Associations expire on the TTL that carried them
+  and are dropped when two names claim one address. Unlike a fake IP, a missing
+  or ambiguous association costs only rule-by-name: the address is real and the
+  flow still reaches it.
+- Linux builds the same address-to-name map from captured DNS rather than only
+  from `--dns-listen`, so name recovery no longer requires applications to be
+  pointed at the observer — which the applications that need it never are.
+- `Observer.Lookup` no longer returns a trailing root label. A rule engine that
+  does not normalise `www.google.com.` misses every `DOMAIN` rule written for
+  it.
+
+### Added
+
+- `--local-domain`, repeatable, names split-horizon zones that the DNS override
+  must leave with the application's own resolver. Reserved and private name
+  spaces — `.local`, `.home.arpa`, `.internal`, `.lan`, `.test`, `.localhost`,
+  unqualified names, and the reverse zones for private, CGNAT and link-local
+  space — are recognised without being named, and now go to the application's
+  own resolver directly rather than through the proxy. A private resolver
+  reached through a remote node is as unanswerable as a public resolver that
+  never heard of the name. `TUNLESS_LOCAL_DOMAIN` sets it in the environment.
+
 ## 0.2.0 — 2026-08-27
 
 ### Fixed

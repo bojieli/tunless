@@ -262,6 +262,15 @@ transfers nothing. If something stops working after the TUN comes down, the
 causes are enumerated in
 [I turned the TUN off and some things stopped working](docs/FAQ.md#i-turned-the-tun-off-and-some-things-stopped-working).
 
+Browsers are the case worth calling out, because they fail while `curl` on the
+same machine works. A browser resolves names with its own DNS client, so the
+operating system has no name to attach to the flow and your proxy is handed
+whatever address that lookup produced — which, on a network that answers DNS
+falsely, is somebody else's server. `tunless` closes this from both ends: the
+query is captured whatever the resolver's address is, and the answer is
+remembered so the connection that follows is emitted under its name. See
+[why does a browser fail when curl works?](docs/FAQ.md#why-does-a-browser-fail-when-curl-works)
+
 ## Migrate from sing-box TUN
 
 Remove the `tun` inbound and any `hijack-dns` rules used solely by it. Keep or

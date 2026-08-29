@@ -235,6 +235,72 @@ configuration — but capturing them is wrong far more often than it is right.
 Naming one with `--include-destination` removes it from the default set;
 `--no-default-exclusions` drops the whole set.
 
+**Port 53 is judged by neither.** A resolver's address is not a destination the
+application chose to reach — it is a resolver the network handed out, and
+replacing it with a trusted one is the whole point of the DNS override. Judging a
+port-53 flow by that address therefore asks the wrong question and answers it in
+the direction that fails silently: a home network hands out the router as the
+resolver, the router is inside `192.168.0.0/16`, that range is excluded so nobody
+accidentally proxies their own LAN, and the override is left structurally unable
+to see the one flow it was configured for. Nothing reports an error. Queries go
+out on the network's own path, come back with whatever that path chose to answer,
+and every name on the host resolves to it.
+
+So while `--dns-upstream` is set, a port-53 flow is captured whatever the
+destination rules say, and link-local is not reserved against it either — a
+router advertising itself as the resolver over IPv6 does so at a link-local
+address. Process rules still apply, and so does the rest of the reserved set:
+handing the upstream's own query back to the upstream is the loop the reservation
+exists to prevent, and port 53 is the only port it happens on. Loopback stays
+reserved, so a stub resolver at `127.0.0.1:53` is left alone; the upstream is
+reserved by host rather than by host and port, and it is usually on loopback too.
+
+### Names an application never told the kernel
+
+macOS attaches `remoteHostname` to a flow only for a name it resolved on the
+application's behalf. An application with its own DNS client — every Chromium
+browser, Firefox, anything that ships a resolver — never gives the kernel a name,
+so its flows arrive as bare addresses and the proxy loses every rule written
+about names. On a network that answers DNS falsely the address is whatever the
+network said, so relaying it faithfully relays the lie.
+
+Capture is already relaying those queries, so the provider records which name
+each address was answered for and gives a nameless flow its name back before
+emitting it. Associations are learned only from answers that came through the
+trusted resolver, expire on the TTL that carried them, and are dropped when two
+names claim one address, which is the ordinary shape of shared hosting.
+
+The difference from the fake-IP scheme this replaces is worth stating, because
+the mechanism looks similar and the failure modes are opposite. Every address
+here is real. A mapping that has expired, is ambiguous, or was never seen costs
+rule-by-name and nothing else, because the flow still goes out on an address that
+works. A fake IP that outlives its mapping connects and then transfers nothing.
+
+`--telemetry` shows the result directly: a flow with a `hostname` was handed over
+by name, and one whose `hostname` is null was handed over by address.
+
+### Names only your own network can answer
+
+A query for a name the local network owns is not sent to the trusted resolver.
+It goes to the resolver the application chose, and goes there directly rather
+than through the proxy — a private resolver reached through a remote node is as
+unanswerable as a public resolver that never heard of the name.
+
+Reserved and private name spaces are recognised without being told: `.local`,
+`.home.arpa`, `.internal`, `.lan`, `.test`, `.localhost`, unqualified
+single-label names, and the reverse zones for private, CGNAT and link-local
+space. Split-horizon zones cannot be predicted, so name those:
+
+```console
+/Applications/Tunless.app/Contents/MacOS/Tunless start \
+  --preset clash-verge --upstream 127.0.0.1:7897 \
+  --local-domain corp.example.com
+```
+
+`TUNLESS_LOCAL_DOMAIN` sets the same thing in the environment file. The split
+reads the query, so it applies to DNS over UDP; a query over TCP is routed before
+any bytes arrive and goes to the trusted resolver like anything else.
+
 ### Deploying without losing the network
 
 Enabling capture moves every matching flow onto the SOCKS5 upstream at once,

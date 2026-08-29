@@ -71,6 +71,10 @@ struct LauncherConfiguration: Codable, Equatable {
     /// after the probe runs, so the provider's watchdog knows what working
     /// looked like at start rather than assuming TCP is the whole story.
     var expectUDPRelay: Bool?
+    /// Name suffixes the DNS override leaves with the application's own
+    /// resolver, on top of the reserved and private name spaces the provider
+    /// recognises without being told.
+    let localDomains: [String]?
 
     /// A copy that records what the DNS preflight observed about UDP.
     func expectingUDPRelay(_ expected: Bool) -> LauncherConfiguration {
@@ -118,6 +122,7 @@ struct LauncherArguments: Equatable {
         var excludeProcesses: [String] = []
         var includeDestinations: [String] = []
         var excludeDestinations: [String] = []
+        var localDomains: [String] = []
         var skipVerifyOption: Bool?
         var defaultExclusionsOption: Bool?
         var disableWatchdogOption: Bool?
@@ -182,6 +187,8 @@ struct LauncherArguments: Equatable {
                 index += 1
             case "--exclude-destination":
                 excludeDestinations.append(try value(after: index, for: argument))
+            case "--local-domain":
+                localDomains.append(try value(after: index, for: argument))
                 index += 1
             default:
                 if let pair = Self.optionPair(argument) {
@@ -200,6 +207,7 @@ struct LauncherArguments: Equatable {
                     case "--exclude-process": excludeProcesses.append(pair.value)
                     case "--include-destination": includeDestinations.append(pair.value)
                     case "--exclude-destination": excludeDestinations.append(pair.value)
+                    case "--local-domain": localDomains.append(pair.value)
                     default: throw LauncherArgumentError.unknownOption(pair.name)
                     }
                 } else if argument.hasPrefix("-") {
@@ -290,6 +298,7 @@ struct LauncherArguments: Equatable {
         excludeProcesses.append(contentsOf: Self.environmentList("TUNLESS_EXCLUDE_PROCESS", environment: environment))
         includeDestinations.append(contentsOf: Self.environmentList("TUNLESS_INCLUDE_DESTINATION", environment: environment))
         excludeDestinations.append(contentsOf: Self.environmentList("TUNLESS_EXCLUDE_DESTINATION", environment: environment))
+        localDomains.append(contentsOf: Self.environmentList("TUNLESS_LOCAL_DOMAIN", environment: environment))
         if let preset {
             excludeProcesses.insert(contentsOf: preset.excludedProcesses, at: 0)
         }
@@ -326,7 +335,8 @@ struct LauncherArguments: Equatable {
             excludeDestinations: Self.optionalUnique(excludeDestinations),
             disableHealthWatchdog: disableWatchdogOption,
             maxConcurrentFlows: maxFlowsOption,
-            expectUDPRelay: nil)
+            expectUDPRelay: nil,
+            localDomains: Self.optionalUnique(localDomains))
     }
 
     private static func optionPair(_ argument: String) -> (name: String, value: String)? {

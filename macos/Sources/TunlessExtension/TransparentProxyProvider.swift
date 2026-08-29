@@ -27,6 +27,9 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
 
     private var configuration = ProviderConfiguration(upstreamHost: "127.0.0.1", upstreamPort: 7890)
     private var telemetry: [FlowTelemetry] = []
+    /// Names learned from the DNS this provider relayed, used to give a flow
+    /// back the hostname its application never told the kernel about.
+    private let observedNames = ObservedNames()
     private var activeFlows: [UUID: ActiveFlow] = [:]
     private var stopping = false
     private let lock = NSLock()
@@ -326,7 +329,18 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         // SOCKS5 length byte, or one carrying control characters, is not a
         // reason to fail the connection: the address is always encodable, and
         // reaching the destination on IP rules beats not reaching it.
-        let routeHost = SOCKSAddress.usableHostname(tcp.remoteHostname) ?? originalDestination.host
+        //
+        // macOS supplies `remoteHostname` only for a name it resolved on the
+        // application's behalf. An application with its own resolver — every
+        // Chromium browser, Firefox, anything with a built-in DNS client —
+        // never tells the kernel a name at all, so the flow arrives as a bare
+        // address and everything the proxy decides by name is lost. Capture
+        // relayed that application's query a moment ago, so ask what the answer
+        // said before giving up and going out on the address.
+        let routeHost =
+            SOCKSAddress.usableHostname(tcp.remoteHostname)
+            ?? SOCKSAddress.usableHostname(observedNames.lookup(host: originalDestination.host))
+            ?? originalDestination.host
         let requestedDestination = SOCKSAddress(host: routeHost, port: originalDestination.port)
         let routedDestination = selected.routedDestination(for: requestedDestination)
         noteCarriedResolver(originalDestination, overUDP: false)
@@ -564,7 +578,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let routedForTelemetry = configuration.routedDestination(for: initialDestination)
         let writer = FlowWriter(flow: flow)
         let direct = DirectDatagramRelay(sink: writer)
-        let dnsResponses = DNSResponseMap(maxEntries: 4096, ttlSeconds: 30)
+        let dnsResponses = DNSResponseMap(
+            maxEntries: 4096, ttlSeconds: 30, observedNames: observedNames)
         // mDNSResponder keeps its UDP resolver sockets for much longer than an
         // individual lookup, so port-53 flows carry no association idle limit.
         // Ordinary UDP keeps the bounded two-minute one, which now retires the
@@ -673,6 +688,18 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             capturePaused: decliningFlows(),
             destination: original,
             configuration: configuration) {
+            await sendDirect(nil)
+            return
+        }
+        // A name the local network owns stays with the resolver that can answer
+        // it, and goes there the way it would have gone if capture had never
+        // claimed the flow. Redirecting it to a trusted public resolver does not
+        // produce a safer answer, it produces no answer: the printer, the NAS
+        // and the router's own name exist only on this network. This is not a
+        // degradation, so it is not logged as one.
+        if original.port == 53, configuration.dnsHost != nil,
+            LocalNames.queryIsLocal(payload, extraSuffixes: configuration.localDomains ?? [])
+        {
             await sendDirect(nil)
             return
         }
@@ -1427,6 +1454,9 @@ actor DNSResponseMap {
         let original: SOCKSAddress
         let routed: SOCKSAddress
         let expires: Date
+        /// The rewritten query, retained only while an observer is attached and
+        /// only up to `maxRememberedQuery` bytes. See `rememberQuery`.
+        let query: Data?
     }
 
     private var entries: [UInt16: Entry] = [:]
@@ -1434,17 +1464,26 @@ actor DNSResponseMap {
     private let maxEntries: Int
     private let ttlSeconds: TimeInterval
     private let randomIdentifier: @Sendable () -> UInt16
+    private let observedNames: ObservedNames?
+
+    /// Bounds the copy of a query held for observation. A question section
+    /// larger than this is not one whose answer is worth remembering an address
+    /// for, and the bound keeps a saturated map from holding megabytes of
+    /// queries that have not been answered yet.
+    private static let maxRememberedQuery = 512
 
     init(
         maxEntries: Int = 4096,
         ttlSeconds: TimeInterval = 30,
         randomIdentifier: @escaping @Sendable () -> UInt16 = {
             UInt16.random(in: UInt16.min ... UInt16.max)
-        }
+        },
+        observedNames: ObservedNames? = nil
     ) {
         self.maxEntries = maxEntries
         self.ttlSeconds = ttlSeconds
         self.randomIdentifier = randomIdentifier
+        self.observedNames = observedNames
     }
 
     func prepare(query: Data, original: SOCKSAddress, routed: SOCKSAddress) -> Data {
@@ -1461,12 +1500,31 @@ actor DNSResponseMap {
         }
         guard let translatedID = allocateID() else { return query }
         let originalID = Self.identifier(in: query)!
+        let rewritten = Self.replacingIdentifier(in: query, with: translatedID)
         entries[translatedID] = Entry(
             originalID: originalID,
             original: original,
             routed: routed,
-            expires: now.addingTimeInterval(ttlSeconds))
-        return Self.replacingIdentifier(in: query, with: translatedID)
+            expires: now.addingTimeInterval(ttlSeconds),
+            // The rewritten copy, not the application's original: the answer
+            // comes back carrying the translated ID, and pairing a query with an
+            // answer means matching it.
+            query: rememberQuery(rewritten))
+        return rewritten
+    }
+
+    /// Keeps the outbound message when there is an observer to feed.
+    ///
+    /// Only queries rewritten to the trusted resolver are remembered, so only
+    /// their answers are ever observed. That is the point rather than an
+    /// accident: these associations decide which hostname a later flow is
+    /// proxied under, so learning one from an answer that arrived on the
+    /// network's own path would let whoever supplied that answer choose the
+    /// name — the poisoning this path exists to route around, re-entering one
+    /// layer up.
+    private func rememberQuery(_ query: Data) -> Data? {
+        guard observedNames != nil, query.count <= Self.maxRememberedQuery else { return nil }
+        return query
     }
 
     func restore(response: Data, receivedFrom source: SOCKSAddress) -> RestoredResponse {
@@ -1481,6 +1539,12 @@ actor DNSResponseMap {
             return RestoredResponse(payload: response, source: source, matched: false)
         }
         entries.removeValue(forKey: translatedID)
+        if let observedNames, let query = entry.query {
+            // The response still carries the translated ID here, which is the
+            // ID the remembered query carries, so the observer's own matching
+            // check sees the pair as the exchange it was.
+            observedNames.observe(query: query, reply: response)
+        }
         return RestoredResponse(
             payload: Self.replacingIdentifier(in: response, with: entry.originalID),
             source: entry.original,

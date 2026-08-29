@@ -33,6 +33,14 @@ type Client struct {
 	DNSOverride      netip.AddrPort
 	FlowIdleTimeout  time.Duration
 	UDPIdleTimeout   time.Duration
+	// LocalDomains are name suffixes the DNS override leaves with the
+	// application's own resolver, in addition to the reserved and private name
+	// spaces internal/dnsname recognises on its own.
+	LocalDomains []string
+	// ObserveDNS, when set, receives each query relayed to the trusted resolver
+	// together with its answer, so that the addresses in that answer can be
+	// associated with the name that was asked for.
+	ObserveDNS func(query, reply []byte)
 }
 
 var ErrUDPIdleTimeout = errors.New("SOCKS5 UDP association idle timeout")
@@ -354,9 +362,19 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 		}
 	}
 	translations := newDNSTransactionMap(4096, 30*time.Second)
+	translations.localDomains = c.LocalDomains
+	translations.observe = c.ObserveDNS
 	// Datagrams neither side could carry. Counted rather than ignored, so a
 	// session that quietly loses traffic still says so when it ends.
 	var dropped atomic.Uint64
+	// Replies to datagrams that bypassed the proxy re-enter the flow the same
+	// way relayed ones do, addressed from the destination the sender used.
+	directRelay := newDirectDatagramRelay(func(payload []byte, from netip.AddrPort) {
+		if err := flow.Packets.WritePacket(workerCtx, tunless.Packet{Payload: payload, Dst: from}); err != nil {
+			dropped.Add(1)
+		}
+	})
+	defer directRelay.close()
 	var workers sync.WaitGroup
 	workers.Add(3)
 	go func() {
@@ -380,7 +398,14 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 				dropped.Add(1)
 				continue
 			}
-			payload, destination := translations.prepare(packet.Payload, packet.Dst, c.DNSOverride)
+			payload, destination, direct := translations.prepare(packet.Payload, packet.Dst, c.DNSOverride)
+			if direct {
+				if !directRelay.send(payload, destination) {
+					dropped.Add(1)
+				}
+				touch()
+				continue
+			}
 			address := encodeAddr(destination)
 			if 3+len(address)+len(payload) > maxUDPDatagramSize(udpNetwork) {
 				dropped.Add(1)

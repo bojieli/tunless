@@ -78,6 +78,18 @@ removes reachability instead of adding a route, so no filter can put them back
 — `--include-destination 0.0.0.0/0` included. The upstream and the trusted
 resolver are reserved alongside them, for the loop described below.
 
+Port 53 is the one exception, and only while a DNS override is configured.
+Destination rules — the default private, CGNAT and `198.18.0.0/15` exclusions,
+and any `--exclude-destination` or `--include-destination` — do not apply to a
+port-53 flow, because a resolver's address is not a destination the application
+chose to reach. It is a resolver the network handed out, which is precisely what
+the override replaces, and judging the flow by that address is how a home
+router's resolver inside `192.168.0.0/16` escapes the override entirely. macOS
+additionally stops reserving link-local for port 53, since a router advertising
+itself as the resolver over IPv6 does so at a link-local address. Process rules,
+the upstream, the trusted resolver, loopback, and the unroutable set are all
+still reserved against it.
+
 How much of the resolver is reserved differs by platform, and it is worth
 knowing which one you are on. macOS reserves the endpoint: the resolver's
 address at the port capture rewrites to, so a connection to that same address
@@ -105,7 +117,20 @@ carries lookups. A record that changes later is picked up by restarting. `--flow
 `--udp-idle-timeout` bound abandoned flows; zero disables the corresponding
 timeout.
 
-## DNS observation (opt-in)
+## DNS observation
+
+Capture feeds the same address-to-name map from the queries it relays, so a flow
+that arrives without a hostname — which is every flow from an application with
+its own DNS client, meaning every Chromium browser and Firefox — is emitted
+under the name its own lookup asked for rather than under a bare address. That
+runs whenever the DNS override does, and needs no listener. `--dns-listen`
+additionally exposes the observer as a resolver applications can be pointed at.
+
+Only answers that came back through the trusted resolver are recorded. An
+association learned from an answer that arrived on the network's own path would
+let whoever supplied that answer choose the name a later flow is proxied under,
+which is the poisoning the override exists to route around, re-entering one
+layer up.
 
 The observer forwards UDP and TCP DNS without changing answers, records A/AAAA
 TTL mappings, and supplies a hostname only when exactly one unexpired name maps

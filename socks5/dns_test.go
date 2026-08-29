@@ -18,8 +18,8 @@ func TestDNSTransactionIDsDisambiguateConcurrentResolvers(t *testing.T) {
 	override := netip.MustParseAddrPort("1.1.1.1:53")
 	firstOriginal := netip.MustParseAddrPort("223.6.6.6:53")
 	secondOriginal := netip.MustParseAddrPort("8.8.8.8:53")
-	first, firstDestination := m.prepare(dnsMessage(0x1234), firstOriginal, override)
-	second, secondDestination := m.prepare(dnsMessage(0x1234), secondOriginal, override)
+	first, firstDestination, _ := m.prepare(dnsMessage(0x1234), firstOriginal, override)
+	second, secondDestination, _ := m.prepare(dnsMessage(0x1234), secondOriginal, override)
 	if firstDestination != override || secondDestination != override {
 		t.Fatal("DNS queries were not routed to the override")
 	}
@@ -43,9 +43,9 @@ func TestDNSTransactionMapExpiresAndBoundsEntries(t *testing.T) {
 	m.now = func() time.Time { return now }
 	override := netip.MustParseAddrPort("1.1.1.1:53")
 	original := netip.MustParseAddrPort("223.6.6.6:53")
-	first, _ := m.prepare(dnsMessage(1), original, override)
-	_, _ = m.prepare(dnsMessage(2), original, override)
-	_, _ = m.prepare(dnsMessage(3), original, override)
+	first, _, _ := m.prepare(dnsMessage(1), original, override)
+	_, _, _ = m.prepare(dnsMessage(2), original, override)
+	_, _, _ = m.prepare(dnsMessage(3), original, override)
 	if len(m.entries) != 2 {
 		t.Fatalf("entries = %d, want bounded size 2", len(m.entries))
 	}
@@ -63,7 +63,7 @@ func TestDNSOverrideLeavesOtherTrafficUntouched(t *testing.T) {
 	override := netip.MustParseAddrPort("1.1.1.1:53")
 	original := netip.MustParseAddrPort("203.0.113.1:443")
 	payload := dnsMessage(7)
-	got, destination := m.prepare(payload, original, override)
+	got, destination, _ := m.prepare(payload, original, override)
 	if destination != original || &got[0] != &payload[0] {
 		t.Fatal("non-DNS traffic was modified")
 	}
@@ -78,7 +78,7 @@ func TestTranslatedTransactionIDsAreUnpredictable(t *testing.T) {
 	consecutive := 0
 	const queries = 256
 	for i := range queries {
-		translated, _ := m.prepare(dnsMessage(0x1234), original, override)
+		translated, _, _ := m.prepare(dnsMessage(0x1234), original, override)
 		id := binary.BigEndian.Uint16(translated[:2])
 		if _, duplicate := seen[id]; duplicate {
 			t.Fatalf("translated transaction ID %#04x was handed out twice", id)
@@ -103,8 +103,8 @@ func TestTransactionIDAllocationSurvivesCollidingDraws(t *testing.T) {
 	override := netip.MustParseAddrPort("1.1.1.1:53")
 	first := netip.MustParseAddrPort("223.6.6.6:53")
 	second := netip.MustParseAddrPort("8.8.8.8:53")
-	one, _ := m.prepare(dnsMessage(0x1111), first, override)
-	two, _ := m.prepare(dnsMessage(0x2222), second, override)
+	one, _, _ := m.prepare(dnsMessage(0x1111), first, override)
+	two, _, _ := m.prepare(dnsMessage(0x2222), second, override)
 	if got := binary.BigEndian.Uint16(one[:2]); got != 0x2000 {
 		t.Fatalf("first translated ID = %#04x, want %#04x", got, 0x2000)
 	}
@@ -114,5 +114,108 @@ func TestTransactionIDAllocationSurvivesCollidingDraws(t *testing.T) {
 	reply, source := m.restore(two, override)
 	if source != second || binary.BigEndian.Uint16(reply[:2]) != 0x2222 {
 		t.Fatalf("restored = %s/%#04x, want %s/%#04x", source, binary.BigEndian.Uint16(reply[:2]), second, 0x2222)
+	}
+}
+
+// dnsQuery builds a query carrying one question, so the local-name split has
+// something to read.
+func dnsQuery(id uint16, labels ...string) []byte {
+	message := make([]byte, 12)
+	binary.BigEndian.PutUint16(message[:2], id)
+	message[2] = 0x01                           // recursion desired
+	binary.BigEndian.PutUint16(message[4:6], 1) // one question
+	for _, label := range labels {
+		message = append(message, byte(len(label)))
+		message = append(message, label...)
+	}
+	return append(message, 0x00, 0x00, 0x01, 0x00, 0x01)
+}
+
+func TestLocalNamesKeepTheApplicationsOwnResolver(t *testing.T) {
+	m := newDNSTransactionMap(8, time.Minute)
+	override := netip.MustParseAddrPort("1.1.1.1:53")
+	router := netip.MustParseAddrPort("192.168.3.1:53")
+
+	// Only the resolver on this network knows what printer.local is.
+	payload, destination, direct := m.prepare(dnsQuery(0x1234, "printer", "local"), router, override)
+	if destination != router {
+		t.Fatalf("local name was redirected to %s", destination)
+	}
+	// Not through the proxy either: a private resolver reached through a remote
+	// node is as unanswerable as a public resolver that never heard of the name.
+	if !direct {
+		t.Fatal("local name was not routed around the proxy")
+	}
+	if binary.BigEndian.Uint16(payload[:2]) != 0x1234 {
+		t.Fatal("local query had its transaction ID rewritten")
+	}
+
+	// A public name from the same resolver still takes the trusted path.
+	_, destination, direct = m.prepare(dnsQuery(0x1234, "www", "google", "com"), router, override)
+	if destination != override {
+		t.Fatalf("public name was left with the network's resolver (%s)", destination)
+	}
+	if direct {
+		t.Fatal("public name bypassed the proxy")
+	}
+
+	// An operator-supplied split-horizon zone joins the local half.
+	m.localDomains = []string{"corp.example.com"}
+	_, destination, direct = m.prepare(dnsQuery(0x5678, "wiki", "corp", "example", "com"), router, override)
+	if destination != router || !direct {
+		t.Fatalf("operator local domain was redirected to %s (direct=%v)", destination, direct)
+	}
+}
+
+func TestObservationSeesOnlyTrustedExchanges(t *testing.T) {
+	m := newDNSTransactionMap(8, time.Minute)
+	override := netip.MustParseAddrPort("1.1.1.1:53")
+	router := netip.MustParseAddrPort("192.168.3.1:53")
+	var pairs [][2][]byte
+	m.observe = func(query, reply []byte) {
+		pairs = append(pairs, [2][]byte{append([]byte(nil), query...), append([]byte(nil), reply...)})
+	}
+
+	// A rewritten query is remembered, and its answer is paired with it under
+	// the translated ID the reply actually carries.
+	sent, destination, _ := m.prepare(dnsQuery(0x1234, "www", "google", "com"), router, override)
+	if destination != override {
+		t.Fatal("query was not routed to the trusted resolver")
+	}
+	if _, source := m.restore(sent, override); source != router {
+		t.Fatalf("reply source was restored to %s", source)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("observed %d exchanges, want 1", len(pairs))
+	}
+	if binary.BigEndian.Uint16(pairs[0][0][:2]) != binary.BigEndian.Uint16(pairs[0][1][:2]) {
+		t.Fatal("observed query and reply do not share a transaction ID")
+	}
+
+	// A local query never reaches the trusted resolver, so nothing about its
+	// answer is learned: an address named by the network's own resolver must
+	// not be able to decide what a later flow is proxied as.
+	local, destination, _ := m.prepare(dnsQuery(0x4321, "printer", "local"), router, override)
+	if destination != router {
+		t.Fatal("local query was redirected")
+	}
+	m.restore(local, router)
+	if len(pairs) != 1 {
+		t.Fatalf("observed %d exchanges after a local query, want 1", len(pairs))
+	}
+}
+
+func TestOversizedQueriesAreNotRetainedForObservation(t *testing.T) {
+	m := newDNSTransactionMap(8, time.Minute)
+	m.observe = func(query, reply []byte) { t.Fatal("oversized query was observed") }
+	override := netip.MustParseAddrPort("1.1.1.1:53")
+	original := netip.MustParseAddrPort("8.8.8.8:53")
+	oversized := append(dnsQuery(0x1234, "www", "google", "com"), make([]byte, maxRememberedQuery)...)
+	sent, destination, _ := m.prepare(oversized, original, override)
+	if destination != override {
+		t.Fatal("oversized query was not routed to the trusted resolver")
+	}
+	if _, source := m.restore(sent, override); source != original {
+		t.Fatal("oversized query lost its reply mapping")
 	}
 }

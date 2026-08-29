@@ -35,6 +35,8 @@ Options:
   --exclude-process GLOB     Exclude a signing identifier (repeatable).
   --include-destination CIDR Capture a destination prefix (repeatable).
   --exclude-destination CIDR Exclude a destination prefix (repeatable).
+  --local-domain SUFFIX      Name suffix only your own resolver can answer,
+                             for split-horizon zones (repeatable).
   --cleanup                  Legacy spelling of the cleanup command.
   -h, --help                 Show this help.
   --version                  Show app and build version.
@@ -51,6 +53,15 @@ stay reachable and what tunless itself relays through, so they are reserved by
 the provider rather than left to an exclusion flag. Private, CGNAT, and fake-IP
 ranges are excluded by default too; --include-destination overrides that per
 prefix.
+
+Port 53 is judged by none of the destination rules while --dns-upstream is set,
+because a resolver's address is not a destination an application chose to reach.
+That is what keeps the resolver a home router hands out from escaping the
+override by living on a private address. The upstream, the trusted resolver and
+loopback stay reserved against it, as do process exclusions. Names only your own
+network can answer are not redirected: .local, .home.arpa, .internal, .lan and
+the private reverse zones are recognised already, and --local-domain names the
+split-horizon zones that cannot be guessed.
 
 start refuses to enable capture when the upstream cannot relay DNS, and rolls
 capture back automatically if name resolution does not work once capture is on.

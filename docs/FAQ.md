@@ -136,9 +136,19 @@ nothing and showed you nothing. Turning the TUN off does not create the gap; it
 makes it visible. The question is therefore always *which* flows were declined,
 and one diagnostic answers it before any theorizing: reproduce the failure while
 watching `--telemetry` on macOS, or the debug flow logs on Linux
-(`--log-level debug`, read with `journalctl -u tunless`). **A failing connection
-that produced no flow record was never claimed, so the fault is in capture. One
-that produced a record was claimed, so the fault is downstream in your proxy.**
+(`--log-level debug`, read with `journalctl -u tunless`). There are three
+answers, not two, and the third is the one that used to get mistaken for the
+second:
+
+- **No flow record.** The flow was never claimed, so the fault is in capture.
+- **A record carrying a hostname.** The flow was claimed and handed over by
+  name, so the fault is downstream in your proxy.
+- **A record whose `hostname` is null.** The flow was claimed, but tunless had
+  no name to hand over and passed on whatever address the application had
+  already resolved. If that address came from a resolver that answered falsely,
+  your proxy is faithfully relaying the lie. See
+  [why does a browser fail when curl works?](#why-does-a-browser-fail-when-curl-works)
+
 The aggregate counters at `/v1/status` deliberately carry no destinations, so
 they tell you whether capture is claiming flows, not which ones.
 
@@ -174,12 +184,20 @@ other slices direct. On macOS it is the process filters, and `--preset
 clash-verge` excludes the upstream itself by design. Anything not selected never
 reaches the proxy at all.
 
-**The destination is one that nothing captures.** Loopback, link-local,
-multicast and broadcast are reserved by the capture path itself, and the
-private, CGNAT and `198.18.0.0/15` ranges are excluded by default. A
-destination you genuinely want proxied inside those ranges needs
-`--include-destination`; the reserved set cannot be overridden at all. See
+**The destination is one that nothing captures.** Loopback, multicast and
+broadcast are reserved by the capture path itself, and the private, CGNAT and
+`198.18.0.0/15` ranges are excluded by default. A destination you genuinely want
+proxied inside those ranges needs `--include-destination`; the reserved set
+cannot be overridden at all. See
 [destinations that are never captured](OPERATIONS.md#destinations-that-are-never-captured).
+
+Port 53 is the exception, and it is exempt because the rule asks the wrong
+question there. A resolver's address is not a destination the application chose
+to reach; it is a resolver the network handed out, and replacing it is what the
+DNS override is for. So while a DNS override is configured, a port-53 flow is
+captured whatever the destination rules say — including to a resolver on the LAN,
+which is what a home router hands out and what `192.168.0.0/16` would otherwise
+exclude. Process rules and the reserved set still apply to it.
 
 **It came from a virtual machine.** Guest socket calls happen in the guest
 kernel, where no host cgroup hook or Network Extension can see them, so Docker
@@ -190,6 +208,76 @@ whole-VM transparency is honestly a packet-layer problem. See
 
 The last three are the ones worth keeping a TUN underneath for, if you need
 them proxied and cannot move them into scope. The rest are configuration.
+
+## Why does a browser fail when curl works?
+
+Because they resolve names differently, and until the name is what reaches your
+proxy, the difference decides where the connection goes.
+
+`curl` resolves through the system resolver. macOS notices that and attaches the
+name to the flow, so tunless hands your proxy `www.google.com:443` and the
+address the resolver returned is never dialled. A browser resolves names with its
+own DNS client — every Chromium browser, Firefox, anything with a built-in
+resolver — so the operating system has no name to attach, the flow arrives as a
+bare address, and every rule your proxy has that is written about names is lost.
+
+On a network that answers DNS falsely, that is not just lost precision. The
+address in the flow is whatever the network said, and relaying it faithfully
+relays the lie: the browser connects, to somebody else's server, and the
+handshake hangs. `curl` never notices, because its address was discarded.
+
+Two things close it, and both are on by default:
+
+- **The query is captured.** A port-53 flow is exempt from destination rules
+  while a DNS override is configured, so the resolver your network handed out no
+  longer escapes the override by living on a private address.
+- **The answer is remembered.** tunless is relaying those queries, so it records
+  which name each address was answered for and gives a nameless flow its name
+  back before emitting it.
+
+This is not fake-IP wearing a different hat. Every address here is real, so a
+mapping that has expired, or that two names claim, or that was never seen, costs
+you rule-by-name and nothing else — the flow still goes out on an address that
+still works. A fake IP whose mapping is gone connects and then transfers
+nothing.
+
+What it cannot recover is a browser resolving over DoH or DoT. There is no
+port-53 flow to see, so the name never passes through tunless. That failure is
+milder than the one above rather than worse: an encrypted answer cannot be
+poisoned in the first place, so the browser reaches the right address and the
+connection works — you lose only the domain rules. If you want those back, turn
+the browser's secure DNS off and let it use the system resolver.
+
+## Some local names stopped resolving
+
+Names that only your own network can answer are not sent to the trusted
+resolver, and if one of yours is still going astray it is because nothing marks
+it as local.
+
+Reserved and private name spaces are recognised without being told: `.local`,
+`.home.arpa`, `.internal`, `.lan`, `.test`, `.localhost`, unqualified
+single-label names, and the reverse zones for RFC 1918, CGNAT and link-local
+space. A query for any of them goes to the resolver the application chose, and
+goes there directly rather than through the proxy — a private resolver reached
+through a node on the other side of the world is as unanswerable as a public
+resolver that never heard of the name.
+
+What no built-in list can predict is split horizon: internal names living under
+a domain that is also a real public zone, `corp.example.com` being the usual
+shape. Name those yourself, repeatably:
+
+```console
+sudo tunless --local-domain corp.example.com --local-domain vpn.example.net
+```
+
+On macOS the flag is spelled the same way and `TUNLESS_LOCAL_DOMAIN` sets it in
+the environment file.
+
+One limit worth knowing: this split reads the query, so it applies to DNS over
+UDP. A DNS query over TCP has to be routed before any bytes arrive, so it is
+sent to the trusted resolver like anything else. Stub resolvers use UDP first
+and fall back to TCP only for answers too large to fit, so a local name reaching
+that path at all is unusual.
 
 ## What happens if tunless crashes?
 

@@ -15,7 +15,7 @@ import (
 
 func TestLookupRejectsAmbiguity(t *testing.T) {
 	o := &Observer{records: map[netip.Addr]map[string]time.Time{netip.MustParseAddr("203.0.113.1"): {"a.example.": time.Now().Add(time.Minute)}}}
-	if got := o.Lookup(netip.MustParseAddr("203.0.113.1")); got != "a.example." {
+	if got := o.Lookup(netip.MustParseAddr("203.0.113.1")); got != "a.example" {
 		t.Fatalf("got %q", got)
 	}
 	o.records[netip.MustParseAddr("203.0.113.1")]["b.example."] = time.Now().Add(time.Minute)
@@ -127,7 +127,7 @@ func TestObserveRequiresMatchingDNSResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	observer.observe(query, packedReply)
-	if got := observer.Lookup(address); got != "example.test." {
+	if got := observer.Lookup(address); got != "example.test" {
 		t.Fatalf("matching response lookup = %q", got)
 	}
 }
@@ -156,7 +156,7 @@ func TestObserveFollowsCNAMEAndRejectsUnrelatedAnswers(t *testing.T) {
 	}
 	observer := &Observer{records: make(map[netip.Addr]map[string]time.Time)}
 	observer.observe(query, reply)
-	if got := observer.Lookup(netip.MustParseAddr("203.0.113.10")); got != "alias.test." {
+	if got := observer.Lookup(netip.MustParseAddr("203.0.113.10")); got != "alias.test" {
 		t.Fatalf("CNAME address lookup = %q", got)
 	}
 	if got := observer.Lookup(netip.MustParseAddr("203.0.113.11")); got != "" {
@@ -407,5 +407,41 @@ func TestServeReportsAFixedPortConflictInsteadOfMoving(t *testing.T) {
 	// the observer refuses and stays put, not how a platform words the refusal.
 	if observer.Listen != address {
 		t.Fatalf("observer moved from the requested %s to %s", address, observer.Listen)
+	}
+}
+
+func TestRecordFeedsLookupFromCapturedExchanges(t *testing.T) {
+	// The path an application with its own resolver takes: it never asks the
+	// observer's listener anything, but capture relays its query, and that is
+	// enough for the flow it opens next to be recognised by name.
+	queryMessage := dnsmessage.Message{
+		Header:    dnsmessage.Header{ID: 0x1234, RecursionDesired: true},
+		Questions: []dnsmessage.Question{{Name: dnsmessage.MustNewName("www.google.com."), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}},
+	}
+	query, err := queryMessage.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	replyMessage := dnsmessage.Message{
+		Header:    dnsmessage.Header{ID: 0x1234, Response: true, RecursionDesired: true, RecursionAvailable: true},
+		Questions: []dnsmessage.Question{{Name: dnsmessage.MustNewName("www.google.com."), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}},
+		Answers: []dnsmessage.Resource{{
+			Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName("www.google.com."), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 300},
+			Body:   &dnsmessage.AResource{A: [4]byte{142, 251, 151, 119}},
+		}},
+	}
+	reply, err := replyMessage.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := &Observer{}
+	observer.Record(query, reply)
+	if got := observer.Lookup(netip.MustParseAddr("142.251.151.119")); got != "www.google.com" {
+		t.Fatalf("Lookup after Record = %q, want www.google.com", got)
+	}
+	// An address the resolver never named stays unknown, so a flow to it is
+	// proxied on its address rather than on somebody else's name.
+	if got := observer.Lookup(netip.MustParseAddr("203.0.113.1")); got != "" {
+		t.Fatalf("Lookup of an unobserved address = %q", got)
 	}
 }

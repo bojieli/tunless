@@ -40,8 +40,13 @@ public struct ProviderConfiguration: Codable, Sendable {
 	/// broken the transport nearly every resolver client uses, and a watchdog
 	/// that only probes TCP would call that healthy.
 	public var expectUDPRelay: Bool?
+	/// Name suffixes the DNS override leaves with the application's own
+	/// resolver, in addition to the reserved and private name spaces
+	/// `LocalNames` recognises on its own. A split-horizon `corp.example.com`
+	/// is the shape no built-in list can predict.
+	public var localDomains: [String]?
 
-    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil, expectUDPRelay: Bool? = nil) {
+    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil, expectUDPRelay: Bool? = nil, localDomains: [String]? = nil) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
         self.username = username
@@ -55,6 +60,7 @@ public struct ProviderConfiguration: Codable, Sendable {
 		self.disableHealthWatchdog = disableHealthWatchdog
 		self.maxConcurrentFlows = maxConcurrentFlows
 		self.expectUDPRelay = expectUDPRelay
+		self.localDomains = localDomains
     }
 
 	func validated() throws -> ProviderConfiguration {
@@ -74,10 +80,35 @@ public struct ProviderConfiguration: Codable, Sendable {
 	func captures(host: String, port: UInt16, signingIdentifier: String, executablePath: String? = nil) -> Bool {
 		if reservedDestination(host: host, port: port) { return false }
 		let identity = Self.identities(signingIdentifier: signingIdentifier, executablePath: executablePath)
-		if Self.matchesAny(identity, patterns: excludeProcesses ?? []) || Self.matchesAnyPrefix(host, prefixes: excludeDestinations ?? []) { return false }
+		if Self.matchesAny(identity, patterns: excludeProcesses ?? []) { return false }
 		if let patterns = includeProcesses, !patterns.isEmpty, !Self.matchesAny(identity, patterns: patterns) { return false }
-		if let prefixes = includeDestinations, !prefixes.isEmpty, !Self.matchesAnyPrefix(host, prefixes: prefixes) { return false }
+		if destinationRulesApply(port: port) {
+			if Self.matchesAnyPrefix(host, prefixes: excludeDestinations ?? []) { return false }
+			if let prefixes = includeDestinations, !prefixes.isEmpty, !Self.matchesAnyPrefix(host, prefixes: prefixes) { return false }
+		}
 		return true
+	}
+
+	/// Whether the operator's destination selection governs a flow to this port.
+	///
+	/// It governs every flow but one. A resolver's address is not a destination
+	/// the application chose to reach — it is a resolver the network handed out,
+	/// and replacing it with a trusted one is the entire point of the DNS
+	/// override. Judging a port-53 flow by that address therefore asks the wrong
+	/// question, and answers it in the direction that breaks silently: a home
+	/// network hands out the router as the resolver, the router is inside
+	/// `192.168.0.0/16`, that range is excluded by default so that capture is
+	/// not put in front of somebody's own LAN, and the override is left
+	/// structurally unable to see the one flow it exists for. Nothing reports an
+	/// error. Queries go out on the network's own path, come back with whatever
+	/// that path chose to answer, and every name on the host resolves to it.
+	///
+	/// Process rules still apply, and so does the reserved set. They are how the
+	/// upstream is kept out of its own datapath, and a port-53 flow from the
+	/// upstream is precisely the flow that must not be handed back to it.
+	func destinationRulesApply(port: UInt16) -> Bool {
+		guard port == 53, dnsHost != nil, dnsPort != nil else { return true }
+		return false
 	}
 
 	/// Everything a process-selection pattern may legitimately match.
@@ -127,7 +158,29 @@ public struct ProviderConfiguration: Codable, Sendable {
 		// exclusion is trying to prevent, without depending on the operator
 		// naming the right process.
 		if let dnsHost, let dnsPort, port == dnsPort, Self.sameHost(host, dnsHost) { return true }
-		return Self.matchesAnyPrefix(host, prefixes: Self.reservedPrefixes)
+		return Self.matchesAnyPrefix(host, prefixes: reservedPrefixes(port: port))
+	}
+
+	/// The reserved set as it applies to one port.
+	///
+	/// Two of these prefixes are reserved for reasons that are about the flow's
+	/// destination being unreachable through a proxy, and two are about the
+	/// traffic that normally goes there. Link-local is the second kind: it
+	/// carries DHCP, mDNS and router discovery, none of which is on port 53 —
+	/// and a router that advertises itself as the resolver over IPv6 does so at
+	/// a link-local address, which makes it exactly the resolver whose answers
+	/// the override exists to replace. So a port-53 flow is judged only against
+	/// the addresses that cannot be carried at all.
+	///
+	/// Loopback stays reserved even for DNS. A local stub resolver is a real
+	/// configuration and capturing it would be defensible, but the SOCKS
+	/// upstream is almost always on loopback too, and the upstream is reserved
+	/// by host rather than by host and port. Leaving loopback alone keeps the
+	/// rule the same whether the upstream is local or not, which matters more
+	/// here than reaching one more resolver.
+	func reservedPrefixes(port: UInt16) -> [String] {
+		guard port == 53, dnsHost != nil, dnsPort != nil else { return Self.reservedPrefixes }
+		return Self.unroutablePrefixes
 	}
 
 	/// Loopback and unspecified addresses mean nothing on the far side of a
@@ -137,6 +190,14 @@ public struct ProviderConfiguration: Codable, Sendable {
 	static let reservedPrefixes = [
 		"127.0.0.0/8", "0.0.0.0/32", "169.254.0.0/16", "224.0.0.0/4", "255.255.255.255/32",
 		"::1/128", "::/128", "fe80::/10", "ff00::/8",
+	]
+
+	/// The subset of `reservedPrefixes` that no proxy could carry whatever the
+	/// traffic was: nothing answers at the unspecified address, and multicast
+	/// and broadcast have no meaning on the far side of a SOCKS connection.
+	static let unroutablePrefixes = [
+		"127.0.0.0/8", "0.0.0.0/32", "224.0.0.0/4", "255.255.255.255/32",
+		"::1/128", "::/128", "ff00::/8",
 	]
 
 	/// Compares two destinations as addresses when both parse, and as text
