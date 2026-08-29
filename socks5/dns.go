@@ -27,6 +27,10 @@ type dnsTransactionMap struct {
 	// observe receives each query and the answer that came back for it, but
 	// only for exchanges that went to the trusted resolver. See rememberQuery.
 	observe func(query, reply []byte)
+	// loopGuard records the transaction IDs currently relayed to the trusted
+	// resolver, so the upstream's own forwarded copy can be told apart from an
+	// application's query to that same resolver. See resolverLoopGuard.
+	loopGuard *resolverLoopGuard
 }
 
 type dnsTransaction struct {
@@ -101,6 +105,9 @@ func (m *dnsTransactionMap) prepare(payload []byte, original, override netip.Add
 		// with a reply by matching it.
 		query: m.rememberQuery(copyPayload),
 	}
+	// Registered before the datagram leaves, so the upstream's forwarded copy
+	// can never arrive ahead of the record that identifies it.
+	m.loopGuard.register(translated)
 	return copyPayload, override, false
 }
 
@@ -135,6 +142,7 @@ func (m *dnsTransactionMap) restore(payload []byte, source netip.AddrPort) ([]by
 		return payload, source
 	}
 	delete(m.entries, translated)
+	m.loopGuard.release(translated)
 	copyPayload := append([]byte(nil), payload...)
 	binary.BigEndian.PutUint16(copyPayload[:2], entry.originalID)
 	if m.observe != nil && entry.query != nil {

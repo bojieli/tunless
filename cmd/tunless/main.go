@@ -205,7 +205,7 @@ func run() error {
 	if filter.ExcludeDestinations, err = prefixes(excludeDst); err != nil {
 		return err
 	}
-	reserved, err := reservedDestinations(pinned, client.DNSOverride, includeDst)
+	reserved, err := reservedDestinations(pinned, netip.AddrPort{}, includeDst)
 	if err != nil {
 		return err
 	}
@@ -213,6 +213,7 @@ func run() error {
 		filter.ReservedDestinations = reserved
 		logger.Info("reserving datapath destinations from capture", "destinations", reserved)
 	}
+	filter.TrustedResolver = client.DNSOverride
 	var backend tunless.Backend
 	coreFilter := filter
 	if backendName == "auto" {
@@ -557,6 +558,14 @@ func cgroupPathFromProc(data []byte) (string, error) {
 // already gone. The destinations are known from the configuration, so reserve
 // those instead. An explicit --include-destination for the same prefix is left
 // alone: naming it is the operator saying they know.
+//
+// The trusted resolver is no longer reserved here. Reserving it by address also
+// declined every application that had configured the same resolver, which is
+// most of the point of choosing a good one. It is handled by
+// Filter.TrustedResolver instead, which knows the transport: a datagram carries
+// the transaction ID capture assigned, so the upstream's own forwarded copy is
+// recognisable, while a stream stays reserved because nothing identifies it at
+// connect time.
 func reservedDestinations(upstream []string, dnsTarget netip.AddrPort, included []string) ([]netip.Prefix, error) {
 	requested, err := prefixes(included)
 	if err != nil {

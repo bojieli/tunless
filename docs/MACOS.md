@@ -249,11 +249,30 @@ and every name on the host resolves to it.
 So while `--dns-upstream` is set, a port-53 flow is captured whatever the
 destination rules say, and link-local is not reserved against it either — a
 router advertising itself as the resolver over IPv6 does so at a link-local
-address. Process rules still apply, and so does the rest of the reserved set:
-handing the upstream's own query back to the upstream is the loop the reservation
-exists to prevent, and port 53 is the only port it happens on. Loopback stays
-reserved, so a stub resolver at `127.0.0.1:53` is left alone; the upstream is
-reserved by host rather than by host and port, and it is usually on loopback too.
+address. Process rules still apply, and so does the rest of the reserved set.
+Loopback stays reserved, so a stub resolver at `127.0.0.1:53` is left alone; the
+upstream is reserved by host rather than by host and port, and it is usually on
+loopback too.
+
+The trusted resolver itself is reserved by transport rather than by address: a
+datagram to it is captured, a stream is not. Reserving the address outright
+declined two different flows for the price of one. The flow that has to be
+declined is the upstream's own — capture relays a query to the resolver, the
+upstream dials that resolver itself, and capturing that dial hands the query back
+to the upstream waiting on it, so every lookup recurses until it times out. The
+flow that should not have been declined is an application's query to the same
+resolver, and `1.1.1.1` is both the default `--dns-upstream` and one of the most
+commonly configured resolvers there is. Capture rewrites the transaction ID of
+every query it relays, and the upstream forwards that query verbatim, so the
+datagram that would close the loop carries an ID capture is holding open while an
+application's does not. A stream carries nothing to recognise at connect time and
+stays reserved.
+
+DNS over TCP to a resolver on this network — private space, CGNAT, loopback or
+link-local — is left alone for the same reason in reverse: the route has to be
+chosen before any bytes arrive, so claiming it means committing to the trusted
+resolver for whatever the connection turns out to ask, and that breaks exactly
+the names a local resolver exists for.
 
 ### Names an application never told the kernel
 
@@ -267,8 +286,21 @@ network said, so relaying it faithfully relays the lie.
 Capture is already relaying those queries, so the provider records which name
 each address was answered for and gives a nameless flow its name back before
 emitting it. Associations are learned only from answers that came through the
-trusted resolver, expire on the TTL that carried them, and are dropped when two
-names claim one address, which is the ordinary shape of shared hosting.
+trusted resolver, expire on the TTL that carried them — held for at least thirty
+seconds, because an association is written when the answer arrives and read when
+the connection opens, and a browser resolves once and then opens connections over
+the seconds that follow — and are dropped when two names claim one address, which
+is the ordinary shape of shared hosting.
+
+This applies to streams. A datagram flow is emitted on its address even when the
+name is known, which is a measured decision rather than an unfinished one: a
+SOCKS5 UDP relay reports the source of each reply, and an upstream asked to send
+to a name reports the address it resolved that name to. mihomo was measured doing
+exactly that — a datagram addressed to `dns.google` came back sourced from
+`8.8.4.4`. A QUIC client uses a connected socket, so replies from an address it
+never wrote to are dropped by the kernel before the application sees them.
+Emitting the address keeps QUIC working and costs rule-by-name on that
+transport.
 
 The difference from the fake-IP scheme this replaces is worth stating, because
 the mechanism looks similar and the failure modes are opposite. Every address

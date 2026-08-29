@@ -597,11 +597,28 @@ func (o *Observer) observe(query, reply []byte) {
 // serve: the connection that follows the lookup.
 const maxObservedTTL = 24 * time.Hour
 
+// minObservedTTL is the floor described in observedTTL.
+const minObservedTTL = 30 * time.Second
+
 func observedTTL(value uint32) time.Duration {
-	if value == 0 {
-		return time.Second
+	// An association is recorded when the answer arrives and read when the
+	// connection opens, and those are different moments: a browser resolves once
+	// and then opens connections over the seconds that follow, for the page and
+	// for every subresource on it. Honouring a one-second TTL literally means the
+	// first connection is recognised and the rest are not, and names published
+	// with a TTL of exactly one second are real — news.ycombinator.com is one,
+	// and was measured losing its name every time.
+	//
+	// Holding a short-lived answer for the floor is safe in a way that holding a
+	// fake address is not. What the bound protects against is an address being
+	// reassigned and inheriting the old name's routing, which does not happen
+	// inside half a minute; and if it somehow did, the flow still reaches a real
+	// address that still works.
+	ttl := time.Duration(value) * time.Second
+	if ttl < minObservedTTL {
+		return minObservedTTL
 	}
-	if ttl := time.Duration(value) * time.Second; ttl < maxObservedTTL {
+	if ttl < maxObservedTTL {
 		return ttl
 	}
 	return maxObservedTTL

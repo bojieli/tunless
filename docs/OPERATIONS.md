@@ -87,8 +87,35 @@ the override replaces, and judging the flow by that address is how a home
 router's resolver inside `192.168.0.0/16` escapes the override entirely. macOS
 additionally stops reserving link-local for port 53, since a router advertising
 itself as the resolver over IPv6 does so at a link-local address. Process rules,
-the upstream, the trusted resolver, loopback, and the unroutable set are all
-still reserved against it.
+the upstream, loopback, and the unroutable set are all still reserved against it.
+
+**The trusted resolver is reserved by transport rather than by address.** A
+datagram sent to it is captured; a stream is not. Reserving the address outright
+was the earlier rule, and it declined two different flows for the price of one.
+The flow it needed to decline is the upstream's: capture rewrites a query to the
+trusted resolver and relays it to the upstream, the upstream dials that resolver
+itself, and capturing *that* dial hands the query back to the upstream waiting on
+it — every lookup on the host then recurses until it times out, which reads as a
+dead network rather than as a proxy loop. The flow it should not have declined is
+an application's own query to the same resolver, and since `1.1.1.1` is both this
+project's default `--dns-upstream` and one of the most commonly configured
+resolvers there is, the people most likely to be protected were the ones getting
+nothing.
+
+The two are distinguishable. Capture rewrites the transaction ID of every query
+it relays, to an ID drawn at random that the application never chose, and the
+upstream forwards that query verbatim — so the datagram that would close the loop
+carries an ID capture is still holding open, and an application's own query does
+not. A stream carries nothing to recognise at connect time, so DNS over TCP to
+the trusted resolver stays reserved. A transaction-ID collision costs one
+datagram the override and the resolver client retries.
+
+**DNS over TCP to a resolver on this network is left alone.** The route has to be
+chosen before any bytes arrive, so capturing it means committing to the trusted
+resolver for whatever the connection turns out to ask — which breaks exactly the
+names a local resolver exists for. Datagrams carry their question in the first
+packet, so the name-based split below decides them properly. Stub resolvers use
+TCP only for answers too large to fit in a datagram.
 
 How much of the resolver is reserved differs by platform, and it is worth
 knowing which one you are on. macOS reserves the endpoint: the resolver's
@@ -132,9 +159,24 @@ let whoever supplied that answer choose the name a later flow is proxied under,
 which is the poisoning the override exists to route around, re-entering one
 layer up.
 
+Name recovery applies to streams. A datagram flow is emitted on its address even
+when the name is known, and that is deliberate rather than unfinished: a SOCKS5
+UDP relay reports the source of each reply, and an upstream asked to send to a
+name reports the address it resolved that name to. mihomo was measured doing
+exactly this — a datagram addressed to `dns.google` came back sourced from
+`8.8.4.4`. An application using a connected UDP socket, which is every QUIC
+client, would then have its replies arrive from an address it never wrote to and
+dropped by the kernel. Emitting the address keeps QUIC working and costs
+rule-by-name on that transport.
+
 The observer forwards UDP and TCP DNS without changing answers, records A/AAAA
 TTL mappings, and supplies a hostname only when exactly one unexpired name maps
-to the address. A recorded mapping expires with the answer's TTL, bounded to a
+to the address. A recorded mapping is held for at least thirty seconds even when
+the answer's TTL is shorter, because an association is written when the answer
+arrives and read when the connection opens: a browser resolves once and then
+opens connections over the seconds that follow. Names published with a one-second
+TTL are real, and honouring that literally meant the first connection was
+recognised and the rest were not. A recorded mapping expires with the answer's TTL, bounded to a
 day: an address outlives the name that pointed at it, and an attribution that
 outlives its answer routes the address's next tenant under the old name's
 rules. Ambiguous CDN addresses remain IP-only.

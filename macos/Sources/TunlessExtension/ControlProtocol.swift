@@ -77,8 +77,21 @@ public struct ProviderConfiguration: Codable, Sendable {
 		return self
 	}
 
-	func captures(host: String, port: UInt16, signingIdentifier: String, executablePath: String? = nil) -> Bool {
-		if reservedDestination(host: host, port: port) { return false }
+	func captures(host: String, port: UInt16, signingIdentifier: String, executablePath: String? = nil, isDatagram: Bool = false) -> Bool {
+		if reservedDestination(host: host, port: port, isDatagram: isDatagram) { return false }
+		// A stream to a resolver on this network is declined, and the reason is
+		// that the route has to be chosen before the name is visible. A datagram
+		// carries its question in the first packet, so a name only the local
+		// network can answer is recognised and sent to the resolver that has it.
+		// A DNS-over-TCP connection announces nothing at connect time, so
+		// capturing it means committing to the trusted resolver for whatever it
+		// turns out to ask — which breaks exactly the names the local resolver
+		// exists for. Leaving it alone costs the override a transport that stub
+		// resolvers use only for answers too large to fit in a datagram.
+		if port == 53, !isDatagram, dnsHost != nil,
+			Self.matchesAnyPrefix(host, prefixes: Self.networkResolverPrefixes) {
+			return false
+		}
 		let identity = Self.identities(signingIdentifier: signingIdentifier, executablePath: executablePath)
 		if Self.matchesAny(identity, patterns: excludeProcesses ?? []) { return false }
 		if let patterns = includeProcesses, !patterns.isEmpty, !Self.matchesAny(identity, patterns: patterns) { return false }
@@ -146,7 +159,7 @@ public struct ProviderConfiguration: Codable, Sendable {
 	/// them. They fall into two groups: the addresses a host needs in order to
 	/// stay reachable at all, and the two addresses tunless itself relays
 	/// through.
-	func reservedDestination(host: String, port: UInt16) -> Bool {
+	func reservedDestination(host: String, port: UInt16, isDatagram: Bool = false) -> Bool {
 		// Sending traffic aimed at the proxy back into the proxy is the loop in
 		// its simplest form; the upstream is datapath, not traffic.
 		if Self.sameHost(host, upstreamHost) { return true }
@@ -157,7 +170,17 @@ public struct ProviderConfiguration: Codable, Sendable {
 		// recurses instead of resolving. This is what a name-based process
 		// exclusion is trying to prevent, without depending on the operator
 		// naming the right process.
-		if let dnsHost, let dnsPort, port == dnsPort, Self.sameHost(host, dnsHost) { return true }
+		// The trusted resolver is reserved for every transport but the one the
+		// loop guard can police. A captured datagram carries the transaction ID
+		// capture assigned it, so the upstream's own forwarded copy is
+		// recognisable and sent direct, which leaves an application's query to
+		// the same resolver free to be claimed like any other. A stream carries
+		// nothing to recognise at connect time, so it stays reserved.
+		if let dnsHost, let dnsPort, port == dnsPort, Self.sameHost(host, dnsHost),
+			!(isDatagram && port == 53)
+		{
+			return true
+		}
 		return Self.matchesAnyPrefix(host, prefixes: reservedPrefixes(port: port))
 	}
 
@@ -192,6 +215,15 @@ public struct ProviderConfiguration: Codable, Sendable {
 		"::1/128", "::/128", "fe80::/10", "ff00::/8",
 	]
 
+	/// Where a resolver handed out by this network lives: the private ranges,
+	/// carrier-grade NAT, loopback, and link-local. Used only to decide that a
+	/// DNS-over-TCP connection to one of them is left alone; see `captures`.
+	static let networkResolverPrefixes = [
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
+		"127.0.0.0/8", "169.254.0.0/16",
+		"fc00::/7", "::1/128", "fe80::/10",
+	]
+
 	/// The subset of `reservedPrefixes` that no proxy could carry whatever the
 	/// traffic was: nothing answers at the unspecified address, and multicast
 	/// and broadcast have no meaning on the far side of a SOCKS connection.
@@ -202,7 +234,7 @@ public struct ProviderConfiguration: Codable, Sendable {
 
 	/// Compares two destinations as addresses when both parse, and as text
 	/// otherwise, so a hostname upstream still matches itself.
-	private static func sameHost(_ lhs: String, _ rhs: String) -> Bool {
+	static func sameHost(_ lhs: String, _ rhs: String) -> Bool {
 		if let left = IPv4Address(lhs)?.rawValue ?? IPv6Address(lhs)?.rawValue,
 		   let right = IPv4Address(rhs)?.rawValue ?? IPv6Address(rhs)?.rawValue {
 			return left == right

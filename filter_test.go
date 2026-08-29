@@ -96,3 +96,60 @@ func TestReservedDestinationsAndProcessRulesStillApplyToDNS(t *testing.T) {
 		t.Fatal("an unrelated process was declined")
 	}
 }
+
+func TestAnApplicationsQueryToTheTrustedResolverIsCaptured(t *testing.T) {
+	// Reserving the trusted resolver by address also declined every application
+	// that had configured the same resolver — and 1.1.1.1 is both this project's
+	// default and one of the most commonly configured resolvers there is, so the
+	// people most likely to be protected were the ones who got nothing.
+	resolver := netip.MustParseAddrPort("1.1.1.1:53")
+	f := Filter{DNSOverride: true, TrustedResolver: resolver}
+	datagram := Flow{Proto: UDP, OrigDst: resolver, Process: ProcessInfo{Path: "/usr/bin/curl"}}
+	if !f.Capture(datagram) {
+		t.Fatal("an application's own query to the trusted resolver was declined")
+	}
+	// A stream carries nothing to identify at connect time, so the loop guard
+	// cannot police it and it stays reserved.
+	stream := Flow{Proto: TCP, OrigDst: resolver, Process: ProcessInfo{Path: "/usr/bin/curl"}}
+	if f.Capture(stream) {
+		t.Fatal("a stream to the trusted resolver was captured")
+	}
+	// Another port on the same address is not the resolver at all.
+	other := Flow{Proto: UDP, OrigDst: netip.MustParseAddrPort("1.1.1.1:443"), Process: ProcessInfo{Path: "/usr/bin/curl"}}
+	if !other.OrigDst.IsValid() || !f.Capture(other) {
+		t.Fatal("an unrelated port on the resolver's address was declined")
+	}
+	// The upstream itself is reserved on every transport.
+	upstream := Filter{
+		DNSOverride:          true,
+		TrustedResolver:      resolver,
+		ReservedDestinations: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")},
+	}
+	if upstream.Capture(Flow{Proto: UDP, OrigDst: netip.MustParseAddrPort("127.0.0.1:53"), Process: ProcessInfo{Path: "/usr/bin/curl"}}) {
+		t.Fatal("the upstream's address was captured")
+	}
+}
+
+func TestDNSOverTCPToANetworkResolverIsLeftAlone(t *testing.T) {
+	// The route has to be chosen before the name is visible, so capturing this
+	// means committing to the trusted resolver for whatever it turns out to ask
+	// — which breaks exactly the names the local resolver exists for.
+	f := Filter{DNSOverride: true}
+	for _, host := range []string{"192.168.3.1:53", "10.0.0.1:53", "100.64.0.1:53", "169.254.1.1:53"} {
+		flow := Flow{Proto: TCP, OrigDst: netip.MustParseAddrPort(host), Process: ProcessInfo{Path: "/usr/bin/curl"}}
+		if f.Capture(flow) {
+			t.Errorf("DNS over TCP to %s was captured", host)
+		}
+		// The datagram carries its question, so it is still claimed and the
+		// name-based split decides where it goes.
+		datagram := Flow{Proto: UDP, OrigDst: netip.MustParseAddrPort(host), Process: ProcessInfo{Path: "/usr/bin/curl"}}
+		if !f.Capture(datagram) {
+			t.Errorf("DNS over UDP to %s was declined", host)
+		}
+	}
+	// A public resolver has no local names to lose, so its streams are captured.
+	public := Flow{Proto: TCP, OrigDst: netip.MustParseAddrPort("8.8.8.8:53"), Process: ProcessInfo{Path: "/usr/bin/curl"}}
+	if !f.Capture(public) {
+		t.Fatal("DNS over TCP to a public resolver was declined")
+	}
+}

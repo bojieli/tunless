@@ -206,9 +206,18 @@ func TestObserveRequiresQuestionTypeAndCapsCNAMEExpiry(t *testing.T) {
 	if !ok {
 		t.Fatal("matching A record was not attributed")
 	}
+	// The chain's shortest TTL still caps the association: the alias expires
+	// before the address record it points at, so the name cannot outlive the
+	// alias that connected it. Both ends are floored (see observedTTL), so the
+	// value to expect is the floor rather than the alias's literal one second —
+	// what matters is that it is the alias, not the 60-second A record, that
+	// decides.
 	remaining := time.Until(expires)
-	if remaining <= 0 || remaining > 2*time.Second {
-		t.Fatalf("CNAME-capped expiry remaining = %v, want approximately one second", remaining)
+	if remaining <= 0 || remaining > minObservedTTL+time.Second {
+		t.Fatalf("CNAME-capped expiry remaining = %v, want at most %v", remaining, minObservedTTL)
+	}
+	if remaining >= 60*time.Second {
+		t.Fatalf("expiry %v was not capped by the alias", remaining)
 	}
 }
 
@@ -373,7 +382,12 @@ func TestObservedTTLIsBoundedAtBothEnds(t *testing.T) {
 		ttl  uint32
 		want time.Duration
 	}{
-		{0, time.Second},
+		// Below the floor, an association would expire before the connection it
+		// exists for; see observedTTL.
+		{0, minObservedTTL},
+		{1, minObservedTTL},
+		{29, minObservedTTL},
+		{30, minObservedTTL},
 		{60, time.Minute},
 		{86400, maxObservedTTL},
 		{^uint32(0), maxObservedTTL},

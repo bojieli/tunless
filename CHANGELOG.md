@@ -3,6 +3,50 @@
 This project follows semantic versioning after its first public release. Dates
 use ISO 8601.
 
+## Unreleased
+
+### Fixed
+
+- An application's own query to the trusted resolver is captured instead of
+  declined. The resolver `--dns-upstream` names was reserved by address, which
+  declined two different flows for the price of one. The flow that has to be
+  declined is the upstream's own: capture relays a query to that resolver, the
+  upstream dials it, and capturing that dial hands the query back to the upstream
+  waiting on it — every lookup on the host then recurses until it times out. The
+  flow that should not have been declined is an application configured to use the
+  same resolver, and since `1.1.1.1` is both the default and one of the most
+  commonly configured resolvers there is, the people most likely to be protected
+  were the ones getting nothing: on a live host, `dig @1.1.1.1` came back with an
+  address no part of the datapath had answered for. Capture rewrites the
+  transaction ID of every query it relays and the upstream forwards that query
+  verbatim, so the datagram that would close the loop carries an ID capture is
+  still holding open while an application's own query does not. Streams stay
+  reserved, because nothing identifies one at connect time.
+- DNS over TCP to a resolver on this network is left alone rather than
+  redirected. The route has to be chosen before any bytes arrive, so claiming it
+  meant committing to the trusted resolver for whatever the connection turned out
+  to ask, which broke exactly the names a local resolver exists for — 0.2.1
+  redirected `nas.lan` over TCP to a resolver that has never heard of it. Public
+  resolvers are still captured on both transports, having no local names to lose.
+- An observed association is held for at least thirty seconds even when the
+  answer's TTL is shorter. It is written when the answer arrives and read when the
+  connection opens, and those are different moments: a browser resolves once and
+  then opens connections over the following seconds. Names published with a
+  one-second TTL are real — `news.ycombinator.com` is one — and honouring that
+  literally meant the first connection was recognised by name and the rest were
+  not.
+
+### Documented
+
+- Name recovery applies to streams, and a datagram flow is emitted on its address
+  even when the name is known. This is measured rather than unfinished: a SOCKS5
+  UDP relay reports the source of every reply, and an upstream asked to send to a
+  name reports the address it resolved that name to — mihomo returned `8.8.4.4`
+  for a datagram addressed to `dns.google`. A QUIC client uses a connected socket,
+  so replies from an address it never wrote to are dropped by the kernel before
+  the application sees them. Emitting the address keeps QUIC working and costs
+  rule-by-name on that transport.
+
 ## 0.2.1 — 2026-08-29
 
 ### Fixed

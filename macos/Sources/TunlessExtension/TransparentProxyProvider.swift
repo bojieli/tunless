@@ -30,6 +30,10 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     /// Names learned from the DNS this provider relayed, used to give a flow
     /// back the hostname its application never told the kernel about.
     private let observedNames = ObservedNames()
+    /// Transaction IDs currently relayed to the trusted resolver, which is what
+    /// lets an application's own query to that resolver be captured without the
+    /// upstream's forwarded copy closing a loop. See `ResolverLoopGuard`.
+    private let resolverLoopGuard = ResolverLoopGuard()
     private var activeFlows: [UUID: ActiveFlow] = [:]
     private var stopping = false
     private let lock = NSLock()
@@ -366,7 +370,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             host: destination.host,
             port: destination.port,
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
-            executablePath: Self.executablePath(auditToken: flow.metaData.sourceAppAuditToken))
+            executablePath: Self.executablePath(auditToken: flow.metaData.sourceAppAuditToken),
+            isDatagram: true)
         else { return false }
         return launch(
             flow: flow,
@@ -579,7 +584,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         let writer = FlowWriter(flow: flow)
         let direct = DirectDatagramRelay(sink: writer)
         let dnsResponses = DNSResponseMap(
-            maxEntries: 4096, ttlSeconds: 30, observedNames: observedNames)
+            maxEntries: 4096, ttlSeconds: 30, observedNames: observedNames,
+            loopGuard: resolverLoopGuard)
         // mDNSResponder keeps its UDP resolver sockets for much longer than an
         // individual lookup, so port-53 flows carry no association idle limit.
         // Ordinary UDP keeps the bounded two-minute one, which now retires the
@@ -688,6 +694,18 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             capturePaused: decliningFlows(),
             destination: original,
             configuration: configuration) {
+            await sendDirect(nil)
+            return
+        }
+        // The upstream's own forwarded copy of a query capture is relaying goes
+        // direct, which is what keeps claiming an application's query to the
+        // trusted resolver from turning into a loop. Everything about this
+        // datagram looks like an ordinary lookup except the transaction ID,
+        // which capture assigned and is still holding open.
+        if original.port == 53, configuration.dnsHost != nil,
+            Self.sameResolver(original, configuration: configuration),
+            resolverLoopGuard.isRelayedQuery(payload)
+        {
             await sendDirect(nil)
             return
         }
@@ -812,6 +830,14 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     }
 
     private static func unspecified(_ host: String) -> Bool { host == "0.0.0.0" || host == "::" }
+
+    /// Whether a destination is the trusted resolver this provider rewrites to.
+    private static func sameResolver(
+        _ destination: SOCKSAddress, configuration: ProviderConfiguration
+    ) -> Bool {
+        guard let host = configuration.dnsHost, let port = configuration.dnsPort else { return false }
+        return destination.port == port && ProviderConfiguration.sameHost(destination.host, host)
+    }
 
     private static func loopback(_ host: String) -> Bool {
         if host.lowercased() == "localhost" { return true }
@@ -1465,6 +1491,7 @@ actor DNSResponseMap {
     private let ttlSeconds: TimeInterval
     private let randomIdentifier: @Sendable () -> UInt16
     private let observedNames: ObservedNames?
+    private let loopGuard: ResolverLoopGuard?
 
     /// Bounds the copy of a query held for observation. A question section
     /// larger than this is not one whose answer is worth remembering an address
@@ -1478,12 +1505,14 @@ actor DNSResponseMap {
         randomIdentifier: @escaping @Sendable () -> UInt16 = {
             UInt16.random(in: UInt16.min ... UInt16.max)
         },
-        observedNames: ObservedNames? = nil
+        observedNames: ObservedNames? = nil,
+        loopGuard: ResolverLoopGuard? = nil
     ) {
         self.maxEntries = maxEntries
         self.ttlSeconds = ttlSeconds
         self.randomIdentifier = randomIdentifier
         self.observedNames = observedNames
+        self.loopGuard = loopGuard
     }
 
     func prepare(query: Data, original: SOCKSAddress, routed: SOCKSAddress) -> Data {
@@ -1510,6 +1539,9 @@ actor DNSResponseMap {
             // comes back carrying the translated ID, and pairing a query with an
             // answer means matching it.
             query: rememberQuery(rewritten))
+        // Registered before the datagram leaves, so the upstream's forwarded
+        // copy can never arrive ahead of the record that identifies it.
+        loopGuard?.register(translatedID)
         return rewritten
     }
 
@@ -1539,6 +1571,7 @@ actor DNSResponseMap {
             return RestoredResponse(payload: response, source: source, matched: false)
         }
         entries.removeValue(forKey: translatedID)
+        loopGuard?.release(translatedID)
         if let observedNames, let query = entry.query {
             // The response still carries the translated ID here, which is the
             // ID the remembered query carries, so the observer's own matching

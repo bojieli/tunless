@@ -41,6 +41,17 @@ type Client struct {
 	// together with its answer, so that the addresses in that answer can be
 	// associated with the name that was asked for.
 	ObserveDNS func(query, reply []byte)
+
+	// loopGuard is shared across every flow this client emits, because the
+	// datagram that would close a resolver loop arrives on a different flow from
+	// the one that started it.
+	loopGuardOnce sync.Once
+	loopGuard     *resolverLoopGuard
+}
+
+func (c *Client) resolverLoopGuard() *resolverLoopGuard {
+	c.loopGuardOnce.Do(func() { c.loopGuard = newResolverLoopGuard() })
+	return c.loopGuard
 }
 
 var ErrUDPIdleTimeout = errors.New("SOCKS5 UDP association idle timeout")
@@ -361,9 +372,11 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 		default:
 		}
 	}
+	guard := c.resolverLoopGuard()
 	translations := newDNSTransactionMap(4096, 30*time.Second)
 	translations.localDomains = c.LocalDomains
 	translations.observe = c.ObserveDNS
+	translations.loopGuard = c.resolverLoopGuard()
 	// Datagrams neither side could carry. Counted rather than ignored, so a
 	// session that quietly loses traffic still says so when it ends.
 	var dropped atomic.Uint64
@@ -399,6 +412,12 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 				continue
 			}
 			payload, destination, direct := translations.prepare(packet.Payload, packet.Dst, c.DNSOverride)
+			// The upstream's own forwarded copy of a query capture is relaying
+			// goes straight out, which is what keeps claiming an application's
+			// query to the trusted resolver from becoming a loop.
+			if !direct && sameAddrPort(packet.Dst, c.DNSOverride) && guard.relaying(packet.Payload) {
+				payload, destination, direct = packet.Payload, packet.Dst, true
+			}
 			if direct {
 				if !directRelay.send(payload, destination) {
 					dropped.Add(1)
