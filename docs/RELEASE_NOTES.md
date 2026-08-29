@@ -3,6 +3,80 @@
 *Audience:* the body of the GitHub Release, and anyone deciding whether to
 install this.
 
+## 0.2.2 — 2026-08-29
+
+A patch release for three gaps in 0.2.1, found by going back over it on a live
+host and trying to disprove it rather than confirm it.
+
+### Platform maturity
+
+Unchanged. Linux is generally available, macOS is beta, and Windows is source
+only — no Windows binary or driver is attached to this release.
+
+### What this release fixes
+
+**An application's own query to the trusted resolver was declined.**
+`--dns-upstream` names a resolver, and 0.2.1 reserved that resolver by address,
+so capture declined every port-53 flow aimed at it. On the affected host every
+resolver was being overridden correctly except the one `tunless` relays to, which
+came back with an address no part of the datapath had answered for. Since the
+default `--dns-upstream` is `1.1.1.1` — also one of the most commonly configured
+resolvers there is — the people most likely to be protected were the ones getting
+nothing.
+
+The reservation exists for a real loop: capture relays a query to the trusted
+resolver, the upstream dials that resolver itself, and capturing that dial hands
+the query back to the upstream waiting on it, after which every lookup on the
+host recurses until it times out. But the two flows are distinguishable without
+the address. Capture already rewrites the transaction ID of every query it
+relays, to an ID drawn at random the application never chose, and the upstream
+forwards that query verbatim — so the datagram that would close the loop carries
+an ID capture is still holding open, and an application's own query does not.
+Streams stay reserved, because a connection announces nothing at connect time.
+
+**A local name asked over TCP was redirected to a resolver that cannot answer
+it.** 0.2.1 exempted port 53 from destination rules on both transports, so a
+DNS-over-TCP query to your own network's resolver went to a trusted public one
+instead. The name-based split cannot help there: a stream has to be routed before
+any bytes arrive. Those are left alone now, exactly as they would be if nothing
+were installed, and your local resolver answers them. Public resolvers are still
+captured on both transports, having no local names to lose.
+
+**Associations expired before the connections they exist for.** An association is
+written when the answer arrives and read when the connection opens, and a browser
+resolves once and then opens connections over the seconds that follow. Honouring
+a one-second TTL literally meant the first connection was recognised by name and
+the rest were not. Names published with a TTL that short are real. The floor is
+thirty seconds now; what the bound protects against is an address being
+reassigned and inheriting the old name's routing, which does not happen that
+fast, and if it did the flow still reaches a real address that still works.
+
+### Known limitations
+
+Everything in 0.2.1's list still stands, plus one that is now measured rather
+than assumed:
+
+- **Name recovery applies to streams.** A datagram flow — QUIC and HTTP/3 — is
+  emitted on its address even when the name is known, so those lose domain rules
+  while still reaching the right server. This is a measurement, not an unfinished
+  feature: a SOCKS5 UDP relay reports the source of every reply, and an upstream
+  asked to send to a name reports the address it resolved that name to. mihomo
+  returns `8.8.4.4` for a datagram addressed to `dns.google`. A QUIC client uses a
+  connected socket, so replies from an address it never wrote to are dropped by
+  the kernel before the application sees them. Rewriting UDP destinations to
+  names would trade rule-by-name for breaking QUIC outright.
+- **DNS over HTTPS and over TLS remain out of reach**, and fail more mildly than
+  what this fixes: an encrypted answer cannot be substituted, so the browser
+  reaches the right address and loses only the domain rules.
+- **macOS remains beta.** The 48-hour soak has not been completed on either
+  platform.
+
+### Upgrading
+
+No configuration change is required. If you had pointed anything at the same
+resolver as `--dns-upstream` and wondered why it was not being protected, it is
+now.
+
 ## 0.2.1 — 2026-08-29
 
 A patch release for one defect with two halves: on a network that answers DNS
