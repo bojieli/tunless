@@ -129,6 +129,21 @@ TUNLESS_DNS_UPSTREAM=1.1.1.1:53
 Packages install this optional environment file as root-owned mode `0600`
 because an upstream URL may contain SOCKS credentials.
 
+`TUNLESS_UPSTREAM` has to name the listener your proxy actually has. The `7890`
+above is mihomo's own default; Clash Verge Rev's mixed port is `7897`. Prove it
+rather than assume it — `--check` runs the preflight and prints a
+machine-readable report without starting capture:
+
+```console
+sudo tunless --check --upstream 127.0.0.1:7890
+```
+
+It reports SOCKS5 CONNECT and UDP ASSOCIATE separately, because an upstream that
+relays TCP while refusing UDP is usable and degraded rather than broken: captured
+UDP fails and applications fall back to TCP where they can. Knowing that before
+you enable capture is the difference between a known limitation and what looks
+like a failing network.
+
 Run mihomo or sing-box as a system service, outside `user.slice`. The `tunless`
 unit lives in `system.slice` for the same reason. This is not an exception list
 you have to maintain — it is just keeping the proxy out of the scope that gets
@@ -192,6 +207,15 @@ its small launcher app have passed the recorded live tests, but the exact
 release candidate still requires clean-machine qualification. Presets support
 coexistence with Clash Verge, including one running its own TUN device.
 
+Installing it requires Apple Developer Program membership, and that is a gate
+rather than a preference: a system extension signed only locally cannot activate
+while SIP is enabled, so there is no build-it-and-run-it path here. You either
+sign with a Developer ID and notarize — CI does this, and
+[signing and notarization](docs/MACOS.md#signing-and-notarization) does it by
+hand — or you disable SIP and use `systemextensionsctl developer on`, which is a
+development posture and not one to leave a machine in. Once installed, a working
+start is [two commands](docs/MACOS.md#running): `check`, then `start`.
+
 Capture there is accountable for the network it takes over. It refuses to start
 when the upstream cannot relay DNS, verifies resolution through the live
 datapath afterwards, and then keeps re-proving it — standing aside so flows go
@@ -230,6 +254,13 @@ and fake-IP filters. Current mihomo calls its real-answer mode `redir-host`.
 Then start the service with `TUNLESS_UPSTREAM=127.0.0.1:7890`. References:
 mihomo [TUN](https://wiki.metacubex.one/config/inbound/tun/) and
 [DNS](https://wiki.metacubex.one/en/config/dns/).
+
+Both halves of that diff matter. Removing the `tun` block without changing
+`enhanced-mode` leaves fake-IP answers being minted for anything that still
+reaches that resolver, and a fake address whose TUN is gone connects and then
+transfers nothing. If something stops working after the TUN comes down, the
+causes are enumerated in
+[I turned the TUN off and some things stopped working](docs/FAQ.md#i-turned-the-tun-off-and-some-things-stopped-working).
 
 ## Migrate from sing-box TUN
 
