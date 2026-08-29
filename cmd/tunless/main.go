@@ -52,7 +52,7 @@ func run() error {
 	var flowIdleTimeout, udpIdleTimeout time.Duration
 	var checkTarget string
 	var containerDNS []string
-	var includeProc, excludeProc, includeDst, excludeDst stringsFlag
+	var includeProc, excludeProc, includeDst, excludeDst, localDomain stringsFlag
 	dnsDefault := os.Getenv("TUNLESS_DNS_UPSTREAM")
 	if dnsDefault == "" {
 		dnsDefault = "1.1.1.1:53"
@@ -81,6 +81,7 @@ func run() error {
 	flag.Var(&excludeProc, "exclude-process", "exclude executable path/name glob (repeatable)")
 	flag.Var(&includeDst, "include-destination", "capture CIDR prefix (repeatable)")
 	flag.Var(&excludeDst, "exclude-destination", "exclude CIDR prefix (repeatable)")
+	flag.Var(&localDomain, "local-domain", "name suffix the DNS override leaves with the application's own resolver (repeatable)")
 	flag.Parse()
 	disableFlagSet := false
 	flag.Visit(func(item *flag.Flag) {
@@ -192,7 +193,12 @@ func run() error {
 	if !disableDNSOverride {
 		client.DNSOverride = dnsTarget
 	}
-	filter := tunless.Filter{IncludeProcesses: includeProc, ExcludeProcesses: excludeProc}
+	client.LocalDomains = localDomain
+	filter := tunless.Filter{
+		IncludeProcesses: includeProc,
+		ExcludeProcesses: excludeProc,
+		DNSOverride:      client.DNSOverride.IsValid(),
+	}
 	if filter.IncludeDestinations, err = prefixes(includeDst); err != nil {
 		return err
 	}
@@ -204,7 +210,7 @@ func run() error {
 		return err
 	}
 	if len(reserved) > 0 {
-		filter.ExcludeDestinations = append(filter.ExcludeDestinations, reserved...)
+		filter.ReservedDestinations = reserved
 		logger.Info("reserving datapath destinations from capture", "destinations", reserved)
 	}
 	var backend tunless.Backend
@@ -285,7 +291,13 @@ func run() error {
 		logger.Info("metadata API enabled", "socket", metadataSocket)
 	}
 	var resolver tunless.NameResolver
-	if dnsListen != "" {
+	// The observer is built whenever there is a trusted answer to learn from,
+	// which is either because applications are pointed at its listener or
+	// because capture is relaying their queries itself. The second case is the
+	// one that matters for an application with its own resolver: it never asks
+	// this listener anything, but its queries still pass through capture, and
+	// that is enough to know which name it is about to connect to.
+	if dnsListen != "" || client.DNSOverride.IsValid() {
 		observer := &dnsobserver.Observer{
 			Listen:   dnsListen,
 			Upstream: dnsUpstream,
@@ -297,16 +309,21 @@ func run() error {
 			},
 		}
 		resolver = observer
-		go func() {
-			if err := observer.Serve(ctx); err != nil && ctx.Err() == nil {
-				reportServiceError("DNS observer", err)
+		client.ObserveDNS = observer.Record
+		if dnsListen != "" {
+			go func() {
+				if err := observer.Serve(ctx); err != nil && ctx.Err() == nil {
+					reportServiceError("DNS observer", err)
+				}
+			}()
+			defer observer.Close()
+			if err = waitForService(ctx, serviceErrors, observer.Ready); err != nil {
+				return err
 			}
-		}()
-		defer observer.Close()
-		if err = waitForService(ctx, serviceErrors, observer.Ready); err != nil {
-			return err
+			logger.Info("DNS observer enabled", "listen", dnsListen, "upstream", dnsUpstream)
+		} else {
+			logger.Info("name recovery enabled from captured DNS", "upstream", dnsUpstream)
 		}
-		logger.Info("DNS observer enabled", "listen", dnsListen, "upstream", dnsUpstream)
 	}
 	stats := &tunless.Stats{}
 	if statusListen != "" {

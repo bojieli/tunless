@@ -11,6 +11,16 @@ type Filter struct {
 	ExcludeProcesses    []string
 	IncludeDestinations []netip.Prefix
 	ExcludeDestinations []netip.Prefix
+	// ReservedDestinations are the addresses tunless itself relays through: the
+	// SOCKS5 upstream and the trusted resolver. They are excluded from capture
+	// whatever else the configuration says, and unlike ExcludeDestinations they
+	// keep applying to port-53 flows, because handing the upstream's own query
+	// back to the upstream is the loop the reservation exists to prevent.
+	ReservedDestinations []netip.Prefix
+	// DNSOverride reports whether captured port-53 flows are rewritten to a
+	// trusted resolver. When they are, operator destination rules stop applying
+	// to them; see Capture.
+	DNSOverride bool
 }
 
 func (f Filter) Validate() error {
@@ -46,16 +56,46 @@ func (f Filter) Validate() error {
 }
 
 func (f Filter) Capture(flow Flow) bool {
-	if matchesProcess(f.ExcludeProcesses, flow.Process) || matchesAddr(f.ExcludeDestinations, flow.OrigDst.Addr()) {
+	if matchesProcess(f.ExcludeProcesses, flow.Process) {
 		return false
 	}
 	if len(f.IncludeProcesses) > 0 && !matchesProcess(f.IncludeProcesses, flow.Process) {
 		return false
 	}
-	if len(f.IncludeDestinations) > 0 && !matchesAddr(f.IncludeDestinations, flow.OrigDst.Addr()) {
+	if matchesAddr(f.ReservedDestinations, flow.OrigDst.Addr()) {
 		return false
 	}
+	if f.destinationRulesApply(flow) {
+		if matchesAddr(f.ExcludeDestinations, flow.OrigDst.Addr()) {
+			return false
+		}
+		if len(f.IncludeDestinations) > 0 && !matchesAddr(f.IncludeDestinations, flow.OrigDst.Addr()) {
+			return false
+		}
+	}
 	return true
+}
+
+// destinationRulesApply reports whether the operator's destination selection
+// governs this flow.
+//
+// It governs every flow but one. A resolver's address is not a destination the
+// application chose to reach — it is a resolver the network handed out, and
+// rewriting it to a trusted one is the entire point of the DNS override. So
+// judging a port-53 flow by that address asks the wrong question, and answers
+// it in the direction that silently breaks: a home network hands out the router
+// as the resolver, the router is inside 192.168.0.0/16, an operator excludes
+// private space so that a proxy is not put in front of their own LAN, and the
+// override is then structurally unable to see the one flow it exists for. What
+// makes that failure hard to find is that nothing reports an error. Queries go
+// out on the network's own path, come back with whatever that path decided to
+// answer, and every name on the host resolves to it.
+//
+// Process rules still apply. They are how the upstream proxy is kept out of its
+// own datapath, and a port-53 flow from the upstream is exactly the flow that
+// must not be handed back to it.
+func (f Filter) destinationRulesApply(flow Flow) bool {
+	return !f.DNSOverride || flow.OrigDst.Port() != 53
 }
 
 func matchesProcess(patterns []string, p ProcessInfo) bool {

@@ -45,6 +45,19 @@ const (
 	maxAssociationsPerDNSMessage = 4096
 )
 
+// Record associates the addresses in reply with the name query asked for.
+//
+// It exists so that capture's own DNS path can feed the same map the observer's
+// listener does. Those are the two ways a trusted answer reaches this process,
+// and an address learned from either is the same fact: this name resolved to
+// this address, through the resolver the operator chose, moments ago. Without
+// it, name recovery would depend on applications being pointed at the observer,
+// which is exactly what the applications that need it most do not do.
+//
+// A query and reply that do not form a matching exchange are ignored; see
+// observe.
+func (o *Observer) Record(query, reply []byte) { o.observe(query, reply) }
+
 func (o *Observer) Lookup(addr netip.Addr) string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -67,7 +80,11 @@ func (o *Observer) Lookup(addr netip.Addr) string {
 	if len(names) == 0 {
 		delete(o.records, addr.Unmap())
 	}
-	return result
+	// Records are keyed by the wire form, which carries the root label. What a
+	// proxy matches its rules against does not: a trailing dot is valid FQDN
+	// syntax that plenty of rule engines never normalise away, so handing one
+	// over is a quiet way to miss every DOMAIN rule the operator wrote.
+	return strings.TrimSuffix(result, ".")
 }
 
 func (o *Observer) Serve(ctx context.Context) error {
