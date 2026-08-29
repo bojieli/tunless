@@ -91,7 +91,7 @@ plain SOCKS5. Your proxy sees a normal SOCKS5 client.
 | Windows | WFP ALE connect-redirect callout | Source only. The driver has never been built by a WDK, loaded, or run under Driver Verifier, and it is not signed. Treat it as a design, not a download. |
 
 The three platforms ship at different maturities and the release says so on its
-face: **in 0.2.2 Linux is generally available, macOS is beta, and Windows is
+face: **in 0.2.3 Linux is generally available, macOS is beta, and Windows is
 source only.** See
 [what a release covers](docs/RELEASING.md#what-the-first-release-covers)
 and [where the project actually is](#where-the-project-actually-is).
@@ -350,7 +350,7 @@ listener. Avoid shared-source `SO_REUSEPORT` for captured UDP6 workloads.
 
 ## Where the project actually is
 
-**0.2.2 is a release, not a preview.** Linux is generally available: capture is
+**0.2.3 is a release, not a preview.** Linux is generally available: capture is
 exercised against a live kernel on every pull request, the destination filters
 are demonstrated against an attached cgroup, artifacts rebuild byte-identically,
 and every performance claim in this file is backed by a dated measurement naming

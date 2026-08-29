@@ -3,6 +3,48 @@
 *Audience:* the body of the GitHub Release, and anyone deciding whether to
 install this.
 
+## 0.2.3 — 2026-08-29
+
+A correction to 0.2.2, which shipped one of its three fixes inert.
+
+### Platform maturity
+
+Unchanged. Linux is generally available, macOS is beta, and Windows is source
+only — no Windows binary or driver is attached to this release.
+
+### What this release fixes
+
+0.2.2 made an application's own query to the trusted resolver capturable instead
+of declining it. On macOS the flow was claimed and then every datagram on it was
+sent direct anyway, so the behaviour was the same as before: on a host with the
+upstream's TUN underneath, `dig @1.1.1.1` kept returning a fake address from the
+datapath the query was supposed to bypass. The datagram path asked whether a
+destination was reserved without saying it was a datagram, and that question
+defaults to the answer for a stream, which still reserves the resolver.
+
+The second half is subtler and would have been worse on its own. A query already
+addressed to the trusted resolver is rewritten to itself, and the response map
+skipped any datagram whose route did not change — so no identifier of capture's
+own was assigned, and the loop guard recognises the upstream's forwarded copy by
+exactly that identifier. Claiming those flows without one would have reopened the
+loop the old address reservation existed to close. It did not happen in 0.2.2
+only because the first defect kept the flows from being relayed at all.
+
+Both are fixed together, because fixing either alone is worse than fixing
+neither.
+
+### Known limitations
+
+Unchanged from 0.2.2: name recovery applies to streams and not to QUIC, DNS over
+HTTPS and over TLS remain out of reach, and the 48-hour soak has not been
+completed on either platform.
+
+### Upgrading
+
+No configuration change is required. If you are on 0.2.2 and pointed anything at
+the same resolver as `--dns-upstream`, this is the release where that starts
+being protected.
+
 ## 0.2.2 — 2026-08-29
 
 A patch release for three gaps in 0.2.1, found by going back over it on a live

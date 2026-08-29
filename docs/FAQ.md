@@ -396,7 +396,7 @@ came from, including the ones that came out badly, in
 
 ## Can I use it now?
 
-0.2.2 is a release, and it says on its face how far each platform got. Linux is
+0.2.3 is a release, and it says on its face how far each platform got. Linux is
 generally available: capture runs against a live kernel on every pull request,
 and every performance claim in the repository is backed by a dated measurement
 naming the host it came from. macOS is beta. On Windows there is source code for
