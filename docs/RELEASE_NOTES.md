@@ -3,6 +3,92 @@
 *Audience:* the body of the GitHub Release, and anyone deciding whether to
 install this.
 
+## 0.2.1 — 2026-08-29
+
+A patch release for one defect with two halves: on a network that answers DNS
+falsely, a browser could not reach a site that `curl` reached from the same
+machine, through the same proxy, a second apart.
+
+### Platform maturity
+
+Unchanged from 0.2.0. Linux is generally available, macOS is beta, and Windows
+is source only — no Windows binary or driver is attached to this release.
+
+### The defect this release exists for
+
+`tunless` exists so that the name an application asked for is what reaches your
+proxy, and both halves of this defect were ways that stopped being true.
+
+**The DNS override could not see the query.** Capture applied the operator's
+destination rules before it considered the port, and the defaults exclude
+`192.168.0.0/16` so that nobody accidentally puts a proxy in front of their own
+LAN. A home router is the resolver and lives in that range, so every port-53
+flow to it was declined and left on the network's own path. Nothing reported an
+error. The answers came back substituted, and every name on the host resolved to
+whatever had been substituted — on the host where this was found,
+`www.google.com` resolved to an address belonging to Facebook.
+
+A resolver's address is not a destination an application chose to reach. It is a
+resolver the network handed out, and replacing it is what the override is for.
+While a DNS override is configured, destination rules no longer apply to port
+53. Process rules and the reserved set still do: handing the upstream's own
+query back to the upstream is a loop that takes DNS down host-wide.
+
+**macOS had no name to hand over.** The system attaches `remoteHostname` only
+for a name it resolved on the application's behalf. `curl` gets one. Anything
+shipping its own DNS client — every Chromium browser, Firefox — does not, so
+those flows arrived carrying a bare address, the proxy lost every rule written
+about names, and the address it was handed was the substituted one. `curl` never
+noticed, because its address had already been discarded. That asymmetry is why
+this reads as "my browser is broken" rather than as a DNS problem.
+
+The provider now records which name each address was answered for, from the
+answers it is already relaying, and hands the name over instead. Only answers
+that came through the trusted resolver are recorded: learning one from the
+network's own path would let whoever supplied that answer choose the name a
+later flow is proxied under, which is the same substitution re-entering one
+layer up.
+
+This is not fake IP under another name, and the difference is the failure mode.
+Every address here is real, so an association that is missing, expired, or
+claimed by two names costs you rule-by-name and nothing else — the flow still
+goes out on an address that works. A fake IP that outlives its mapping connects
+and then transfers nothing.
+
+### Names only your own network can answer
+
+Capturing all of DNS is only safe if those names keep reaching the resolver that
+has them, so they are not redirected: `.local`, `.home.arpa`, `.internal`,
+`.lan`, `.test`, `.localhost`, unqualified single-label names, and the reverse
+zones for private, CGNAT and link-local space. They are also sent directly
+rather than through the proxy, because a private address relayed to a node on
+the other side of the world is as unanswerable as a public resolver that never
+heard of the name.
+
+`--local-domain` adds split-horizon zones that no built-in list could predict,
+`corp.example.com` being the usual shape. It is repeatable, and
+`TUNLESS_LOCAL_DOMAIN` sets it in the environment file.
+
+### Known limitations
+
+- **DNS over HTTPS and over TLS are still out of reach.** There is no port-53
+  flow to see, so the name never passes through `tunless`. This failure is
+  milder than the one above rather than worse: an encrypted answer cannot be
+  substituted in the first place, so the browser reaches the right address and
+  loses only the domain rules. Turning a browser's secure DNS off restores them.
+- **The name-based split reads the query, so it applies to DNS over UDP.** A
+  query over TCP has to be routed before any bytes arrive and goes to the
+  trusted resolver like anything else. Stub resolvers use UDP first and fall
+  back to TCP only for answers too large to fit.
+- **macOS remains beta, and the reason is unchanged.** The 48-hour soak has not
+  been completed on either platform.
+
+### Upgrading
+
+No configuration change is required, and none of the defaults that were there
+before have moved. If your internal names live under a public zone, name it with
+`--local-domain`.
+
 ## 0.2.0 — 2026-08-27
 
 The first release that is not a preview. What changed is not the feature list —
