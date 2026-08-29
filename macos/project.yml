@@ -29,7 +29,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: tunless
-        CFBundleShortVersionString: 1.0.9
+        CFBundleShortVersionString: 1.0.10
         CFBundleVersion: "17"
         LSMinimumSystemVersion: "15.0"
         LSUIElement: true
@@ -52,7 +52,7 @@ targets:
       properties:
         CFBundleDisplayName: tunless transparent proxy
         CFBundlePackageType: SYSX
-        CFBundleShortVersionString: 1.0.9
+        CFBundleShortVersionString: 1.0.10
         CFBundleVersion: "17"
         NetworkExtension:
           NEProviderClasses:
