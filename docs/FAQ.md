@@ -28,6 +28,36 @@ put process identity, so every captured flow arrives at the proxy looking like
 it came from `tunless`. You do not lose the ability to select by application,
 though — see the next question.
 
+## Does it work with my nodes — VMess, Hysteria2, WireGuard?
+
+They are not affected, because `tunless` never sees them.
+
+It speaks exactly one protocol, SOCKS5, to a listener on loopback. What your
+proxy does on the far side of that listener — the node protocol, whether that is
+VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC or WireGuard, along with
+REALITY, multiplexing, load balancing, health checks and subscription updates —
+happens after the handoff and is untouched. `tunless` replaces the inbound, not
+the outbound.
+
+That is also why it is not Clash-specific. Any local SOCKS5 listener works:
+mihomo, sing-box, Xray. `--preset clash-verge` is shorthand for two process
+exclusions and a default port, not an integration; the command it expands to in
+full is under [running](MACOS.md#running).
+
+What the handoff does constrain is the shape of what reaches the listener. TCP
+arrives as SOCKS5 CONNECT and UDP as UDP ASSOCIATE, so an upstream that refuses
+UDP ASSOCIATE — or a node that carries no UDP — fails captured UDP while TCP
+keeps working. QUIC and HTTP/3 are where you notice. `check` reports both
+transports before you commit to the deployment, and TUN mode hid this class of
+problem because mihomo handled UDP inside itself rather than relaying it to
+anybody.
+
+Your proxy's system-proxy toggle is orthogonal to all of this and can stay
+however you like it. An application that honors `HTTPS_PROXY` dials
+`127.0.0.1:7897` itself, and loopback is reserved from capture, so that
+connection reaches your proxy directly rather than being captured and handed
+back to it. Nothing is proxied twice.
+
 ## Can I proxy only some applications?
 
 Yes, and this is the part that gets better rather than worse.
@@ -74,6 +104,18 @@ out addresses from `198.18.0.0/15`, so nothing caches one, logs one, or trips
 over one after its mapping has expired. And nothing rewrites your default route
 with an entry that no process owns.
 
+**Turning the TUN off is two changes, not one.** The `tun` block and the `dns`
+block are independent. Disabling the TUN stops the route hijack and the port-53
+hijack, but `enhanced-mode: fake-ip` keeps minting `198.18.0.0/15` answers for
+anything that still reaches that resolver, and an application holding one from
+before the change keeps it. Switch the mode to `redir-host` at the same time —
+the diff is in [migrate from mihomo TUN](../README.md#migrate-from-mihomo-tun)
+— and discard what already cached a fake address, which on macOS means `sudo
+killall mDNSResponder` and restarting the applications holding one. A fake
+address that outlives the TUN giving it meaning still connects successfully and
+then transfers nothing, so this failure arrives looking like a broken network
+rather than a stale answer.
+
 The reason to keep it is leak containment. `tunless` fails open on purpose: if
 it stops, is uninstalled, or stands aside because your upstream broke, new
 connections go out directly. With a TUN underneath, those connections are still
@@ -82,6 +124,72 @@ and accept fake IP as the price.
 
 Details and the measurement:
 [should the upstream keep its TUN device?](MACOS.md#should-the-upstream-keep-its-tun-device)
+
+## I turned the TUN off and some things stopped working
+
+Then those flows were never captured, and the TUN was covering for it.
+
+`tunless` is fail-open by construction: anything it declines is handed back to
+the kernel and goes out the way it would if nothing were installed. With a TUN
+underneath, "declined" still meant "proxied", so a gap in capture cost you
+nothing and showed you nothing. Turning the TUN off does not create the gap; it
+makes it visible. The question is therefore always *which* flows were declined,
+and one diagnostic answers it before any theorizing: reproduce the failure while
+watching `--telemetry` on macOS, or the debug flow logs on Linux
+(`--log-level debug`, read with `journalctl -u tunless`). **A failing connection
+that produced no flow record was never claimed, so the fault is in capture. One
+that produced a record was claimed, so the fault is downstream in your proxy.**
+The aggregate counters at `/v1/status` deliberately carry no destinations, so
+they tell you whether capture is claiming flows, not which ones.
+
+For a flow that was never claimed, these are the reasons, most common first.
+
+**A fake address that outlived its TUN.** Covered in the previous question, and
+the likeliest cause if what you see is a connection that opens and then
+transfers nothing.
+
+**Capture is not actually running.** A paused session is still a live session,
+so `status` reports `connected` either way and the `capture` field is the one
+that answers. Check the upstream port while you are there: the Linux unit
+defaults to `127.0.0.1:7890`, which is mihomo's default rather than Clash Verge
+Rev's `7897`, and an upstream nothing is listening on fails every captured flow
+while leaving everything else working.
+
+**It only carries TCP and UDP.** ESP, GRE, SCTP and raw ICMP go direct,
+unmodified — the eBPF hooks return early on them and `NEAppProxyFlow` is never
+handed one. This is deliberate: `ping` and `traceroute` report reality rather
+than a synthesized reply, which a TUN cannot offer. It does mean a TUN that was
+answering ICMP for an unreachable destination was telling you something untrue,
+and turning it off replaces a false success with a true failure.
+
+**UDP has to be relayed, and frequently is not.** Upstreams commonly relay DNS
+over TCP while refusing SOCKS5 UDP ASSOCIATE, and a node that carries no UDP
+does the same to QUIC and HTTP/3. `check` reports it as `dns.udpRelayWorks`
+before you commit to the deployment. TUN mode hid this because mihomo handled
+UDP inside itself rather than relaying it to anyone.
+
+**The flow was outside the capture scope.** On Linux the scope is the cgroup, so
+the default `/sys/fs/cgroup/user.slice` leaves system services, containers, and
+other slices direct. On macOS it is the process filters, and `--preset
+clash-verge` excludes the upstream itself by design. Anything not selected never
+reaches the proxy at all.
+
+**The destination is one that nothing captures.** Loopback, link-local,
+multicast and broadcast are reserved by the capture path itself, and the
+private, CGNAT and `198.18.0.0/15` ranges are excluded by default. A
+destination you genuinely want proxied inside those ranges needs
+`--include-destination`; the reserved set cannot be overridden at all. See
+[destinations that are never captured](OPERATIONS.md#destinations-that-are-never-captured).
+
+**It came from a virtual machine.** Guest socket calls happen in the guest
+kernel, where no host cgroup hook or Network Extension can see them, so Docker
+Desktop, UTM and Parallels traffic is packet forwarding by the time it reaches
+the host. Install `tunless` inside the guest, or keep the TUN for that traffic —
+whole-VM transparency is honestly a packet-layer problem. See
+[boundaries](CONTAINERS.md#boundaries).
+
+The last three are the ones worth keeping a TUN underneath for, if you need
+them proxied and cannot move them into scope. The rest are configuration.
 
 ## What happens if tunless crashes?
 
@@ -188,18 +296,24 @@ came from, including the ones that came out badly, in
 
 ## Can I use it now?
 
-On Linux, it works and the evidence is in the repository. On macOS it works and
-is beta. On Windows there is source code for a driver that has never been
-compiled by a WDK, and you should not run it.
+0.2.0 is a release, and it says on its face how far each platform got. Linux is
+generally available: capture runs against a live kernel on every pull request,
+and every performance claim in the repository is backed by a dated measurement
+naming the host it came from. macOS is beta. On Windows there is source code for
+a driver that has never been compiled by a WDK, and you should not run it.
 
-But nothing has been released yet, and that is deliberate. Nearly every serious
-bug found so far turned up by running the thing for hours rather than by running
-its tests — the worst of them left a laptop resolving names unprotected for nine
-hours after it went to sleep. Until a long soak stops finding things like that,
-a release would mostly be handing the next one to somebody else.
+The reason macOS is beta rather than released is worth stating, because it is
+the same reason the release is worded carefully. Nearly every serious bug found
+here turned up by running the thing for hours rather than by running its tests —
+the worst left a laptop resolving names unprotected for nine hours after it went
+to sleep, and 0.2.0 exists to close one that a day on a live host surfaced. The
+48-hour soak has still not been completed on either platform. What is unproven
+is listed rather than left for you to find, in [where the project actually
+is](../README.md#where-the-project-actually-is) and [measurements and release
+gates](MEASUREMENTS.md).
 
-If you want to try it anyway, build from source and read
-[operations](OPERATIONS.md) first — particularly the recovery section.
+Read [operations](OPERATIONS.md) before deploying, particularly the recovery
+section.
 
 ## I have a Windows machine and want to help
 

@@ -468,6 +468,10 @@ purpose, but a host that must never send an unproxied packet wants the TUN
 underneath as a backstop, and should accept fake IP as the price.
 
 Whichever way, change one layer at a time and run `check` between changes.
+When a flow stops working after the TUN comes down, it was a flow capture had
+been declining all along and the TUN had been covering; the reasons are
+enumerated in
+[I turned the TUN off and some things stopped working](FAQ.md#i-turned-the-tun-off-and-some-things-stopped-working).
 
 ### Capturing only some applications
 
