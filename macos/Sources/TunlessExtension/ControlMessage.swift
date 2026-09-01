@@ -20,17 +20,17 @@ public enum ControlMessage: UInt8 {
 
 /// Capture health as the provider reports it to the launcher.
 ///
-/// A paused capture keeps its NetworkExtension session connected, because the
-/// session is what keeps the watchdog probing. That makes the manager's own
-/// status a poor signal: it says "connected" either way. This is the signal.
+/// An upstream-degraded capture keeps its NetworkExtension session connected
+/// and continues claiming eligible flows. The manager's own status therefore
+/// cannot describe datapath health; this report names both facts.
 public struct CaptureHealthReport: Codable, Sendable {
     public let capturing: Bool
     public let pauseReason: String?
     public let confirmed: Bool
     public let consecutiveFailures: Int
-    /// Flows held right now, and flows turned away at the ceiling since start.
-    /// A rising rejection count is the signal that one application is opening
-    /// flows faster than the upstream retires them.
+    /// Flows held right now, and TCP flows refused (while remaining captured)
+    /// at the ceiling since start. A rising count is the signal that one
+    /// application is opening streams faster than the upstream retires them.
     public let activeFlows: Int?
     public let rejectedFlows: UInt64?
 
@@ -53,12 +53,16 @@ public struct CaptureHealthReport: Codable, Sendable {
     public var summary: String {
         var text: String
         if capturing {
-            text = confirmed ? "capturing" : "capturing (unconfirmed)"
+            if let pauseReason {
+                text = "capturing (degraded: \(pauseReason))"
+            } else {
+                text = confirmed ? "capturing" : "capturing (unconfirmed)"
+            }
         } else {
             text = "paused: " + (pauseReason ?? "reason unavailable")
         }
         if let activeFlows { text += ", \(activeFlows) active" }
-        if let rejectedFlows, rejectedFlows > 0 { text += ", \(rejectedFlows) rejected at the ceiling" }
+        if let rejectedFlows, rejectedFlows > 0 { text += ", \(rejectedFlows) refused at the ceiling" }
         return text
     }
 }

@@ -86,7 +86,7 @@ final class FlowCeilingTests: XCTestCase {
         let report = CaptureHealthReport(
             capturing: true, pauseReason: nil, confirmed: true, consecutiveFailures: 0,
             activeFlows: 4096, rejectedFlows: 128)
-        XCTAssertEqual(report.summary, "capturing, 4096 active, 128 rejected at the ceiling")
+        XCTAssertEqual(report.summary, "capturing, 4096 active, 128 refused at the ceiling")
         let quiet = CaptureHealthReport(
             capturing: true, pauseReason: nil, confirmed: true, consecutiveFailures: 0,
             activeFlows: 7, rejectedFlows: 0)
@@ -159,10 +159,43 @@ final class DirectDatagramRelayTests: XCTestCase {
         XCTAssertFalse(config.reservedDestination(host: "8.8.8.8", port: 53))
     }
 
-    func testTheRelayBoundsHowManyDestinationsOneFlowCanOpen() async {
+    func testCancellingTheRelayRefusesFurtherSends() async {
         let relay = DirectDatagramRelay(sink: RecordingSink())
         // Cancelling releases everything and refuses further sends, so a torn
         // down flow cannot leave sockets behind.
+        await relay.cancelAll()
+        let sent = await relay.send(
+            Data([1]), to: SOCKSAddress(host: "127.0.0.1", port: 30_000))
+        XCTAssertFalse(sent)
+        let count = await relay.activeDestinationCount
+        XCTAssertEqual(count, 0)
+    }
+
+    func testAPathChangePurgesTheWholeDestinationPoolBeforeApplyingItsCap() async {
+        let epoch = NetworkEpoch()
+        let relay = DirectDatagramRelay(
+            sink: RecordingSink(), networkEpoch: epoch, sendTimeoutSeconds: 1)
+
+        // Fill the pool on the first path. UDP sends to unused loopback ports
+        // are still successfully handed to the local network stack, which is
+        // all this relay promises before a peer decides whether to answer.
+        for offset in 0..<16 {
+            let sent = await relay.send(
+                Data([UInt8(offset)]),
+                to: SOCKSAddress(host: "127.0.0.1", port: UInt16(30_000 + offset)))
+            XCTAssertTrue(sent, "failed to prepare destination \(offset)")
+        }
+        let fullCount = await relay.activeDestinationCount
+        XCTAssertEqual(fullCount, 16)
+
+        _ = epoch.advance()
+        let sentOnNewPath = await relay.send(
+            Data([0xff]), to: SOCKSAddress(host: "127.0.0.1", port: 31_000))
+        XCTAssertTrue(sentOnNewPath)
+        let rebuiltCount = await relay.activeDestinationCount
+        XCTAssertEqual(
+            rebuiltCount, 1,
+            "stale Wi-Fi sockets must not consume the hotspot destination cap")
         await relay.cancelAll()
     }
 }
@@ -178,12 +211,12 @@ final class DatagramFlowContinuityTests: XCTestCase {
         XCTAssertTrue(DatagramFlowContinuity.survivesCapturePause)
     }
 
-    func testAPausedFlowSendsDirectInsteadOfUsingTheBrokenUpstream() {
-        XCTAssertTrue(DatagramFlowContinuity.routesDirect(
+    func testADegradedFlowDoesNotTurnAnUpstreamFailureIntoADirectRoute() {
+        XCTAssertFalse(DatagramFlowContinuity.routesDirect(
             capturePaused: true,
             destination: SOCKSAddress(host: "223.6.6.6", port: 53),
             configuration: config))
-        XCTAssertTrue(DatagramFlowContinuity.routesDirect(
+        XCTAssertFalse(DatagramFlowContinuity.routesDirect(
             capturePaused: true,
             destination: SOCKSAddress(host: "203.0.113.10", port: 443),
             configuration: config))
@@ -215,6 +248,68 @@ final class DatagramFlowContinuityTests: XCTestCase {
             for: SOCKSAddress(host: "223.6.6.6", port: 53)), 0)
         XCTAssertEqual(DatagramFlowContinuity.idleTimeoutSeconds(
             for: SOCKSAddress(host: "203.0.113.10", port: 443)), 120)
+    }
+
+    func testAnUpstreamFailureDropsAProxyEligibleDatagramInsteadOfSendingItDirect() {
+        XCTAssertEqual(
+            DatagramFlowContinuity.route(
+                capturePaused: true,
+                destination: SOCKSAddress(host: "8.8.8.8", port: 53),
+                configuration: config,
+                upstreamAvailable: false),
+            .dropped(reason: "upstream-unavailable"))
+    }
+
+    func testOnlyStructuralDestinationsUseTheDirectRoute() {
+        XCTAssertEqual(
+            DatagramFlowContinuity.route(
+                capturePaused: true,
+                destination: SOCKSAddress(host: config.upstreamHost, port: config.upstreamPort),
+                configuration: config,
+                upstreamAvailable: false),
+            .direct(reason: "reserved-destination"))
+        XCTAssertEqual(
+            DatagramFlowContinuity.route(
+                capturePaused: false,
+                destination: SOCKSAddress(host: "8.8.8.8", port: 53),
+                configuration: config,
+                upstreamAvailable: true),
+            .proxied)
+    }
+
+    func testAnUnconnectedFlowReevaluatesEveryDatagramsDestinationScope() {
+        let scoped = ProviderConfiguration(
+            upstreamHost: "127.0.0.1", upstreamPort: 7897,
+            includeDestinations: ["198.51.100.0/24"])
+        XCTAssertNil(DatagramFlowContinuity.directReasonForOwnedFlow(
+            destination: SOCKSAddress(host: "198.51.100.10", port: 443),
+            configuration: scoped,
+            signingIdentifier: "com.example.browser"))
+        XCTAssertEqual(
+            DatagramFlowContinuity.directReasonForOwnedFlow(
+                destination: SOCKSAddress(host: "203.0.113.10", port: 443),
+                configuration: scoped,
+                signingIdentifier: "com.example.browser"),
+            "capture-scope-exclusion")
+    }
+
+    func testALiveProcessRuleNarrowingAppliesToAnAlreadyOwnedDatagramFlow() {
+        let destination = SOCKSAddress(host: "198.51.100.10", port: 443)
+        let broad = ProviderConfiguration(upstreamHost: "127.0.0.1", upstreamPort: 7897)
+        XCTAssertNil(DatagramFlowContinuity.directReasonForOwnedFlow(
+            destination: destination,
+            configuration: broad,
+            signingIdentifier: "com.example.browser"))
+
+        let narrowed = ProviderConfiguration(
+            upstreamHost: "127.0.0.1", upstreamPort: 7897,
+            includeProcesses: ["com.example.mail"])
+        XCTAssertEqual(
+            DatagramFlowContinuity.directReasonForOwnedFlow(
+                destination: destination,
+                configuration: narrowed,
+                signingIdentifier: "com.example.browser"),
+            "capture-scope-exclusion")
     }
 }
 

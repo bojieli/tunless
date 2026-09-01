@@ -95,6 +95,18 @@ final class DNSResponseMapTests:XCTestCase {
 		let map=DNSResponseMap();let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);let query=Data([0xab,0xcd,1,0,0,1,0,0,0,0,0,0]);let translated=await map.prepare(query:query,original:original,routed:routed)
 		let other=await map.restore(response:translated,receivedFrom:SOCKSAddress(host:"8.8.8.8",port:53));let expected=await map.restore(response:translated,receivedFrom:routed);XCTAssertEqual(other.source,SOCKSAddress(host:"8.8.8.8",port:53));XCTAssertEqual(expected.source,original)
 	}
+	func testFailedSendAbandonsItsTranslationAndLoopGuard()async{
+		let guardState=ResolverLoopGuard();let map=DNSResponseMap(randomIdentifier:{0x4321},loopGuard:guardState);let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);let query=Data([0x12,0x34,1,0,0,1,0,0,0,0,0,0])
+		let prepared=await map.prepareForSend(query:query,original:original,routed:routed);XCTAssertTrue(guardState.isRelayedQuery(prepared.payload));await map.abandon(prepared);let count=await map.outstandingCount();XCTAssertEqual(count,0);XCTAssertFalse(guardState.isRelayedQuery(prepared.payload))
+	}
+	func testCollidingMapsDoNotReleaseEachOthersLoopGuard()async{
+		let guardState=ResolverLoopGuard();let first=DNSResponseMap(randomIdentifier:{0x4321},loopGuard:guardState);let second=DNSResponseMap(randomIdentifier:{0x4321},loopGuard:guardState);let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);let query=Data([0x12,0x34,1,0,0,1,0,0,0,0,0,0])
+		let one=await first.prepareForSend(query:query,original:original,routed:routed);let two=await second.prepareForSend(query:query,original:original,routed:routed);XCTAssertTrue(one.canSend);XCTAssertTrue(two.canSend);XCTAssertEqual(guardState.count(),2);await first.abandon(one);XCTAssertTrue(guardState.isRelayedQuery(two.payload));await second.abandon(two);XCTAssertFalse(guardState.isRelayedQuery(two.payload))
+	}
+	func testASaturatedLoopGuardMakesThePreparedQueryFailClosed()async{
+		let guardState=ResolverLoopGuard(maxEntries:1);XCTAssertTrue(guardState.register(0x1111));let map=DNSResponseMap(randomIdentifier:{0x4321},loopGuard:guardState);let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);let query=Data([0x12,0x34,1,0,0,1,0,0,0,0,0,0])
+		let prepared=await map.prepareForSend(query:query,original:original,routed:routed);let count=await map.outstandingCount();XCTAssertFalse(prepared.canSend);XCTAssertEqual(count,0);XCTAssertEqual(guardState.count(),1)
+	}
 	func testTranslatedIdentifiersAreUnpredictable()async{
 		let map=DNSResponseMap();let original=SOCKSAddress(host:"223.6.6.6",port:53);let routed=SOCKSAddress(host:"1.1.1.1",port:53);let query=Data([0x12,0x34,0x01,0x00,0,1,0,0,0,0,0,0])
 		var seen=Set<UInt16>();var previous:UInt16=0;var consecutive=0;let queries=256

@@ -116,11 +116,13 @@ address that outlives the TUN giving it meaning still connects successfully and
 then transfers nothing, so this failure arrives looking like a broken network
 rather than a stale answer.
 
-The reason to keep it is leak containment. `tunless` fails open on purpose: if
-it stops, is uninstalled, or stands aside because your upstream broke, new
-connections go out directly. With a TUN underneath, those connections are still
-proxied. If your requirement is that nothing ever leaves unproxied, keep the TUN
-and accept fake IP as the price.
+The reason to keep it is leak containment after capture itself disappears. If
+the extension process stops, is uninstalled, or the operator stops its session,
+macOS has no provider left to claim new connections and they use the ordinary
+route. An upstream outage while Tunless is alive now fails closed instead of
+standing aside. With a TUN underneath, traffic created after the extension has
+gone is still proxied. If your requirement is that nothing ever leaves
+unproxied, keep the TUN and accept fake IP as the price.
 
 Details and the measurement:
 [should the upstream keep its TUN device?](MACOS.md#should-the-upstream-keep-its-tun-device)
@@ -129,18 +131,22 @@ Details and the measurement:
 
 Then those flows were never captured, and the TUN was covering for it.
 
-`tunless` is fail-open by construction: anything it declines is handed back to
-the kernel and goes out the way it would if nothing were installed. With a TUN
-underneath, "declined" still meant "proxied", so a gap in capture cost you
-nothing and showed you nothing. Turning the TUN off does not create the gap; it
-makes it visible. The question is therefore always *which* flows were declined,
-and one diagnostic answers it before any theorizing: reproduce the failure while
-watching `--telemetry` on macOS, or the debug flow logs on Linux
-(`--log-level debug`, read with `journalctl -u tunless`). There are three
-answers, not two, and the third is the one that used to get mistaken for the
-second:
+Anything outside the configured capture scope is handed back to the kernel and
+uses the route it would have used if Tunless were not installed. With a TUN
+underneath, "excluded" still meant "proxied", so a scope gap cost you nothing
+and showed you nothing. Upstream degradation is not such a gap: eligible flows
+remain claimed and fail closed. Turning the TUN off exposes only intentional or
+misconfigured exclusions. Reproduce the failure while watching `--telemetry` on
+macOS, or the debug flow logs on Linux
+(`--log-level debug`, read with `journalctl -u tunless`). On macOS, read the
+route first and the recovered hostname second:
 
 - **No flow record.** The flow was never claimed, so the fault is in capture.
+- **A record whose `route` is `direct`.** The provider intentionally used a
+  reserved, resolver-loop, or split-horizon local route; `event` names which.
+- **A record whose `route` is `dropped`.** Traffic stayed captured, but a
+  datagram could not yet use its transport or a TCP stream was refused at the
+  concurrency ceiling. It did not go direct.
 - **A record carrying a hostname.** The flow was claimed and handed over by
   name, so the fault is downstream in your proxy.
 - **A record whose `hostname` is null.** The flow was claimed, but tunless had
@@ -158,9 +164,11 @@ For a flow that was never claimed, these are the reasons, most common first.
 the likeliest cause if what you see is a connection that opens and then
 transfers nothing.
 
-**Capture is not actually running.** A paused session is still a live session,
-so `status` reports `connected` either way and the `capture` field is the one
-that answers. Check the upstream port while you are there: the Linux unit
+**Capture is not actually running.** `status` can say `connected` while the
+datapath is degraded, so the `capture` field is the one that answers both
+questions. `capturing (degraded: ...)` still means eligible flows are claimed;
+`disconnected`, `not-configured`, or no capture report means they are not. Check
+the upstream port while you are there: the Linux unit
 defaults to `127.0.0.1:7890`, which is mihomo's default rather than Clash Verge
 Rev's `7897`, and an upstream nothing is listening on fails every captured flow
 while leaving everything else working.
@@ -316,8 +324,10 @@ them through your proxy. The proxy then dials that resolver to answer — and if
 *that* connection is captured too, the query is handed straight back to the
 proxy waiting on it. Nothing errors. Every lookup on the machine just recurses
 until it times out, which feels exactly like a dead network. Current builds
-reserve the resolver's address from capture so this cannot happen, whichever
-proxy you run and whether or not you named its process.
+reserve resolver streams and identify the upstream's forwarded UDP copy by the
+private DNS transaction ID Tunless assigned. That copy goes direct while an
+application's own query to the same resolver remains captured, whichever proxy
+you run and whether or not you named its process.
 
 Giving `--upstream` a hostname was a second door into the same room: dialing the
 proxy needed a lookup, and capturing that lookup needed the dial. The name is
@@ -330,18 +340,19 @@ record that changed.
 successfully and then transfers nothing. No error anywhere. That range is
 excluded from capture by default now.
 
-**Capture stood aside and you did not notice.** If the upstream stops resolving,
-the provider stops claiming flows so your machine keeps working. It resumes on
-its own when the upstream recovers. `status` tells you which state you are in:
+**The upstream degraded.** If the upstream stops resolving, the provider keeps
+claiming eligible flows and fails them closed instead of silently putting them
+on the local network. It retires stale transports and clears the degraded state
+when the upstream recovers. `status` tells you both capture and health:
 
 ```console
 Tunless status
 { "status": "connected", "capture": "capturing" }
-{ "status": "connected", "capture": "paused: name resolution failed 3 times in a row..." }
+{ "status": "connected", "capture": "capturing (degraded: name resolution failed 3 times in a row...)" }
 ```
 
-Note that `status` alone says `connected` either way — a paused session is still
-a live session. The `capture` field is the one that answers the question.
+`status` alone says `connected` either way. The `capture` field answers the
+health question; `capturing (degraded: ...)` is not a direct route.
 
 **`dig` works but curl hangs before `Trying`.** These programs do not exercise
 the same macOS resolver path. `dig` opens its own DNS socket; curl and ordinary
@@ -350,8 +361,9 @@ Tunless build could error-close an admitted UDP flow when its watchdog paused,
 or expire a quiet port-53 flow after two minutes. `mDNSResponder` retained its
 socket, but later sends failed locally with `EINVAL`, so applications waited
 even though the DNS server had a valid answer. Current builds preserve admitted
-UDP flows across a pause, send them directly until capture resumes, and do not
-idle-expire port-53 flows.
+UDP flows across upstream degradation, drop proxy-eligible datagrams until the
+association rebuilds, and do not idle-expire port-53 flows. Reserved,
+loop-prevention, and split-horizon local datagrams remain intentionally direct.
 
 To recover a Mac already in that state, restart the resolver. `mDNSResponder`
 is managed by launchd and comes back immediately; this does not change the DNS
@@ -364,7 +376,7 @@ curl --connect-timeout 10 -v https://api.anthropic.com/
 
 The second command should print `Host ... was resolved` and then `Trying ...`.
 On an older Tunless build, upgrade before relying on this recovery because the
-next watchdog pause can invalidate the replacement socket again.
+next watchdog degradation can invalidate the replacement socket again.
 
 ## Can a website tell I am using a proxy?
 
@@ -396,7 +408,7 @@ came from, including the ones that came out badly, in
 
 ## Can I use it now?
 
-0.2.3 is a release, and it says on its face how far each platform got. Linux is
+0.3.0 is a release, and it says on its face how far each platform got. Linux is
 generally available: capture runs against a live kernel on every pull request,
 and every performance claim in the repository is backed by a dated measurement
 naming the host it came from. macOS is beta. On Windows there is source code for

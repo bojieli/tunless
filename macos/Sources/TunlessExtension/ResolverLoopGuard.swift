@@ -33,7 +33,11 @@ import Foundation
 /// and the resolver client retries.
 final class ResolverLoopGuard: @unchecked Sendable {
     private let lock = NSLock()
-    private var inFlight: [UInt16: Date] = [:]
+    /// One identifier can be in flight on more than one application flow.
+    /// Keep every registration so one response/failed send cannot release a
+    /// colliding exchange that still needs the guard.
+    private var inFlight: [UInt16: [Date]] = [:]
+    private var registrationCount = 0
     private let lifetime: TimeInterval
     private let maxEntries: Int
     private let now: @Sendable () -> Date
@@ -51,7 +55,11 @@ final class ResolverLoopGuard: @unchecked Sendable {
         self.now = now
     }
 
-    func register(_ identifier: UInt16) {
+    /// Registers an exchange, returning false when the bounded table is full.
+    /// A caller that receives false must not send a query whose forwarded copy
+    /// depends on this guard; doing so could close the resolver loop under load.
+    @discardableResult
+    func register(_ identifier: UInt16) -> Bool {
         let moment = now()
         lock.lock()
         defer { lock.unlock() }
@@ -59,13 +67,25 @@ final class ResolverLoopGuard: @unchecked Sendable {
         // A full table stops registering rather than evicting. Dropping an entry
         // to make room would let the query it belonged to close the loop, and a
         // guard that forgets under load forgets exactly when a loop is running.
-        guard inFlight.count < maxEntries || inFlight[identifier] != nil else { return }
-        inFlight[identifier] = moment.addingTimeInterval(lifetime)
+        guard registrationCount < maxEntries else { return false }
+        inFlight[identifier, default: []].append(moment.addingTimeInterval(lifetime))
+        registrationCount += 1
+        return true
     }
 
     func release(_ identifier: UInt16) {
         lock.lock()
-        inFlight.removeValue(forKey: identifier)
+        guard var registrations = inFlight[identifier], !registrations.isEmpty else {
+            lock.unlock()
+            return
+        }
+        registrations.removeFirst()
+        registrationCount -= 1
+        if registrations.isEmpty {
+            inFlight.removeValue(forKey: identifier)
+        } else {
+            inFlight[identifier] = registrations
+        }
         lock.unlock()
     }
 
@@ -75,11 +95,14 @@ final class ResolverLoopGuard: @unchecked Sendable {
         let moment = now()
         lock.lock()
         defer { lock.unlock() }
-        guard let expires = inFlight[identifier] else { return false }
-        if moment >= expires {
+        guard let registrations = inFlight[identifier] else { return false }
+        let live = registrations.filter { moment < $0 }
+        registrationCount -= registrations.count - live.count
+        if live.isEmpty {
             inFlight.removeValue(forKey: identifier)
             return false
         }
+        inFlight[identifier] = live
         return true
     }
 
@@ -93,11 +116,16 @@ final class ResolverLoopGuard: @unchecked Sendable {
     func count() -> Int {
         lock.lock()
         defer { lock.unlock() }
-        return inFlight.count
+        prune(now())
+        return registrationCount
     }
 
     private func prune(_ moment: Date) {
-        guard inFlight.count >= maxEntries / 2 else { return }
-        inFlight = inFlight.filter { moment < $0.value }
+        guard registrationCount >= max(1, maxEntries / 2) else { return }
+        inFlight = inFlight.compactMapValues { registrations in
+            let live = registrations.filter { moment < $0 }
+            return live.isEmpty ? nil : live
+        }
+        registrationCount = inFlight.values.reduce(0) { $0 + $1.count }
     }
 }

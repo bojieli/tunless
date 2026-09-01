@@ -84,6 +84,71 @@ final class DatagramContinuityTests: XCTestCase {
         XCTAssertTrue(reopened, "a returning upstream must be picked up again by the same flow")
     }
 
+    func testAssociationIsRebuiltWhenTheNetworkEpochChanges() async throws {
+        let upstream = try FakeSOCKS5Upstream()
+        defer { upstream.stop() }
+        let epoch = NetworkEpoch()
+        let association = UDPAssociation(
+            configuration: upstream.configuration,
+            sink: RecordingSink(),
+            dnsResponses: DNSResponseMap(),
+            idleTimeoutSeconds: 0,
+            networkEpoch: epoch,
+            retryBackoffSeconds: 0.5,
+            handshakeTimeoutSeconds: 2)
+        defer { Task { await association.shutDown() } }
+
+        let opened = await association.establish()
+        XCTAssertTrue(opened)
+        let firstEpoch = epoch.current
+        let readyBeforeChange = await association.isReady
+        XCTAssertTrue(readyBeforeChange)
+
+        _ = epoch.advance()
+        let readyAfterChange = await association.isReady
+        XCTAssertFalse(readyAfterChange, "a relay bound to Wi-Fi must not be reused on the hotspot")
+        let reopened = await association.establish()
+        XCTAssertTrue(reopened)
+        XCTAssertGreaterThan(epoch.current, firstEpoch)
+        let readyAfterReopen = await association.isReady
+        XCTAssertTrue(readyAfterReopen)
+    }
+
+    func testAssociationAppliesALiveConfigurationUpdate() async throws {
+        let original = try FakeSOCKS5Upstream()
+        let replacement = try FakeSOCKS5Upstream()
+        defer {
+            original.stop()
+            replacement.stop()
+        }
+        let sink = RecordingSink()
+        let association = UDPAssociation(
+            configuration: original.configuration,
+            sink: sink,
+            dnsResponses: DNSResponseMap(),
+            idleTimeoutSeconds: 0,
+            retryBackoffSeconds: 0.5,
+            handshakeTimeoutSeconds: 2)
+        defer { Task { await association.shutDown() } }
+
+        let openedOriginal = await association.establish()
+        XCTAssertTrue(openedOriginal)
+        await association.updateConfiguration(replacement.configuration)
+        let readyAfterUpdate = await association.isReady
+        XCTAssertFalse(readyAfterUpdate)
+        original.stop()
+
+        let openedReplacement = await association.establish()
+        XCTAssertTrue(
+            openedReplacement,
+            "the long-lived application flow must rebuild against the replacement upstream")
+        let sent = await association.send(
+            Self.frame(to: "1.1.1.1", payload: Data([0xca, 0xfe])))
+        XCTAssertTrue(sent)
+        let echoed = try await sink.firstWrite(timeout: 5)
+        XCTAssertEqual(echoed.payload, Data([0xca, 0xfe]))
+    }
+
     func testShutDownLeavesNothingOpen() async throws {
         let upstream = try FakeSOCKS5Upstream()
         defer { upstream.stop() }

@@ -27,10 +27,11 @@ Options:
                              capture back automatically if it fails.
   --no-default-exclusions    Capture private, CGNAT, and fake-IP ranges, which
                              are excluded by default.
-  --no-health-watchdog       Keep capture on even after the upstream stops
-                             resolving names.
-  --max-flows N              Most flows to hold at once (default 4096).
-                             Flows past the ceiling go direct.
+  --no-health-watchdog       Disable periodic DNS health probes and degradation
+                             reports. Capture policy is unchanged.
+  --max-flows N              Most TCP flows to relay at once (default 4096).
+                             Extra streams stay captured and are refused; UDP
+                             application flows are never closed at this limit.
   --include-process GLOB     Capture a signing identifier (repeatable).
   --exclude-process GLOB     Exclude a signing identifier (repeatable).
   --include-destination CIDR Capture a destination prefix (repeatable).
@@ -66,10 +67,11 @@ split-horizon zones that cannot be guessed.
 start refuses to enable capture when the upstream cannot relay DNS, and rolls
 capture back automatically if name resolution does not work once capture is on.
 Capture then stays accountable: the provider re-proves resolution on a timer,
-stands aside on its own if that stops working, and resumes when the upstream
-recovers. Sleep never counts against the upstream. status reports what capture
-is actually doing in its capture field, since a paused session still reads as
-connected.
+marks the session degraded if that stops working, and recovers when the
+upstream returns. Proxy-eligible flows remain captured and fail closed during
+that interval; only structurally local/reserved traffic is direct. Sleep never
+counts against the upstream. status reports both capture and health in its
+capture field.
 
 Use stop for an ordinary shutdown. Cleanup is the fail-safe recovery command:
 it stops capture, removes every Tunless proxy configuration, and deactivates
@@ -134,10 +136,10 @@ private struct StatusReport: Codable {
     let preset: String?
     /// What the provider is doing with flows right now.
     ///
-    /// A capture that stood aside keeps its session connected, because the
-    /// session is what keeps the watchdog probing, so `status` alone reports
-    /// `connected` either way. Without this field a paused capture is
-    /// indistinguishable from a working one.
+    /// A degraded capture keeps its session connected and keeps claiming
+    /// eligible flows, so `status` alone reports `connected` either way.
+    /// Without this field an unhealthy datapath is indistinguishable from a
+    /// working one.
     let capture: String?
 
     enum CodingKeys: String, CodingKey {
@@ -385,9 +387,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
     }
 
     /// Stops the session if it is running and starts it again, so `startProxy`
-    /// reads the configuration that was just saved. Capture is off in between,
-    /// which means flows go direct — the same safe direction as any other
-    /// moment tunless is not running.
+    /// reads the configuration that was just saved. Capture is off in between;
+    /// the short restart window is the only time newly-created flows can use
+    /// the host's ordinary route.
     private func restart(_ configuration: LauncherConfiguration, on manager: NETransparentProxyManager) {
         if manager.connection.status != .disconnected && manager.connection.status != .invalid {
             manager.connection.stopVPNTunnel()
@@ -429,10 +431,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         // host-wide and this is still the only check that would notice. Only
         // an explicit --skip-verify opts out.
         guard !arguments.skipVerify else {
-            // The provider is holding capture on probation and disables it
-            // unless something confirms resolution. Nothing here is going to,
-            // so say so explicitly rather than letting the window expire under
-            // a start that was asked to skip verification.
+            // The provider is holding capture on probation and reports it as
+            // degraded unless something confirms resolution. Nothing here is
+            // going to, so say so explicitly rather than letting the window
+            // expire under a start that was asked to skip verification.
             confirmHealthy(manager)
             announceStarted(configuration)
             return
@@ -456,9 +458,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
 
     /// Tells the provider that resolution was proved through the live
     /// datapath, which ends the probation window it armed when capture
-    /// started. Sent best-effort: the launcher exits either way, and a
-    /// provider that never hears it disables capture, which is the safe
-    /// direction to fail in.
+    /// started. Sent best-effort: the launcher exits either way, and a provider
+    /// that never hears it remains fail-closed but reports the unconfirmed
+    /// datapath as degraded.
     private func confirmHealthy(_ manager: NETransparentProxyManager) {
         guard let session = manager.connection as? NETunnelProviderSession else { return }
         try? session.sendProviderMessage(ControlMessage.confirmHealthy.encoded) { _ in }

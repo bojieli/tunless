@@ -1,24 +1,126 @@
 import Foundation
+import Network
 
-/// Decides when capture has stopped being safe to keep on, and when it is safe
+/// The part of an `NWPath` that identifies the network carrying the
+/// provider's sockets.
+///
+/// `NWPathMonitor` is allowed to report the same interface name for two very
+/// different networks. In particular, macOS commonly keeps Wi-Fi and an
+/// iPhone hotspot on `en0`; the gateway, cost, endpoint, and path capabilities
+/// still change. Keeping a value type here makes that distinction explicit and
+/// gives the watchdog something deterministic to compare instead of treating
+/// `path.status == .satisfied` as a complete description of the network.
+struct NetworkPathIdentity: Equatable, Sendable {
+    let status: String
+    let interfaces: [String]
+    let expensive: Bool
+    let constrained: Bool
+    let supportsIPv4: Bool
+    let supportsIPv6: Bool
+    let supportsDNS: Bool
+    let gateways: [String]
+    let localEndpoint: String?
+    let remoteEndpoint: String?
+
+    init(
+        status: String,
+        interfaces: [String] = [],
+        expensive: Bool = false,
+        constrained: Bool = false,
+        supportsIPv4: Bool = true,
+        supportsIPv6: Bool = false,
+        supportsDNS: Bool = true,
+        gateways: [String] = [],
+        localEndpoint: String? = nil,
+        remoteEndpoint: String? = nil
+    ) {
+        self.status = status
+        self.interfaces = interfaces.sorted()
+        self.expensive = expensive
+        self.constrained = constrained
+        self.supportsIPv4 = supportsIPv4
+        self.supportsIPv6 = supportsIPv6
+        self.supportsDNS = supportsDNS
+        self.gateways = gateways.sorted()
+        self.localEndpoint = localEndpoint
+        self.remoteEndpoint = remoteEndpoint
+    }
+
+    init(path: NWPath) {
+        self.init(
+            status: String(describing: path.status),
+            interfaces: path.availableInterfaces.map {
+                "\($0.name):\($0.index):\(String(describing: $0.type))"
+            },
+            expensive: path.isExpensive,
+            constrained: path.isConstrained,
+            supportsIPv4: path.supportsIPv4,
+            supportsIPv6: path.supportsIPv6,
+            supportsDNS: path.supportsDNS,
+            gateways: path.gateways.map(\.debugDescription),
+            localEndpoint: path.localEndpoint?.debugDescription,
+            remoteEndpoint: path.remoteEndpoint?.debugDescription)
+    }
+}
+
+/// Tracks meaningful path changes while ignoring duplicate monitor callbacks.
+///
+/// The first callback establishes the baseline. Every later identity change is
+/// a new generation, even when the active interface has the same name.
+struct NetworkPathGeneration: Equatable, Sendable {
+    private(set) var generation: UInt64 = 0
+    private(set) var identity: NetworkPathIdentity?
+
+    /// Returns true when `identity` starts a new network generation.
+    @discardableResult
+    mutating func update(_ identity: NetworkPathIdentity) -> Bool {
+        guard let previous = self.identity else {
+            self.identity = identity
+            return false
+        }
+        guard previous != identity else { return false }
+        self.identity = identity
+        generation &+= 1
+        return true
+    }
+}
+
+/// A small thread-safe epoch shared by all disposable network transports.
+///
+/// It deliberately is not an actor: `NWPathMonitor` callbacks, association
+/// actors, and probe tasks all need to read the value without introducing an
+/// await point in the middle of a transport validity check.
+final class NetworkEpoch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64 = 0
+
+    var current: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    @discardableResult
+    func advance() -> UInt64 {
+        lock.lock()
+        value &+= 1
+        let next = value
+        lock.unlock()
+        return next
+    }
+}
+
+/// Decides when the upstream datapath is degraded and when it is healthy
 /// again.
 ///
-/// Capture is the only thing standing between the host and its previous,
-/// working network path, and the failure that matters is not a crash: a crash
-/// is already fail-open, because the flows go direct once nothing is capturing
-/// them. The dangerous state is a provider that is alive, holding every flow on
-/// the host, and relaying them into an upstream that has stopped being able to
-/// answer. Name resolution is where that shows up first and worst, and a host
-/// that cannot resolve cannot be told how to fix itself.
-///
-/// Handing the network back is therefore a pause, not a verdict. An operator
-/// who ran `start` asked for capture, and a minute of upstream trouble does not
-/// withdraw that request — it only means capture must stand aside until the
-/// upstream can carry traffic again. Staying paused after the upstream recovers
-/// is its own harm: the host spends that time resolving names through whatever
-/// the network hands it, which is the exposure the DNS override exists to
-/// remove. So this pauses when the evidence says capture is hurting, and
-/// resumes on the first probe that says it is not.
+/// Name resolution is the first host-wide signal that a local SOCKS upstream
+/// has stopped carrying traffic. Three failures mark the session degraded and
+/// retire streams that cannot recover in place; one success clears that state.
+/// The provider deliberately keeps claiming proxy-eligible traffic throughout
+/// the pause. Handing those flows back to the kernel would convert an upstream
+/// outage into an unreported proxy bypass, which is worse than a visible,
+/// fail-closed retry. Reserved and local traffic still follows its intentional
+/// direct routes.
 ///
 /// Sleep is excluded from the evidence entirely. A machine going to sleep tears
 /// its network down, every probe fails, and pausing is both pointless — nothing
@@ -32,9 +134,9 @@ struct CaptureHealth: Equatable {
     enum Decision: Equatable {
         /// Nothing changes.
         case unchanged
-        /// Stop claiming flows and let them go direct, for the stated reason.
+        /// Mark the upstream degraded, for the stated reason.
         case pause(String)
-        /// Claim flows again; the upstream is carrying DNS.
+        /// Clear the degraded state; the upstream is carrying DNS again.
         case resume
     }
 
@@ -46,7 +148,7 @@ struct CaptureHealth: Equatable {
     /// with nothing having checked it — the exact state the post-start rollback
     /// exists to prevent, reached by a path the rollback cannot see.
     let probationSeconds: TimeInterval
-    /// Consecutive failed probes tolerated before capture stands aside.
+    /// Consecutive failed probes tolerated before capture is marked degraded.
     ///
     /// More than one, because a single query can lose a race with a node switch
     /// or a route change. Not many more, because every probe interval spent
@@ -58,11 +160,19 @@ struct CaptureHealth: Equatable {
     /// several seconds, and probes taken during that window measure the wake,
     /// not the upstream.
     let wakeGraceSeconds: TimeInterval
+    /// How long after a path/network change to ignore probe results.
+    ///
+    /// A route can be reported as satisfied before the local proxy has rebuilt
+    /// its own outbound sockets. Probing in that window measures the teardown
+    /// rather than the new path and would otherwise trip the failure budget.
+    let networkChangeGraceSeconds: TimeInterval
 
     private(set) var confirmed = false
     private(set) var consecutiveFailures = 0
     private(set) var paused = false
     private(set) var pauseReason: String?
+    /// Monotonically increasing token captured by asynchronous probes.
+    private(set) var networkGeneration: UInt64 = 0
     private var armedAt: Date?
     private var asleep = false
     private var ignoreProbesUntil: Date?
@@ -70,14 +180,17 @@ struct CaptureHealth: Equatable {
     init(
         probationSeconds: TimeInterval = 45,
         failuresBeforePause: Int = 3,
-        wakeGraceSeconds: TimeInterval = 20
+        wakeGraceSeconds: TimeInterval = 20,
+        networkChangeGraceSeconds: TimeInterval = 15
     ) {
         self.probationSeconds = probationSeconds
         self.failuresBeforePause = failuresBeforePause
         self.wakeGraceSeconds = wakeGraceSeconds
+        self.networkChangeGraceSeconds = networkChangeGraceSeconds
     }
 
-    /// True while the provider should hand flows straight back to the host.
+    /// Historical name for the state-machine pause. The provider uses this for
+    /// diagnostics, not admission: proxy-eligible flows remain fail-closed.
     var shouldDeclineFlows: Bool { paused }
 
     /// Capture has just been enabled and its probation window starts now.
@@ -87,6 +200,11 @@ struct CaptureHealth: Equatable {
         consecutiveFailures = 0
         paused = false
         pauseReason = nil
+        // Do not reset this token. A probe from a previous provider session
+        // can finish after a rapid stop/start; keeping the counter monotonic
+        // guarantees that result cannot be mistaken for the new session's
+        // first generation.
+        networkGeneration &+= 1
         asleep = false
         ignoreProbesUntil = nil
     }
@@ -102,6 +220,7 @@ struct CaptureHealth: Equatable {
     mutating func systemWillSleep() {
         asleep = true
         consecutiveFailures = 0
+        networkGeneration &+= 1
     }
 
     /// The system woke. Give the network time to come back before believing any
@@ -109,7 +228,30 @@ struct CaptureHealth: Equatable {
     mutating func systemDidWake(at now: Date) {
         asleep = false
         consecutiveFailures = 0
+        networkGeneration &+= 1
         ignoreProbesUntil = now.addingTimeInterval(wakeGraceSeconds)
+    }
+
+    /// The path carrying the upstream changed.
+    ///
+    /// A successful probe on the old path must never be allowed to affect the
+    /// new path, so this advances the probe token as well as clearing all
+    /// evidence collected before the transition. Capture remains claimed (the
+    /// provider fails closed for proxy-eligible traffic), and a previously
+    /// paused health state is cleared so new flows can immediately attempt the
+    /// rebuilt upstream without inheriting stale failure evidence.
+    mutating func networkDidChange(at now: Date) -> Decision {
+        networkGeneration &+= 1
+        consecutiveFailures = 0
+        confirmed = false
+        armedAt = now
+        ignoreProbesUntil = now.addingTimeInterval(networkChangeGraceSeconds)
+        paused = false
+        pauseReason = nil
+        // This is not a successful health observation. The old failure no
+        // longer applies, but the new path still has to prove itself after the
+        // grace interval, so do not emit a misleading "resumed" decision.
+        return .unchanged
     }
 
     /// True when a probe result should not be acted on at all.
@@ -127,18 +269,21 @@ struct CaptureHealth: Equatable {
         succeeded: Bool,
         detail: String = "no answer",
         pathSatisfied: Bool,
-        at now: Date
+        at now: Date,
+        generation: UInt64? = nil
     ) -> Decision {
+        // An async probe can finish after NWPathMonitor has delivered a new
+        // path. Its result belongs to the old sockets and must be discarded.
+        if let generation, generation != networkGeneration { return .unchanged }
         guard !ignoringProbes(at: now) else { return .unchanged }
         guard pathSatisfied else { return .unchanged }
         if succeeded {
             confirmed = true
             consecutiveFailures = 0
             guard paused else { return .unchanged }
-            // The upstream carries DNS again, so the reason for standing aside
-            // is gone. One success is enough: capture resuming cannot strand
-            // the host the way capture starting can, because this same loop is
-            // still watching and can stand aside again on the next probe.
+            // The upstream carries DNS again, so the degraded state is gone.
+            // One success is enough: this same loop is still watching and can
+            // mark another sustained failure on later probes.
             paused = false
             pauseReason = nil
             return .resume

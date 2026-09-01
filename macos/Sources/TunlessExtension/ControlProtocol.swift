@@ -2,7 +2,7 @@ import Foundation
 import Network
 import NetworkExtension
 
-public struct ProviderConfiguration: Codable, Sendable {
+public struct ProviderConfiguration: Codable, Equatable, Sendable {
     public var upstreamHost: String
     public var upstreamPort: UInt16
     public var username: String?
@@ -13,24 +13,23 @@ public struct ProviderConfiguration: Codable, Sendable {
 	public var excludeProcesses: [String]?
 	public var includeDestinations: [String]?
 	public var excludeDestinations: [String]?
-	/// Turns off the provider's own DNS health watchdog.
-	///
-	/// The watchdog is what makes capture give the network back when the
-	/// upstream stops resolving, so this is deliberately awkward to reach: it
-	/// exists for a host that would rather keep capture on through an outage
-	/// than have it disabled underneath a running workload.
+	/// Turns off periodic DNS health probing. Capture remains fail-closed for
+	/// proxy-eligible traffic either way; this is useful only when an upstream
+	/// intentionally cannot answer the probe (for example, a private resolver
+	/// reachable by an application-specific policy).
 	public var disableHealthWatchdog: Bool?
-	/// Most flows the provider will hold at once.
+	/// Most TCP flows the provider will relay at once.
 	///
 	/// A misbehaving or merely busy application can open flows faster than the
 	/// upstream retires them, and every one of them costs the extension a task
 	/// and a SOCKS connection. macOS reports an extension that spends too much
 	/// CPU and can terminate it, so an unbounded flow rate turns one noisy
-	/// process into a capture outage for the whole host. Rejecting past a
-	/// ceiling degrades that application instead, and a rejected flow is not
-	/// dropped: it goes direct, exactly as it would if tunless were not
-	/// installed. The portable core has enforced the same ceiling from the
-	/// start; this brings the provider in line.
+	/// process into a capture outage for the whole host. Past the ceiling, a new
+	/// TCP flow is claimed and refused so overload cannot silently turn into a
+	/// direct route. UDP flows are not counted here: Network Extension does not
+	/// re-capture an application-owned UDP socket after the provider closes it,
+	/// so rejecting one would permanently damage that socket rather than provide
+	/// bounded backpressure.
 	public var maxConcurrentFlows: Int?
 	/// Whether preflight proved this upstream relays DNS over UDP.
 	///
@@ -300,10 +299,26 @@ enum ConfigurationError: Error, Equatable {
 	case invalidFlowCeiling
 }
 
+/// How the provider handled a flow or datagram.
+///
+/// `routedDestination == nil` used to mean both "sent to the original
+/// destination through SOCKS" and "sent directly". Keeping the two cases
+/// distinct is important when diagnosing a network transition: an operator
+/// must be able to tell a deliberate local/LAN exception from a proxy bypass.
+public enum FlowRoute: String, Codable, Sendable {
+    case proxied
+    case direct
+    /// Captured traffic was not emitted. This includes a datagram dropped while
+    /// its disposable transport is unavailable and a TCP flow refused at the
+    /// concurrency ceiling; neither case is released to a direct route.
+    case dropped
+}
+
 public struct FlowTelemetry: Codable, Sendable {
     public var protocolName: String
     public var destination: String
 	public var routedDestination: String?
+	public var route: FlowRoute?
     public var hostname: String?
     public var signingIdentifier: String
 	/// The executable behind the flow, when the audit token resolves to one.
@@ -311,8 +326,30 @@ public struct FlowTelemetry: Codable, Sendable {
 	/// Without it an operator reading telemetry sees `a.out` and has no way to
 	/// tell which program that is, let alone write an exclusion for it.
 	public var executablePath: String?
-    public var timestamp: Date
+	public var timestamp: Date
 	public var event: String?
+
+    public init(
+        protocolName: String,
+        destination: String,
+        routedDestination: String? = nil,
+        route: FlowRoute? = nil,
+        hostname: String? = nil,
+        signingIdentifier: String = "",
+        executablePath: String? = nil,
+        timestamp: Date = Date(),
+        event: String? = nil
+    ) {
+        self.protocolName = protocolName
+        self.destination = destination
+        self.routedDestination = routedDestination
+        self.route = route
+        self.hostname = hostname
+        self.signingIdentifier = signingIdentifier
+        self.executablePath = executablePath
+        self.timestamp = timestamp
+        self.event = event
+    }
 }
 
 enum ControlRequest: Codable { case configuration, telemetry }
