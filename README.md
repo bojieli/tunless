@@ -87,11 +87,11 @@ plain SOCKS5. Your proxy sees a normal SOCKS5 client.
 | Platform | How it captures | Where it stands |
 | --- | --- | --- |
 | Linux | eBPF cgroup connect/sendmsg/recvmsg and sockops | TCP and UDP over both address families, on the host and inside container namespaces. Unconnected UDP is single-destination on purpose; see the note under [migration](#migrate-from-mihomo-tun). |
-| macOS | `NETransparentProxyProvider` system extension | Notarized builds pass the recorded live suites, and capture stands aside on its own if the upstream stops resolving. Clean-machine qualification of the exact candidate is still open. |
+| macOS | `NETransparentProxyProvider` system extension | Notarized builds pass the recorded live suites. Upstream degradation and Wi-Fi/hotspot changes retain fail-closed capture while transports rebuild. Clean-machine qualification of the exact candidate is still open. |
 | Windows | WFP ALE connect-redirect callout | Source only. The driver has never been built by a WDK, loaded, or run under Driver Verifier, and it is not signed. Treat it as a design, not a download. |
 
 The three platforms ship at different maturities and the release says so on its
-face: **in 0.2.3 Linux is generally available, macOS is beta, and Windows is
+face: **in 0.3.0 Linux is generally available, macOS is beta, and Windows is
 source only.** See
 [what a release covers](docs/RELEASING.md#what-the-first-release-covers)
 and [where the project actually is](#where-the-project-actually-is).
@@ -218,10 +218,11 @@ start is [two commands](docs/MACOS.md#running): `check`, then `start`.
 
 Capture there is accountable for the network it takes over. It refuses to start
 when the upstream cannot relay DNS, verifies resolution through the live
-datapath afterwards, and then keeps re-proving it — standing aside so flows go
-direct if the upstream stops resolving, and resuming when it recovers. The
-addresses a host needs to stay reachable, and the two tunless itself relays
-through, are reserved from capture whatever the configuration says. See
+datapath afterwards, and then keeps re-proving it. A degraded upstream remains
+fail-closed for eligible traffic; Wi-Fi, hotspot, sleep, and configuration
+changes invalidate stale transports and rebuild them without closing
+application-owned UDP flows. Only configured exclusions, reserved endpoints,
+resolver-loop prevention, and split-horizon local DNS are direct. See
 [deploying without losing the network](docs/MACOS.md#deploying-without-losing-the-network). On Windows, the WFP backend is implemented but
 not yet release-qualified — treat it as source, not a shippable driver. Loading
 a kernel driver on Windows 10 or later requires a Microsoft signature that this
@@ -350,7 +351,7 @@ listener. Avoid shared-source `SO_REUSEPORT` for captured UDP6 workloads.
 
 ## Where the project actually is
 
-**0.2.3 is a release, not a preview.** Linux is generally available: capture is
+**0.3.0 is a release, not a preview.** Linux is generally available: capture is
 exercised against a live kernel on every pull request, the destination filters
 are demonstrated against an attached cgroup, artifacts rebuild byte-identically,
 and every performance claim in this file is backed by a dated measurement naming

@@ -57,7 +57,7 @@ public enum DNSProbeMessage {
     /// and reported as "no DNS answer came back through the UDP relay". At
     /// preflight that tells an operator UDP relaying is broken when it is not
     /// and switches the watchdog to TCP-only probing for the whole session; on
-    /// the watchdog it fails a healthy upstream until capture stands aside.
+    /// the watchdog it falsely marks a healthy upstream as degraded.
     public static func relayedPayload(_ datagram: Data) -> Data? {
         guard datagram.count > 4, datagram[datagram.startIndex] == 0,
               datagram[datagram.startIndex + 1] == 0,

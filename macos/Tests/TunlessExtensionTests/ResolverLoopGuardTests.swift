@@ -36,6 +36,21 @@ final class ResolverLoopGuardTests: XCTestCase {
         XCTAssertEqual(guardian.count(), 0)
     }
 
+    func testCollidingIdentifiersAreReferenceCountedAcrossFlows() {
+        let guardian = guarded()
+        XCTAssertTrue(guardian.register(0x1234))
+        XCTAssertTrue(guardian.register(0x1234))
+        XCTAssertEqual(guardian.count(), 2)
+
+        guardian.release(0x1234)
+        XCTAssertTrue(
+            guardian.isRelaying(0x1234),
+            "one flow completing must not release a colliding flow's guard")
+        XCTAssertEqual(guardian.count(), 1)
+        guardian.release(0x1234)
+        XCTAssertFalse(guardian.isRelaying(0x1234))
+    }
+
     func testAnEntryOutlivesItsExchangeOnlyUntilTheLifetime() {
         let guardian = guarded(lifetime: 60)
         guardian.register(0x1234)
@@ -52,7 +67,7 @@ final class ResolverLoopGuardTests: XCTestCase {
         let guardian = guarded(maxEntries: 2)
         guardian.register(1)
         guardian.register(2)
-        guardian.register(3)
+        XCTAssertFalse(guardian.register(3))
         XCTAssertLessThanOrEqual(guardian.count(), 2)
         XCTAssertTrue(guardian.isRelaying(1))
         XCTAssertTrue(guardian.isRelaying(2))
@@ -143,8 +158,9 @@ final class ResolverDatagramPathTests: XCTestCase {
                 capturePaused: false,
                 destination: SOCKSAddress(host: "127.0.0.1", port: 7897),
                 configuration: installed))
-        // And a paused capture still routes everything direct.
-        XCTAssertTrue(
+        // Upstream degradation never changes an otherwise proxied destination
+        // into a direct one.
+        XCTAssertFalse(
             DatagramFlowContinuity.routesDirect(
                 capturePaused: true,
                 destination: SOCKSAddress(host: "203.0.113.1", port: 443),

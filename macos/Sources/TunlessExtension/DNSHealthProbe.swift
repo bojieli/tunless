@@ -160,9 +160,14 @@ enum DNSHealthProbe {
                 guard relay.port > 0, let port = NWEndpoint.Port(rawValue: relay.port) else { return false }
                 let connection = NWConnection(host: NWEndpoint.Host(relay.host), port: port, using: .udp)
                 datagrams.set(connection)
-                var packet = Data([0, 0, 0])
-                packet.append(try resolver.encoded())
-                packet.append(DNSProbeMessage.query(transactionID: transactionID))
+                var packetBytes = Data([0, 0, 0])
+                packetBytes.append(try resolver.encoded())
+                packetBytes.append(DNSProbeMessage.query(transactionID: transactionID))
+                // Freeze the frame before it enters Network.framework's
+                // concurrent state callback. Capturing a mutable local is a
+                // Swift 6 data race even though this function never mutates it
+                // again after installing the handler.
+                let packet = packetBytes
                 return try await withCheckedThrowingContinuation { continuation in
                     let gate = AsyncResultGate<Bool>()
                     guard gate.install(continuation) else { return }

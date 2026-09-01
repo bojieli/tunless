@@ -20,7 +20,7 @@ only in a document a reader may not reach:
 | Platform | Ships as | Because |
 | --- | --- | --- |
 | Linux | Generally available | eBPF capture for TCP and UDP over both families, host and container namespaces, a reproducible embedded BPF object verified on the 5.10 floor and a current kernel, and dated throughput and footprint evidence |
-| macOS | Beta | Notarized builds pass the recorded live suites and capture stands aside on its own when the upstream stops resolving, but exact-candidate clean-machine qualification is open and `remoteHostname` and HTTP/3 coverage are not demonstrated |
+| macOS | Beta | Notarized builds pass the recorded live suites; upstream degradation remains fail-closed and network changes invalidate stale transports, but exact-candidate clean-machine qualification is open and HTTP/3 name recovery is not demonstrated |
 | Windows | Source only, not a shippable artifact | The WFP backend is implemented, but WDK build, Driver Verifier, runtime, UDP, fuzzing, and Microsoft attestation gates are all unmet, and loading a driver on Windows 10 or later needs a signature this project does not obtain |
 
 Release notes must carry that table, no Windows binary may be attached to a

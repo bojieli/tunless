@@ -3,6 +3,62 @@
 *Audience:* the body of the GitHub Release, and anyone deciding whether to
 install this.
 
+## 0.3.0 — 2026-09-01
+
+This macOS reliability release closes two related failure modes observed in
+live logs. A
+sustained upstream DNS failure made the transparent provider decline new flows;
+on this API, decline means direct routing, so browser connections bypassed the
+proxy during the watchdog interval. A Wi-Fi-to-iPhone-Hotspot change then left
+TCP and UDP transports attached to the previous route while the local SOCKS
+upstream rebuilt its own network state.
+
+### Platform maturity
+
+Linux remains generally available, macOS remains beta, and Windows remains
+source only. No Windows binary or driver is attached to this release. The exact
+notarized macOS candidate still requires clean-machine live qualification, and
+the 48-hour soak is not complete on either runtime platform.
+
+### What this release fixes
+
+Eligible traffic now remains fail-closed throughout upstream degradation. TCP
+connections retry through the installed capture path, UDP application flows are
+never closed, and an unavailable UDP association drops a datagram rather than
+sending it directly. Direct routing is limited to configured exclusions,
+reserved endpoints, the resolver loop-prevention copy, and split-horizon local
+DNS. Telemetry labels proxied, intentional-direct, and dropped outcomes.
+
+Network path identity now distinguishes gateways, cost, endpoints, and protocol
+capabilities, not merely the interface name. A change advances a shared epoch,
+invalidates stale probes and callbacks, recycles TCP streams, and rebuilds UDP
+associations and local direct relays. Live configuration changes use the same
+invalidation mechanism. The TCP flow ceiling also refuses overload while
+retaining capture instead of handing excess connections to the kernel.
+
+DNS loop-prevention identifiers are now reference-counted across concurrent UDP
+flows. Failed sends abandon only their own mapping, and guard saturation drops
+the affected query instead of risking recursive delivery. Provider shutdown
+closes admission before transport teardown, and stale-generation transport and
+probe callbacks cannot mutate the replacement generation.
+
+### Known limitations
+
+Name recovery still applies to streams rather than QUIC, and DNS over HTTPS or
+TLS remains outside the port-53 observer. If the extension process is stopped or
+removed, macOS has no provider left to claim new traffic and the operating
+system uses its ordinary route; the fail-closed guarantee applies while the
+provider is running. macOS remains beta pending the exact-candidate and duration
+gates above. The Linux 5.10 floor has not been re-run against this exact tree,
+and rootful Podman lifecycle operations remain intermittently unreliable;
+current-kernel, Docker, and containerd coverage is green.
+
+### Upgrading
+
+No configuration change is required. The macOS bundle version is 1.1.0 (build
+19); after installing the notarized candidate, confirm that build 19 is active
+before relying on the new path-generation behavior.
+
 ## 0.2.3 — 2026-08-29
 
 A correction to 0.2.2, which shipped one of its three fixes inert.

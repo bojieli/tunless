@@ -3,6 +3,41 @@
 This project follows semantic versioning after its first public release. Dates
 use ISO 8601.
 
+## 0.3.0 — 2026-09-01
+
+### Fixed
+
+- macOS health degradation no longer opens a proxy bypass. The provider used to
+  return `false` for new eligible TCP and UDP flows after three failed DNS
+  probes, which `NETransparentProxyProvider` defines as permission to connect
+  directly. Existing UDP association failures also fell back to direct sends.
+  Eligible traffic now remains captured: TCP retries use SOCKS or fail closed,
+  and UDP drops individual datagrams until its disposable association rebuilds.
+  Reserved endpoints, resolver-loop prevention, split-horizon local DNS, and
+  explicit capture exclusions remain intentionally direct.
+- Wi-Fi-to-Personal-Hotspot changes now invalidate transport state even when
+  macOS reports both networks as `en0`. Path identity includes gateways, cost,
+  endpoints, and protocol capabilities; each change advances a shared epoch,
+  recycles TCP streams, and rebuilds UDP associations and direct local relays.
+  Results and callbacks belonging to older path/provider generations are
+  ignored, with a settling grace period and an immediate recovery probe.
+- Live configuration changes now invalidate the health and transport generation.
+  Long-lived UDP application flows read the latest configuration on every
+  datagram and rebuild against a changed upstream without closing the socket.
+- DNS loop-prevention registrations are reference-counted across UDP flows, and
+  failed sends release only their own transaction. A saturated guard drops the
+  query instead of risking recursive delivery back into the upstream.
+- The macOS TCP flow ceiling now claims and refuses excess eligible streams
+  instead of returning them to the kernel for a direct connection. UDP flows are
+  excluded from that TCP ceiling because macOS cannot safely re-capture an
+  application-owned datagram socket after the provider closes or declines it.
+
+### Added
+
+- macOS telemetry records whether traffic was `proxied`, intentionally `direct`,
+  or `dropped` while remaining captured, so an original destination sent through
+  SOCKS is no longer indistinguishable from a bypass.
+
 ## 0.2.3 — 2026-08-29
 
 ### Fixed

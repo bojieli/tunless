@@ -160,6 +160,75 @@ final class CaptureHealthTests: XCTestCase {
         XCTAssertEqual(health.observe(succeeded: false, pathSatisfied: true, at: start), .unchanged)
     }
 
+    // MARK: - Network transitions
+
+    func testAPathChangeClearsFailuresAndStartsAGraceWindow() {
+        var health = CaptureHealth(
+            probationSeconds: 45, failuresBeforePause: 3, wakeGraceSeconds: 20,
+            networkChangeGraceSeconds: 15)
+        health.arm(at: start)
+        let armedGeneration = health.networkGeneration
+        health.confirm()
+        _ = health.observe(succeeded: false, pathSatisfied: true, at: start)
+        _ = health.observe(succeeded: false, pathSatisfied: true, at: start)
+        XCTAssertEqual(health.consecutiveFailures, 2)
+        let changed = start.addingTimeInterval(100)
+
+        XCTAssertEqual(health.networkDidChange(at: changed), .unchanged)
+        XCTAssertEqual(health.networkGeneration, armedGeneration + 1)
+        XCTAssertEqual(health.consecutiveFailures, 0)
+        XCTAssertFalse(health.confirmed, "the old path is not proof for the new one")
+        XCTAssertTrue(health.ignoringProbes(at: changed.addingTimeInterval(5)))
+        XCTAssertFalse(health.ignoringProbes(at: changed.addingTimeInterval(16)))
+    }
+
+    func testAPathChangeRecoversADegradedSessionWithoutOpeningABypass() {
+        var health = armed()
+        XCTAssertNotNil(failUntilPaused(&health, at: start))
+        XCTAssertTrue(health.shouldDeclineFlows)
+
+        let changed = start.addingTimeInterval(60)
+        let oldGeneration = health.networkGeneration
+        XCTAssertEqual(
+            health.networkDidChange(at: changed),
+            .unchanged,
+            "a new path invalidates the old failure but is not proof that the new one works")
+        XCTAssertFalse(health.shouldDeclineFlows)
+        XCTAssertEqual(health.networkGeneration, oldGeneration + 1)
+        XCTAssertTrue(health.ignoringProbes(at: changed.addingTimeInterval(1)))
+    }
+
+    func testAProbeFromAnOlderNetworkGenerationIsIgnored() {
+        var health = armed()
+        let oldGeneration = health.networkGeneration
+        _ = health.networkDidChange(at: start.addingTimeInterval(10))
+        XCTAssertEqual(
+            health.observe(
+                succeeded: false,
+                pathSatisfied: true,
+                at: start.addingTimeInterval(30),
+                generation: oldGeneration),
+            .unchanged)
+        XCTAssertEqual(health.consecutiveFailures, 0)
+        XCTAssertEqual(health.networkGeneration, oldGeneration + 1)
+    }
+
+    func testDuplicatePathIdentitiesDoNotAdvanceTheGeneration() {
+        var tracker = NetworkPathGeneration()
+        let wifi = NetworkPathIdentity(
+            status: "satisfied", interfaces: ["en0:0:wifi"], expensive: false,
+            gateways: ["192.168.1.1"])
+        let hotspot = NetworkPathIdentity(
+            status: "satisfied", interfaces: ["en0:0:wifi"], expensive: true,
+            gateways: ["172.20.10.1"])
+
+        XCTAssertFalse(tracker.update(wifi))
+        XCTAssertFalse(tracker.update(wifi))
+        XCTAssertTrue(tracker.update(hotspot))
+        XCTAssertEqual(tracker.generation, 1)
+        XCTAssertFalse(tracker.update(hotspot))
+    }
+
     // MARK: - Control protocol
 
     func testControlMessageIsDistinguishableFromConfigurationAndTelemetry() {
@@ -180,6 +249,28 @@ final class CaptureHealthTests: XCTestCase {
         XCTAssertEqual(
             CaptureHealthReport(capturing: true, pauseReason: nil, confirmed: false, consecutiveFailures: 0).summary,
             "capturing (unconfirmed)")
+    }
+
+    func testHealthReportNamesADegradedButStillCapturedSession() {
+        let report = CaptureHealthReport(
+            capturing: true,
+            pauseReason: "upstream unavailable",
+            confirmed: true,
+            consecutiveFailures: 3)
+        XCTAssertEqual(report.summary, "capturing (degraded: upstream unavailable)")
+    }
+
+    func testTelemetryDistinguishesDirectProxiedAndDroppedRoutes() throws {
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        let values = [
+            FlowTelemetry(protocolName: "udp", destination: "8.8.8.8:53", route: .proxied),
+            FlowTelemetry(protocolName: "udp", destination: "224.0.0.251:5353", route: .direct),
+            FlowTelemetry(protocolName: "udp", destination: "1.1.1.1:53", route: .dropped),
+            FlowTelemetry(protocolName: "udp-completion", destination: "8.8.8.8:53", route: nil),
+        ]
+        let decoded = try decoder.decode([FlowTelemetry].self, from: encoder.encode(values))
+        XCTAssertEqual(decoded.map(\.route), [.proxied, .direct, .dropped, nil])
     }
 
     // MARK: - What counts as a failure

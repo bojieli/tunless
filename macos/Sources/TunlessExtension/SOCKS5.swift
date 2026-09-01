@@ -35,25 +35,33 @@ final class AsyncResultGate<Value>: @unchecked Sendable {
         return true
     }
 
-    func resume(with result: Result<Value, Error>) {
+    /// Completes the gate, returning whether this result won the race.
+    ///
+    /// Most callers only need the one-shot continuation behavior. Timeout
+    /// callers also need to know whether they should cancel the underlying
+    /// transport: a timeout that lost to a successful callback must not tear
+    /// down a connection that has already completed its operation.
+    @discardableResult
+    func resume(with result: Result<Value, Error>) -> Bool {
         lock.lock()
         guard !completed else {
             lock.unlock()
-            return
+            return false
         }
         if let continuation {
             completed = true
             self.continuation = nil
             lock.unlock()
             continuation.resume(with: result)
-            return
+            return true
         }
         guard pendingResult == nil else {
             lock.unlock()
-            return
+            return false
         }
         pendingResult = result
         lock.unlock()
+        return true
     }
 }
 

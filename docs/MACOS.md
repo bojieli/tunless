@@ -391,35 +391,40 @@ instant. Nothing in them covers the upstream that stops resolving an hour
 later, when the proxy is restarted, a node is switched, a TUN device comes up
 beneath it, or the laptop moves to another network. So the provider keeps
 proving it: every 30 seconds it sends a real query along the same path a
-captured port-53 flow takes, and after three consecutive failures it stops
-claiming flows, which puts the host back on the path it had before capture.
+captured port-53 flow takes. After three consecutive failures it marks the
+datapath degraded and retires transports that cannot recover in place.
+
+Capture deliberately remains installed. Returning `false` from a transparent
+proxy flow handler does not report an error; macOS sends that flow directly to
+its ultimate destination. Treating an upstream outage as permission to decline
+flows therefore converts a visible proxy failure into a silent proxy bypass.
+Eligible TCP retries remain claimed and either reconnect through SOCKS or fail
+closed. Eligible UDP datagrams remain claimed and are dropped until their
+association can be rebuilt. Only explicit process/destination exclusions,
+reserved endpoints, the DNS loop-prevention copy, and split-horizon local DNS
+use the direct route.
 
 The same mechanism closes the gap left by a launcher that never reports back.
 Capture is armed on a probation window when it starts, and a provider that is
 not told resolution works — because the launcher was killed, suspended, or
-disconnected between enabling capture and verifying it — stands aside when that
-window expires rather than holding the host indefinitely on an unverified
-claim. A probe that succeeds on its own counts as proof, so a start that
-genuinely works never depends on the launcher surviving.
+disconnected between enabling capture and verifying it — reports degraded when
+that window expires. It still fails closed. A probe that succeeds on its own
+counts as proof, so a start that genuinely works never depends on the launcher
+surviving.
 
-Link state gates the decision: a host with no usable network fails every probe,
-and standing aside there would change nothing capture caused.
-`--no-health-watchdog` (or `TUNLESS_NO_HEALTH_WATCHDOG=true`) turns the watchdog
-off for a host that would rather keep capture through an outage than have it
-stand aside underneath a running workload.
+Link state gates the evidence: a host with no usable network fails every probe,
+but that says nothing about the upstream. `--no-health-watchdog` (or
+`TUNLESS_NO_HEALTH_WATCHDOG=true`) disables periodic probing and degradation
+reports; it does not change routing or make upstream failures direct.
 
-Standing aside is a pause, not a verdict. Declining a flow hands it back to the
-kernel, which routes it as though tunless were not installed, so the host
-recovers exactly as it would if the provider had died — while the provider
-stays alive to keep probing. When a probe succeeds again, capture resumes on
-its own. Running `start` is the operator asking for capture, and a few minutes
-of upstream trouble does not withdraw that request; staying aside afterwards
-would leave the host resolving names through whatever the network hands it,
-which is the exposure the DNS override exists to remove.
+When a probe succeeds again, the degraded state clears. Running `start` is the
+operator asking for capture, and temporary upstream trouble does not withdraw
+that request or silently expose traffic to the current network.
 
 Flows already admitted need separate treatment. TCP streams cannot change
 their route in place, so the provider closes them and lets applications retry
-directly. Datagram flows are never closed by the provider at all.
+through the still-installed capture path. Datagram flows are never closed by
+the provider at all.
 
 That rule is absolute, and it is the one this platform got wrong for longest.
 A UDP socket outlives the flow underneath it, and macOS neither re-captures
@@ -436,28 +441,35 @@ That rule is enforced rather than described: `DatagramFlowCloseGuardTests`
 reads this provider and fails if a flow close appears anywhere it could reach a
 datagram flow.
 
-So the association is what fails, never the flow. A capture pause, a proxy
+So the association is what fails, never the flow. Upstream degradation, a proxy
 restart, a node switch, a SOCKS handshake that times out on a busy mixed port,
 an idle association past its two-minute limit — each of those tears down the
-upstream half and leaves the flow untouched. Datagrams go out directly for as
-long as the upstream cannot carry them, exactly as they would if tunless were
-not installed, and the association is rebuilt underneath the same flow when
-the upstream answers again. Port-53 flows additionally carry no idle limit at
-all, since a resolver socket is idle between lookups by design.
+upstream half and leaves the flow untouched. Proxy-eligible datagrams are
+dropped rather than sent direct while the upstream is unavailable, and the
+association is rebuilt underneath the same flow when the upstream answers
+again. Port-53 flows additionally carry no idle limit at all, since a resolver
+socket is idle between lookups by design.
+
+Network changes are a separate invalidation signal, not something that waits
+for three failed probes. The path identity includes gateways, local endpoints,
+cost and capabilities as well as interface names, so Wi-Fi to Personal Hotspot
+is detected even when macOS calls both paths `en0`. The provider advances a
+shared network epoch, closes old TCP streams, and makes UDP associations and
+intentional direct-relay sockets rebuild lazily on the new path. Probe results
+from the old epoch are ignored, failures are cleared, and the new path gets a
+15-second settling interval followed by an immediate recovery probe.
 
 Sleep is excluded from the evidence. A machine going to sleep tears its network
-down and fails every probe, so the provider suspends the watchdog on
+down and fails every probe, so the provider invalidates its transport epoch on
 `NEProvider.sleep()` and ignores probe results for twenty seconds after
-`wake()`, discarding the failures that led into the sleep. Without that, a
-laptop pauses capture at the moment nothing is using the network, and the pause
-outlives the sleep: the host wakes with its DNS unprotected and nothing on
-screen to say so.
+`wake()`, discarding the failures that led into sleep. Existing TCP streams are
+recycled and a recovery probe runs after the grace period.
 
-Because a paused session stays connected, `status` alone would report
-`connected` either way. The `capture` field is the signal that matters:
+Because a degraded session stays connected and keeps capturing, `status` alone
+cannot describe datapath health. The `capture` field names both facts:
 
 ```console
-{ "status": "connected", "capture": "paused: name resolution failed 3 times in a row through the upstream" }
+{ "status": "connected", "capture": "capturing (degraded: name resolution failed 3 times in a row through the upstream)" }
 { "status": "connected", "capture": "capturing" }
 ```
 
@@ -466,8 +478,10 @@ Each transition is also written to the unified log under subsystem
 
 ```console
 /usr/bin/log show --last 1h --predicate 'subsystem == "com.bojieli.tunless"'
-capture paused: name resolution failed 3 times in a row through the upstream.
-Flows now go direct; capture resumes automatically when the upstream resolves again
+capture degraded: name resolution failed 3 times in a row through the upstream.
+Proxy-eligible flows remain captured and retry; reserved/local traffic keeps its direct route
+upstream recovered: capture remained active; rebuilding disposable datagram transports
+network path changed (generation 1); rebuilding upstream transports
 ```
 
 Log first and to somewhere that survives, because the first version of this
@@ -502,12 +516,15 @@ clash-verge` does — prevented it, but only for an operator who knew which
 process to name; an unrecognized build, a differently packaged mihomo, or
 sing-box in place of Clash left the loop wide open.
 
-The resolver address is now reserved from capture outright, so the upstream can
-always reach the resolver it was asked to query, whichever proxy it is and
-whether or not its process was named. Process exclusions remain worth setting:
-they also keep the upstream's non-DNS traffic — its subscription fetches and
-its own DoH or DoT resolvers on ports 443 and 853 — from being routed back
-through it.
+TCP connections to the resolver remain reserved because a stream exposes no DNS
+transaction identifier at connect time. UDP is more precise: an application's
+own query to the trusted resolver is captured, while the copy forwarded by the
+upstream carries the private transaction ID Tunless assigned and is sent direct
+by the loop guard. The upstream can therefore reach the resolver without
+leaving an application's identical query unprotected. Process exclusions remain
+worth setting: they also keep the upstream's non-DNS traffic — its subscription
+fetches and its own DoH or DoT resolvers on ports 443 and 853 — from being
+routed back through it.
 
 Fake-IP answers make that failure quiet rather than loud. A fake address from
 the upstream's range is meaningful only to the resolver that minted it, so a
@@ -545,9 +562,8 @@ consequences of fake IP and the route table:
 - **Fake-IP answers disappear.** With the TUN hijacking port 53, anything that
   reaches its resolver gets an address from `198.18.0.0/15` — meaningful only
   to the resolver that minted it, and quietly fatal once cached past its
-  mapping. Reserving the trusted resolver from capture means an application
-  that queries it directly falls through to the TUN and gets a fake answer;
-  with no TUN, it gets the real one.
+  mapping. Turning the upstream TUN off removes that second port-53 interception
+  layer and its fake-answer path.
 - **The route table stops being rewritten.** `auto-route` replaces the default
   route with a split that has no owner, which is the failure tunless is built
   to avoid: nothing rolls it back if the proxy dies.
@@ -557,9 +573,12 @@ consequences of fake IP and the route table:
 - **One capture layer to reason about.** `check` and `--telemetry` then
   describe the whole picture rather than half of it.
 
-The reason to keep it is leak containment. Tunless is fail-open by
-construction: if the extension stops, is uninstalled, or releases capture, new
-flows go direct. With the upstream's TUN up, those flows are still proxied.
+The reason to keep it is leak containment after capture itself disappears. If
+the extension process stops, is uninstalled, or the operator stops its session,
+macOS has no provider left to claim new flows and they use the ordinary route.
+An upstream outage while the provider is alive is different and now fails
+closed. With the upstream's TUN up, even traffic created after capture has gone
+is still proxied.
 Anything the reserved set and the default exclusions leave direct — loopback,
 link-local, multicast, the LAN, private and CGNAT ranges — is direct on
 purpose, but a host that must never send an unproxied packet wants the TUN
@@ -600,15 +619,19 @@ subscription rules match exactly, because the hostname is what tunless sends.
 
 ### Bounding what one application can consume
 
-`--max-flows` (default 4096, or `TUNLESS_MAX_FLOWS`) caps the flows the
-provider holds at once. Past the ceiling a flow is declined rather than queued,
-which sends it direct — the same outcome as any other declined flow, so the
-application degrades instead of failing. The ceiling exists because macOS
-reports and can terminate an extension that spends too much CPU, and an
-application opening flows faster than the upstream retires them would otherwise
-turn itself into a capture outage for everything else on the host. `status`
-reports the live count and the running rejection total, so a rising rejection
-count identifies which of the two is happening.
+`--max-flows` (default 4096, or `TUNLESS_MAX_FLOWS`) caps concurrent TCP relay
+work. Past the ceiling a stream is still claimed and is refused with an
+application-visible error. A transparent provider that returned `false` here
+would tell macOS to send the stream direct, so overload must fail closed. The
+ceiling exists because macOS reports and can terminate an extension that spends
+too much CPU, and an application opening streams faster than the upstream
+retires them would otherwise turn itself into a capture outage for everything
+else on the host. `status` reports the live flow count and running refusal total.
+
+UDP application flows are not counted against that TCP ceiling. They cannot be
+closed or declined safely: the former permanently ends the application-owned
+socket on macOS, and the latter is a direct route. Their disposable SOCKS
+associations remain bounded internally and are rebuilt without ending the flow.
 
 ### Qualifying a candidate
 
@@ -656,27 +679,32 @@ itself a finding.
 ```console
 soak 08-25 10:12 -> 08-27 09:41 (47.5 hours, 2849 ticks)
   resolved:  2849/2849 ticks (100.00%)
-  capturing: 2841/2849 ticks (99.72%)
+  capturing: 2849/2849 ticks (100.00%)
   no UNRESOLVED intervals
-  not-capturing intervals: 1
-     08-26 03:14:02 -> 03:22:11  (8.1 min)  paused: name resolution failed 3 times...
+  no not-capturing intervals
 ```
 
-A not-capturing interval is not automatically a failure — capture standing
-aside during a genuine upstream outage is the watchdog working — but every one
-of them should have an explanation, and an unresolved interval never should.
+A degraded watchdog state still begins with `capturing`, because eligible flows
+remain claimed. A not-capturing interval now means the session was stopped,
+restarting, or unavailable and should always have an explanation; an unresolved
+interval should never be ignored.
 
 ### Telemetry and flow lifecycle
 
 Every accepted TCP and UDP flow emits a terminal completion record.
 `--telemetry` prints and drains a JSON buffer capped at 4,096 flow records, so
-an unattended extension cannot grow the buffer without bound.
+an unattended extension cannot grow the buffer without bound. The optional
+`route` field distinguishes `proxied`, intentional `direct`, and `dropped`
+datagrams; `routedDestination` alone cannot make that distinction when the
+SOCKS destination equals the application's destination.
 
-Provider stop closes all active Apple flows, cancels their tasks, and waits for
-teardown. SOCKS setup is bounded to 10 seconds, inactive TCP and UDP flows to
-five and two minutes, and a TCP peer has 30 seconds to finish after an
-application half-close. Re-running the launcher updates only new flows; each
-accepted flow retains the configuration snapshot under which it started.
+Provider stop closes active TCP flows, leaves application-owned UDP flows for
+Network Extension to release, cancels their tasks, and waits for teardown.
+SOCKS setup is bounded to 10 seconds, inactive TCP streams to five minutes, UDP
+associations (not their flows) to two minutes, and a TCP peer has 30 seconds to
+finish after an application half-close. Re-running the launcher invalidates the
+transport epoch and recycles TCP streams. Long-lived UDP flows read the latest
+configuration on every datagram and rebuild their association when it changes.
 
 ### Persistent telemetry log
 
