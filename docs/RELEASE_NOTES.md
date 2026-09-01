@@ -49,7 +49,9 @@ TLS remains outside the port-53 observer. If the extension process is stopped or
 removed, macOS has no provider left to claim new traffic and the operating
 system uses its ordinary route; the fail-closed guarantee applies while the
 provider is running. macOS remains beta pending the exact-candidate and duration
-gates above.
+gates above. The Linux 5.10 floor has not been re-run against this exact tree,
+and rootful Podman lifecycle operations remain intermittently unreliable;
+current-kernel, Docker, and containerd coverage is green.
 
 ### Upgrading
 
