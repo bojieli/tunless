@@ -222,7 +222,9 @@ datapath afterwards, and then keeps re-proving it. A degraded upstream remains
 fail-closed for eligible traffic; Wi-Fi, hotspot, sleep, and configuration
 changes invalidate stale transports and rebuild them without closing
 application-owned UDP flows. Only configured exclusions, reserved endpoints,
-resolver-loop prevention, and split-horizon local DNS are direct. See
+resolver-loop prevention, split-horizon local DNS, and sockets an application
+explicitly bound to an interface are direct. The last category is a generic
+per-socket opt-out and can be disabled with `--capture-bound-flows`. See
 [deploying without losing the network](docs/MACOS.md#deploying-without-losing-the-network). On Windows, the WFP backend is implemented but
 not yet release-qualified — treat it as source, not a shippable driver. Loading
 a kernel driver on Windows 10 or later requires a Microsoft signature that this

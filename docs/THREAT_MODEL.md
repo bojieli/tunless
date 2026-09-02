@@ -2,9 +2,11 @@
 
 Tunless should deliver selected local socket flows to the configured SOCKS5
 upstream without changing application configuration, fabricating DNS answers,
-or routing unrelated traffic. It should not leak upstream credentials through
-logs/status, capture outside the configured process/cgroup/destination scope,
-or leave traffic blocked after the controller exits.
+or routing unrelated traffic. On macOS, an application-scoped interface is a
+deliberate per-socket opt-out unless strict bound-flow capture is configured.
+Tunless should not leak upstream credentials through logs/status, capture
+outside the configured process/cgroup/destination scope, or leave traffic
+blocked after the controller exits.
 
 *Audience: security reviewers and adopters evaluating risk.*
 
@@ -37,6 +39,7 @@ effectively host-root access.
 | PID reuse attaches to another container | PID is refreshed and its cgroup must contain the exact validated engine ID | A compromised engine/kernel can forge inspection state |
 | Controller crash blocks traffic | BPF links and redirect sockets are unpinned; process exit detaches them and new flows continue direct | In-flight proxied flows fail and must reconnect |
 | Resource exhaustion | Fixed BPF map capacities, maximum concurrent flow admission, bounded DNS/telemetry state, auxiliary HTTP connection caps/timeouts, and stress tests | The OS/upstream can still be exhausted below Tunless |
+| A selected macOS application deliberately evades proxying | By default an explicit OS interface bind is treated as application routing intent so independently developed local transports compose without a process-specific exclusion; `--capture-bound-flows` restores strict admission | Default mode is not a mandatory-egress boundary: any selected application can bind each socket, and unsupported/raw protocols remain outside capture in either mode |
 | Status, DNS observer, or metadata exposure | Unauthenticated TCP/HTTP/DNS listeners are numeric loopback-only; the one socket that cannot be, the Linux IPv4 redirect socket that must receive across the 127.x relay addresses BPF assigns, drops any datagram not delivered to a loopback address; metadata socket is mode 0600 inside a private service-owned directory; upstream credentials are omitted | Any local user can access an enabled loopback service; root can access metadata and process state |
 | Malformed network input | Strict SOCKS/DNS/address parsing, length bounds, race tests, and fuzz targets | Kernel and platform-specific parsers remain trusted dependencies |
 | DNS pollution or response misassociation | Captured port-53 traffic uses a numeric trusted resolver through SOCKS; UDP IDs and source endpoints are translated and restored with bounded expiry, and the translated ID is drawn at random so rewriting does not weaken the client's own off-path spoofing resistance; a forwarded reply must carry the query's transaction ID and the response bit | Encrypted DNS and Windows UDP remain outside the override; disabling override intentionally retains the original resolver |
@@ -51,6 +54,12 @@ configured filters exclude, traffic using unsupported protocols, raw packets,
 or guest-VM sockets when Tunless is installed only on the host. Windows UDP is
 currently direct. Unsigned/unactivated macOS source and an unqualified Windows
 driver are not release-supported security boundaries.
+
+The default macOS interface-binding contract is composability, not enforcement:
+Tunless trusts the socket's explicit route request and does not infer it from a
+source IP. Operators who do not trust selected applications to choose a direct
+route must use `--capture-bound-flows` and still account for the unsupported
+traffic classes above.
 
 ## Reporting and review
 
