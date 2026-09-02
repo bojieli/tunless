@@ -65,6 +65,9 @@ struct LauncherConfiguration: Codable, Equatable {
     let excludeProcesses: [String]?
     let includeDestinations: [String]?
     let excludeDestinations: [String]?
+	/// Strict mode: claim sockets even when the application explicitly scoped
+	/// them to a network interface. The default leaves those sockets direct.
+	let captureBoundFlows: Bool?
     let disableHealthWatchdog: Bool?
     let maxConcurrentFlows: Int?
     /// Whether preflight proved the upstream relays DNS over UDP. Filled in
@@ -125,6 +128,7 @@ struct LauncherArguments: Equatable {
         var localDomains: [String] = []
         var skipVerifyOption: Bool?
         var defaultExclusionsOption: Bool?
+		var captureBoundFlowsOption: Bool?
         var disableWatchdogOption: Bool?
         var maxFlowsOption: Int?
 
@@ -163,6 +167,7 @@ struct LauncherArguments: Equatable {
             case "--disable-dns-override": disableDNSOverride = true
             case "--skip-verify": skipVerifyOption = true
             case "--no-default-exclusions": defaultExclusionsOption = false
+			case "--capture-bound-flows": captureBoundFlowsOption = true
             case "--no-health-watchdog": disableWatchdogOption = true
             case "--max-flows":
                 maxFlowsOption = try Self.flowCeiling(try value(after: index, for: argument))
@@ -200,6 +205,8 @@ struct LauncherArguments: Equatable {
                     case "--skip-verify": skipVerifyOption = try Self.boolean(pair.value, name: pair.name)
                     case "--no-default-exclusions":
                         defaultExclusionsOption = !(try Self.boolean(pair.value, name: pair.name))
+					case "--capture-bound-flows":
+						captureBoundFlowsOption = try Self.boolean(pair.value, name: pair.name)
                     case "--no-health-watchdog":
                         disableWatchdogOption = try Self.boolean(pair.value, name: pair.name)
                     case "--max-flows": maxFlowsOption = try Self.flowCeiling(pair.value)
@@ -306,6 +313,9 @@ struct LauncherArguments: Equatable {
         if maxFlowsOption == nil, let raw = environment["TUNLESS_MAX_FLOWS"] {
             maxFlowsOption = try Self.flowCeiling(raw)
         }
+		if captureBoundFlowsOption == nil, let raw = environment["TUNLESS_CAPTURE_BOUND_FLOWS"] {
+			captureBoundFlowsOption = try Self.boolean(raw, name: "TUNLESS_CAPTURE_BOUND_FLOWS")
+		}
         if disableWatchdogOption == nil, let raw = environment["TUNLESS_NO_HEALTH_WATCHDOG"] {
             disableWatchdogOption = try Self.boolean(raw, name: "TUNLESS_NO_HEALTH_WATCHDOG")
         }
@@ -333,6 +343,7 @@ struct LauncherArguments: Equatable {
             excludeProcesses: Self.optionalUnique(excludeProcesses),
             includeDestinations: Self.optionalUnique(includeDestinations),
             excludeDestinations: Self.optionalUnique(excludeDestinations),
+			captureBoundFlows: captureBoundFlowsOption,
             disableHealthWatchdog: disableWatchdogOption,
             maxConcurrentFlows: maxFlowsOption,
             expectUDPRelay: nil,

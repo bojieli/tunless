@@ -265,12 +265,21 @@ final class CaptureHealthTests: XCTestCase {
         let decoder = JSONDecoder()
         let values = [
             FlowTelemetry(protocolName: "udp", destination: "8.8.8.8:53", route: .proxied),
-            FlowTelemetry(protocolName: "udp", destination: "224.0.0.251:5353", route: .direct),
+            FlowTelemetry(
+                protocolName: "udp",
+                destination: "203.0.113.8:443",
+                route: .direct,
+                interfaceName: "en0",
+                isBound: true,
+                event: "bypass:bound-interface"),
             FlowTelemetry(protocolName: "udp", destination: "1.1.1.1:53", route: .dropped),
             FlowTelemetry(protocolName: "udp-completion", destination: "8.8.8.8:53", route: nil),
         ]
         let decoded = try decoder.decode([FlowTelemetry].self, from: encoder.encode(values))
         XCTAssertEqual(decoded.map(\.route), [.proxied, .direct, .dropped, nil])
+		XCTAssertEqual(decoded[1].interfaceName, "en0")
+		XCTAssertEqual(decoded[1].isBound, true)
+		XCTAssertEqual(decoded[1].event, "bypass:bound-interface")
     }
 
     // MARK: - What counts as a failure

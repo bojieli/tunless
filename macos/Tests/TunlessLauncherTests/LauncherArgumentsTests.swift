@@ -212,4 +212,32 @@ extension LauncherArgumentsTests {
                 environment: [:]))
     }
 
+	func testInterfaceBoundFlowsAreHonoredUnlessStrictCaptureIsRequested() throws {
+		let normal = try LauncherArguments(
+			arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],
+			environment: [:])
+		XCTAssertNil(normal.configuration?.captureBoundFlows)
+
+		let strict = try LauncherArguments(
+			arguments: [
+				"Tunless", "start", "--upstream", "127.0.0.1:7897",
+				"--capture-bound-flows",
+			],
+			environment: [:])
+		XCTAssertEqual(strict.configuration?.captureBoundFlows, true)
+
+		let disabledAssignment = try LauncherArguments(
+			arguments: [
+				"Tunless", "start", "--upstream", "127.0.0.1:7897",
+				"--capture-bound-flows=false",
+			],
+			environment: [:])
+		XCTAssertEqual(disabledAssignment.configuration?.captureBoundFlows, false)
+
+		let fromEnvironment = try LauncherArguments(
+			arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],
+			environment: ["TUNLESS_CAPTURE_BOUND_FLOWS": "yes"])
+		XCTAssertEqual(fromEnvironment.configuration?.captureBoundFlows, true)
+	}
+
 }

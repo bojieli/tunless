@@ -27,6 +27,8 @@ Options:
                              capture back automatically if it fails.
   --no-default-exclusions    Capture private, CGNAT, and fake-IP ranges, which
                              are excluded by default.
+  --capture-bound-flows      Capture sockets an application explicitly scoped
+                             to an interface instead of honoring that opt-out.
   --no-health-watchdog       Disable periodic DNS health probes and degradation
                              reports. Capture policy is unchanged.
   --max-flows N              Most TCP flows to relay at once (default 4096).
@@ -69,9 +71,11 @@ capture back automatically if name resolution does not work once capture is on.
 Capture then stays accountable: the provider re-proves resolution on a timer,
 marks the session degraded if that stops working, and recovers when the
 upstream returns. Proxy-eligible flows remain captured and fail closed during
-that interval; only structurally local/reserved traffic is direct. Sleep never
-counts against the upstream. status reports both capture and health in its
-capture field.
+that interval; only configured exclusions, structurally local/reserved traffic,
+and sockets explicitly bound to an interface are direct. The last category is
+a per-socket composability contract; --capture-bound-flows disables it. Sleep
+never counts against the upstream. status reports both capture and health in
+its capture field.
 
 Use stop for an ordinary shutdown. Cleanup is the fail-safe recovery command:
 it stops capture, removes every Tunless proxy configuration, and deactivates

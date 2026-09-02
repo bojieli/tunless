@@ -3,6 +3,24 @@
 This project follows semantic versioning after its first public release. Dates
 use ISO 8601.
 
+## Unreleased
+
+### Changed
+
+- macOS now honors an application's explicit per-socket interface binding as a
+  generic capture opt-out. `NEAppProxyFlow.isBound`, rather than a source-IP or
+  interface-name heuristic, distinguishes intentional scope from the interface
+  ordinary routing selected. This lets the outer sockets of independently
+  developed local proxy transports stay direct without naming their process or
+  server in Tunless. `--capture-bound-flows` restores strict capture for
+  operators who prefer enforcement over that composability contract.
+
+### Added
+
+- macOS telemetry now records `interfaceName` and `isBound`; an intentionally
+  declined bound flow is recorded as `route: "direct"` with
+  `event: "bypass:bound-interface"`.
+
 ## 0.3.0 — 2026-09-01
 
 ### Fixed

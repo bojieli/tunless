@@ -490,6 +490,16 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
             executablePath: executablePath)
         else { return false }
+		// A source-address heuristic cannot distinguish an explicit route from
+		// the address ordinary routing selected. Network Extension supplies that
+		// missing intent directly: `isBound` is true only when the application
+		// scoped this socket to `interface`. Declining a transparent-proxy flow
+		// preserves that native route and avoids capturing the outer transport of
+		// a local proxy chain without teaching either proxy about the other.
+		if selected.bypassesInterfaceBoundFlow(isBound: flow.isBound) {
+			recordBoundInterfaceBypass(flow: flow, destination: originalDestination)
+			return false
+		}
         // Prefer the name the application asked for, but fall back to the
         // address when that name cannot be carried. A hostname longer than the
         // SOCKS5 length byte, or one carrying control characters, is not a
@@ -550,6 +560,10 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             executablePath: executablePath,
             isDatagram: true)
         else { return false }
+		if selected.bypassesInterfaceBoundFlow(isBound: flow.isBound) {
+			recordBoundInterfaceBypass(flow: flow, destination: destination)
+			return false
+		}
         let result = launch(
             flow: flow,
             survivesCapturePause: DatagramFlowContinuity.survivesCapturePause,
@@ -1091,6 +1105,41 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
 
     private static let droppedDatagramLogLock = NSLock()
     private nonisolated(unsafe) static var lastDroppedDatagramLog = Date.distantPast
+	private static let boundInterfaceLogLock = NSLock()
+	private nonisolated(unsafe) static var lastBoundInterfaceLog = Date.distantPast
+
+	/// Releases an application-scoped socket back to the native stack.
+	///
+	/// `NETransparentProxyProvider` defines `false` as "continue directly". The
+	/// flow remains bound to the interface selected by the application; Tunless
+	/// does not recreate it, infer a route from its source address, or promote
+	/// the whole process into an exclusion.
+	private func recordBoundInterfaceBypass(
+		flow: NEAppProxyFlow,
+		destination: SOCKSAddress
+	) {
+		record(
+			flow: flow,
+			destination: destination,
+			routedDestination: destination,
+			route: .direct,
+			event: "bypass:bound-interface")
+
+		// A transport normally holds a small number of long-lived outer sockets,
+		// but an adversarial process can create bound flows without limit. Keep
+		// the durable explanation while bounding unified-log volume; telemetry is
+		// itself bounded and retains each recent flow.
+		let now = Date()
+		Self.boundInterfaceLogLock.lock()
+		let due = now.timeIntervalSince(Self.lastBoundInterfaceLog) >= 30
+		if due { Self.lastBoundInterfaceLog = now }
+		Self.boundInterfaceLogLock.unlock()
+		guard due else { return }
+		let protocolName = flow is NEAppProxyTCPFlow ? "TCP" : "UDP"
+		let interfaceName = flow.interface?.name ?? "unknown"
+		Self.log.notice(
+			"honoring application-bound \(protocolName, privacy: .public) flow on \(interfaceName, privacy: .public); transparent capture declined")
+	}
 
     private func record(
         flow: NEAppProxyFlow,
@@ -1108,6 +1157,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             hostname: flow.remoteHostname,
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
             executablePath: Self.executablePath(auditToken: flow.metaData.sourceAppAuditToken),
+			interfaceName: flow.interface?.name,
+			isBound: flow.isBound,
             timestamp: Date(),
             event: event))
     }
@@ -1129,6 +1180,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             hostname: flow.remoteHostname,
             signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
             executablePath: Self.executablePath(auditToken: flow.metaData.sourceAppAuditToken),
+			interfaceName: flow.interface?.name,
+			isBound: flow.isBound,
             timestamp: Date(),
             event: event))
     }

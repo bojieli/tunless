@@ -58,6 +58,34 @@ however you like it. An application that honors `HTTPS_PROXY` dials
 connection reaches your proxy directly rather than being captured and handed
 back to it. Nothing is proxied twice.
 
+## Can a local proxy transport stay outside capture without an exclusion?
+
+Yes, on macOS, if its outer sockets explicitly bind to a network interface.
+This is the composable contract for proxy chains: Network Extension marks each
+such flow with `isBound` and supplies the chosen interface, and Tunless declines
+that flow so the kernel continues it directly on the application's interface.
+No process name, server address, Clash preset, or Tunless API is involved. The
+choice is per socket, so a process can keep transport sockets on `en0` while its
+ordinary unbound sockets remain eligible for capture.
+
+Source address is not the contract. An unbound browser connection that the
+routing table sends through en0 has the same source address as one deliberately
+bound there. Bypassing either every en0 flow or every flow with en0's current IP
+would turn ordinary traffic into a leak. Tunless therefore requires macOS's
+explicit bound bit, produced by facilities such as `IP_BOUND_IF`,
+`IPV6_BOUND_IF`, or a Network.framework required interface. A program that
+merely resolves `if:en0` to its current IP and binds that IP has not necessarily
+made the same request to the kernel. `Tunless telemetry` exposes
+`interfaceName`, `isBound`, and `event: "bypass:bound-interface"` to make the
+difference visible.
+
+Honoring the bit is also an intentional opt-out: any selected application can
+use it to go direct. If Tunless is being used as an enforcement boundary rather
+than a composable router, start it with `--capture-bound-flows` (or set
+`TUNLESS_CAPTURE_BOUND_FLOWS=true`). The interface choice then cannot survive
+the SOCKS handoff, because SOCKS5 has no standard field for it; the downstream
+proxy owns routing as usual.
+
 ## Can I proxy only some applications?
 
 Yes, and this is the part that gets better rather than worse.
@@ -143,7 +171,8 @@ route first and the recovered hostname second:
 
 - **No flow record.** The flow was never claimed, so the fault is in capture.
 - **A record whose `route` is `direct`.** The provider intentionally used a
-  reserved, resolver-loop, or split-horizon local route; `event` names which.
+  bound-interface, reserved, resolver-loop, or split-horizon local route;
+  `event` names which.
 - **A record whose `route` is `dropped`.** Traffic stayed captured, but a
   datagram could not yet use its transport or a TCP stream was refused at the
   concurrency ceiling. It did not go direct.
@@ -191,6 +220,11 @@ the default `/sys/fs/cgroup/user.slice` leaves system services, containers, and
 other slices direct. On macOS it is the process filters, and `--preset
 clash-verge` excludes the upstream itself by design. Anything not selected never
 reaches the proxy at all.
+
+**The application explicitly bound the socket to an interface.** That is a
+per-flow opt-out on macOS and telemetry reports
+`event: "bypass:bound-interface"`. Use `--capture-bound-flows` only when strict
+capture is more important than preserving the route the application requested.
 
 **The destination is one that nothing captures.** Loopback, multicast and
 broadcast are reserved by the capture path itself, and the private, CGNAT and

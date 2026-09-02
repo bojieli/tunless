@@ -209,7 +209,36 @@ Earlier releases asked for eight `--exclude-destination` flags here. That was
 the wrong place for it: every one of them is a flag someone has to remember,
 and forgetting one is discovered only after capture has already taken the host
 off the network — the moment at which it is hardest to fix. Two layers replace
-that list.
+that address list. A separate per-socket contract comes first.
+
+**An application's explicit interface scope is honored by default.** macOS
+hands an `NEAppProxyFlow` two related facts: `interface` says which interface
+the flow uses, while `isBound` says whether the application explicitly chose
+it. Tunless declines an otherwise eligible flow only when `isBound` is true.
+For a transparent proxy, declining means the original socket continues
+directly to its destination, still scoped to the interface the application
+selected. A local proxy transport can therefore bind its outer sockets to
+`en0` and stay outside capture without a process name, a destination address,
+or any Tunless-specific protocol. The decision is per socket; other unbound
+sockets from the same process remain eligible.
+
+The distinction is essential. An ordinary unbound browser socket can receive
+the same en0 source address and `NWInterface` after routing, so treating either
+fact as intent would make most traffic direct whenever Wi-Fi is the default
+route. The public opt-out signal is `isBound`, produced by a real interface
+constraint such as `IP_BOUND_IF`, `IPV6_BOUND_IF`, or Network.framework's
+required-interface facility. Merely looking up an interface's current IP and
+binding that address is not guaranteed to produce the interface-bound signal.
+Telemetry records `interfaceName`, `isBound`, and
+`event: "bypass:bound-interface"` so this contract is observable rather than
+assumed.
+
+This is intentionally an escape hatch: any selected application can bind its
+socket and go direct. An operator using Tunless as a strict capture boundary
+can disable the contract with `--capture-bound-flows` (or
+`TUNLESS_CAPTURE_BOUND_FLOWS=true`); those flows are then sent to SOCKS like
+other eligible traffic and their requested interface is not preserved across
+the application-level proxy hop.
 
 **Reserved by the provider, whatever the configuration says.** Loopback, the
 unspecified address, link-local, multicast, and broadcast are the paths a host
@@ -249,7 +278,8 @@ and every name on the host resolves to it.
 So while `--dns-upstream` is set, a port-53 flow is captured whatever the
 destination rules say, and link-local is not reserved against it either — a
 router advertising itself as the resolver over IPv6 does so at a link-local
-address. Process rules still apply, and so does the rest of the reserved set.
+address. Process rules and the bound-interface contract still apply, as does
+the rest of the reserved set.
 Loopback stays reserved, so a stub resolver at `127.0.0.1:53` is left alone; the
 upstream is reserved by host rather than by host and port, and it is usually on
 loopback too.
@@ -401,8 +431,8 @@ flows therefore converts a visible proxy failure into a silent proxy bypass.
 Eligible TCP retries remain claimed and either reconnect through SOCKS or fail
 closed. Eligible UDP datagrams remain claimed and are dropped until their
 association can be rebuilt. Only explicit process/destination exclusions,
-reserved endpoints, the DNS loop-prevention copy, and split-horizon local DNS
-use the direct route.
+application-bound interfaces, reserved endpoints, the DNS loop-prevention copy,
+and split-horizon local DNS use the direct route.
 
 The same mechanism closes the gap left by a launcher that never reports back.
 Capture is armed on a probation window when it starts, and a provider that is
@@ -579,10 +609,11 @@ macOS has no provider left to claim new flows and they use the ordinary route.
 An upstream outage while the provider is alive is different and now fails
 closed. With the upstream's TUN up, even traffic created after capture has gone
 is still proxied.
-Anything the reserved set and the default exclusions leave direct — loopback,
-link-local, multicast, the LAN, private and CGNAT ranges — is direct on
-purpose, but a host that must never send an unproxied packet wants the TUN
-underneath as a backstop, and should accept fake IP as the price.
+Anything the interface-binding contract, reserved set, and default exclusions
+leave direct — explicitly scoped sockets, loopback, link-local, multicast, the
+LAN, private and CGNAT ranges — is direct on purpose, but a host that must never
+send an unproxied packet wants either `--capture-bound-flows` or the TUN
+underneath as a backstop, and should accept fake IP as the price of the latter.
 
 Whichever way, change one layer at a time and run `check` between changes.
 When a flow stops working after the TUN comes down, it was a flow capture had

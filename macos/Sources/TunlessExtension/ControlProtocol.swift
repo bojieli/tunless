@@ -13,6 +13,14 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 	public var excludeProcesses: [String]?
 	public var includeDestinations: [String]?
 	public var excludeDestinations: [String]?
+	/// Captures flows whose source application explicitly bound them to an
+	/// interface instead of honoring that interface selection as an opt-out.
+	///
+	/// The default is false. `NEAppProxyFlow.isBound` is the only public signal
+	/// that distinguishes an application's explicit interface choice from the
+	/// interface ordinary routing happened to select; a source address or an
+	/// `NWInterface` on its own cannot make that distinction safely.
+	public var captureBoundFlows: Bool?
 	/// Turns off periodic DNS health probing. Capture remains fail-closed for
 	/// proxy-eligible traffic either way; this is useful only when an upstream
 	/// intentionally cannot answer the probe (for example, a private resolver
@@ -45,7 +53,7 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 	/// is the shape no built-in list can predict.
 	public var localDomains: [String]?
 
-    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil, expectUDPRelay: Bool? = nil, localDomains: [String]? = nil) {
+    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, captureBoundFlows: Bool? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil, expectUDPRelay: Bool? = nil, localDomains: [String]? = nil) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
         self.username = username
@@ -56,6 +64,7 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 		self.excludeProcesses = excludeProcesses
 		self.includeDestinations = includeDestinations
 		self.excludeDestinations = excludeDestinations
+		self.captureBoundFlows = captureBoundFlows
 		self.disableHealthWatchdog = disableHealthWatchdog
 		self.maxConcurrentFlows = maxConcurrentFlows
 		self.expectUDPRelay = expectUDPRelay
@@ -99,6 +108,18 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 			if let prefixes = includeDestinations, !prefixes.isEmpty, !Self.matchesAnyPrefix(host, prefixes: prefixes) { return false }
 		}
 		return true
+	}
+
+	/// Whether a flow's explicit interface scope is permission to leave the
+	/// transparent proxy and continue on the application's chosen interface.
+	///
+	/// This policy is deliberately per flow, not per process. A transport can
+	/// bind its outer sockets while leaving unrelated sockets in the same
+	/// process eligible for capture. Old saved configurations omit the new key,
+	/// so nil must retain the composable default rather than silently selecting
+	/// strict capture.
+	func bypassesInterfaceBoundFlow(isBound: Bool) -> Bool {
+		isBound && captureBoundFlows != true
 	}
 
 	/// Whether the operator's destination selection governs a flow to this port.
@@ -326,6 +347,12 @@ public struct FlowTelemetry: Codable, Sendable {
 	/// Without it an operator reading telemetry sees `a.out` and has no way to
 	/// tell which program that is, let alone write an exclusion for it.
 	public var executablePath: String?
+	/// Interface macOS associated with the flow, if it supplied one.
+	public var interfaceName: String?
+	/// Whether the application explicitly scoped this flow to `interfaceName`.
+	/// The interface without this bit is merely the route macOS selected and is
+	/// not a safe reason to bypass capture.
+	public var isBound: Bool?
 	public var timestamp: Date
 	public var event: String?
 
@@ -337,6 +364,8 @@ public struct FlowTelemetry: Codable, Sendable {
         hostname: String? = nil,
         signingIdentifier: String = "",
         executablePath: String? = nil,
+		interfaceName: String? = nil,
+		isBound: Bool? = nil,
         timestamp: Date = Date(),
         event: String? = nil
     ) {
@@ -347,6 +376,8 @@ public struct FlowTelemetry: Codable, Sendable {
         self.hostname = hostname
         self.signingIdentifier = signingIdentifier
         self.executablePath = executablePath
+		self.interfaceName = interfaceName
+		self.isBound = isBound
         self.timestamp = timestamp
         self.event = event
     }
