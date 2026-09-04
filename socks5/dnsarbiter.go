@@ -60,6 +60,10 @@ type adjudication struct {
 	exchange dnspolicy.Exchange
 	timers   []*time.Timer
 	settled  bool
+	// released records that the identifier has already gone back to the
+	// translation map, so retiring the tombstone cannot hand back an
+	// identifier a later exchange has since been given.
+	released bool
 }
 
 func newDNSArbiter(
@@ -209,7 +213,15 @@ func (a *dnsArbiter) expire(id uint16, deadline bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	entry, ok := a.pending[id]
-	if !ok || entry.settled {
+	if !ok {
+		return
+	}
+	if entry.settled {
+		// Held only so a late half is recognised and dropped. The deadline is
+		// the point after which nothing more can arrive for this exchange.
+		if deadline {
+			a.retireLocked(id, entry)
+		}
 		return
 	}
 	if deadline {
@@ -225,6 +237,23 @@ func (a *dnsArbiter) expire(id uint16, deadline bool) {
 		}
 	}
 	a.evaluateLocked(id, entry)
+	if deadline {
+		// Nothing fires after the deadline, so this is the last opportunity to
+		// retire the exchange however the evaluation left it.
+		a.retireLocked(id, entry)
+	}
+}
+
+// retireLocked forgets a finished exchange and frees the identifier it held.
+// The caller holds a.mu.
+func (a *dnsArbiter) retireLocked(id uint16, entry *adjudication) {
+	delete(a.pending, id)
+	for _, timer := range entry.timers {
+		timer.Stop()
+	}
+	if a.release != nil && !entry.released {
+		a.release(id)
+	}
 }
 
 // evaluateLocked asks the policy whether the exchange has settled, and
@@ -235,10 +264,14 @@ func (a *dnsArbiter) evaluateLocked(id uint16, entry *adjudication) {
 		return
 	}
 	entry.settled = true
-	delete(a.pending, id)
-	for _, timer := range entry.timers {
-		timer.Stop()
-	}
+	// The entry stays in `pending` as a tombstone until the deadline, even
+	// though the identifier goes back below. A settled exchange still has a
+	// half in flight — the one the verdict did not use — and the tombstone is
+	// what lets `deliverTrusted` and `completeDirect` recognise it and drop it.
+	// Deleting the entry here instead made those `settled` branches
+	// unreachable, and the losing half then reached the application as a second
+	// reply carrying an identifier it never chose: specifically, the answer
+	// adjudication had just decided not to serve.
 	a.stats.recordVerdict(verdict, reason)
 	var reply []byte
 	switch verdict {
@@ -251,6 +284,7 @@ func (a *dnsArbiter) evaluateLocked(id uint16, entry *adjudication) {
 	}
 	if a.release != nil {
 		a.release(id)
+		entry.released = true
 	}
 	if len(reply) < 2 {
 		return

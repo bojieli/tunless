@@ -532,11 +532,13 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 			}
 			payload := append([]byte(nil), buf[3+used:n]...)
 			if len(payload) >= 2 {
-				transaction := binary.BigEndian.Uint16(payload[:2])
-				if translations.adjudicating(transaction) {
-					// Held rather than delivered: the application gets one
-					// reply, and which one it gets is the arbiter's to decide.
-					arbiter.deliverTrusted(payload, transaction)
+				// Asked of the arbiter rather than of the translation map: the
+				// arbiter owns the identifiers it minted and keeps owning them
+				// after it settles, while the map hands the identifier back as
+				// soon as a verdict is reached. Held rather than delivered, so
+				// the application gets one reply and which one is the
+				// arbiter's to decide.
+				if arbiter.deliverTrusted(payload, binary.BigEndian.Uint16(payload[:2])) {
 					touch()
 					continue
 				}
