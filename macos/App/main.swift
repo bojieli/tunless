@@ -34,6 +34,11 @@ Options:
   --max-flows N              Most TCP flows to relay at once (default 4096).
                              Extra streams stay captured and are refused; UDP
                              application flows are never closed at this limit.
+  --degraded-timeout SECS    How long capture may stay degraded before it rolls
+                             itself back (default 300). Degradation fails closed,
+                             which is right while an upstream is returning and
+                             wrong once it is not; 0 keeps the old unbounded
+                             behaviour for hosts that must never bypass.
   --include-process GLOB     Capture a signing identifier (repeatable).
   --exclude-process GLOB     Exclude a signing identifier (repeatable).
   --include-destination CIDR Capture a destination prefix (repeatable).
@@ -95,6 +100,11 @@ split-horizon zones that cannot be guessed.
 
 start refuses to enable capture when the upstream cannot relay DNS, and rolls
 capture back automatically if name resolution does not work once capture is on.
+Capture that resolved names and later stopped is bounded the same way: it stays
+degraded and fail-closed while the upstream might return, and rolls back once
+--degraded-timeout expires. That bound matters most when the upstream cannot
+return on its own — an upstream reached by hostname needs that name resolved to
+open its datapath, and capture is what is failing to resolve it.
 Capture then stays accountable: the provider re-proves resolution on a timer,
 marks the session degraded if that stops working, and recovers when the
 upstream returns. Proxy-eligible flows remain captured and fail closed during

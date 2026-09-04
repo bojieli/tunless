@@ -39,6 +39,13 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 	/// so rejecting one would permanently damage that socket rather than provide
 	/// bounded backpressure.
 	public var maxConcurrentFlows: Int?
+	/// Seconds capture may stay degraded before it rolls itself back.
+	///
+	/// Nil takes the default. Zero keeps capture degraded for as long as the
+	/// upstream stays down, which is the behaviour from before the deadline
+	/// existed and is the right choice for an operator who would rather have an
+	/// offline host than a bypassed one.
+	public var degradedTimeoutSeconds: Int?
 	/// Whether preflight proved this upstream relays DNS over UDP.
 	///
 	/// The health watchdog needs to know what "working" looked like at start.
@@ -75,7 +82,7 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 	/// set disables adjudication rather than rejecting every answer.
 	public var directPrefixes: [String]?
 
-    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, captureBoundFlows: Bool? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil, expectUDPRelay: Bool? = nil, localDomains: [String]? = nil, directDNSHost: String? = nil, directDNSPort: UInt16? = nil, directDomains: [String]? = nil, trustedDomains: [String]? = nil, directPrefixes: [String]? = nil) {
+    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, captureBoundFlows: Bool? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil, degradedTimeoutSeconds: Int? = nil, expectUDPRelay: Bool? = nil, localDomains: [String]? = nil, directDNSHost: String? = nil, directDNSPort: UInt16? = nil, directDomains: [String]? = nil, trustedDomains: [String]? = nil, directPrefixes: [String]? = nil) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
         self.username = username
@@ -89,6 +96,7 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 		self.captureBoundFlows = captureBoundFlows
 		self.disableHealthWatchdog = disableHealthWatchdog
 		self.maxConcurrentFlows = maxConcurrentFlows
+		self.degradedTimeoutSeconds = degradedTimeoutSeconds
 		self.expectUDPRelay = expectUDPRelay
 		self.localDomains = localDomains
 		self.directDNSHost = directDNSHost
@@ -106,6 +114,9 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 			guard dnsPort > 0, IPv4Address(dnsHost) != nil || IPv6Address(dnsHost) != nil else { throw ConfigurationError.invalidDNSUpstream }
 		}
 		if let maxConcurrentFlows, maxConcurrentFlows < 1 { throw ConfigurationError.invalidFlowCeiling }
+		if let degradedTimeoutSeconds, degradedTimeoutSeconds < 0 {
+			throw ConfigurationError.invalidDegradedTimeout
+		}
 		for prefix in (includeDestinations ?? []) + (excludeDestinations ?? []) {
 			guard Self.validPrefix(prefix) else { throw ConfigurationError.invalidDestinationPrefix(prefix) }
 		}
@@ -331,6 +342,10 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 	/// The ceiling actually applied, defaulting to the portable core's.
 	var flowCeiling: Int { maxConcurrentFlows ?? 4096 }
 
+	/// How long capture may stay degraded before rolling back. See
+	/// `CaptureHealth.degradedSeconds` for why the state is bounded at all.
+	var degradedTimeout: TimeInterval { TimeInterval(degradedTimeoutSeconds ?? 300) }
+
 	func routedDestination(for destination: SOCKSAddress) -> SOCKSAddress {
 		guard destination.port == 53, let dnsHost, let dnsPort else { return destination }
 		return SOCKSAddress(host: dnsHost, port: dnsPort)
@@ -384,6 +399,7 @@ enum ConfigurationError: Error, Equatable {
 	case credentialsTooLong
 	case invalidDestinationPrefix(String)
 	case invalidFlowCeiling
+	case invalidDegradedTimeout
 	case invalidDirectResolver
 	case directResolverWithoutPrefixes
 	case prefixesWithoutDirectResolver

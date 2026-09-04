@@ -138,6 +138,15 @@ struct CaptureHealth: Equatable {
         case pause(String)
         /// Clear the degraded state; the upstream is carrying DNS again.
         case resume
+        /// Roll capture back, for the stated reason.
+        ///
+        /// Degradation keeps proxy-eligible flows captured and failing closed,
+        /// which is right while the upstream is coming back and wrong once it
+        /// is not coming back. Rolling capture back is the same response the
+        /// launcher already makes to a failed post-start verification, moved
+        /// to the one state that could otherwise hold a host offline
+        /// indefinitely.
+        case rollBack(String)
     }
 
     /// How long capture may run before anything confirms it resolves names.
@@ -148,6 +157,21 @@ struct CaptureHealth: Equatable {
     /// with nothing having checked it — the exact state the post-start rollback
     /// exists to prevent, reached by a path the rollback cannot see.
     let probationSeconds: TimeInterval
+    /// How long capture may stay degraded before it is rolled back.
+    ///
+    /// `probationSeconds` bounds capture that never worked. Nothing bounded
+    /// capture that worked and then stopped: once paused, every later failure
+    /// was absorbed and the session waited for a recovery that a circular
+    /// dependency can make impossible, because capture is itself what prevents
+    /// the upstream from resolving the name its datapath needs. Fail-closed is
+    /// the right transient and the wrong steady state, so it gets a deadline.
+    ///
+    /// Generous relative to a real outage — observed recoveries land around
+    /// twenty seconds — because rolling back is the more disruptive answer and
+    /// should lose every race against an upstream that is genuinely returning.
+    /// Zero disables the deadline for operators who would rather have the host
+    /// offline than have capture stand aside.
+    let degradedSeconds: TimeInterval
     /// Consecutive failed probes tolerated before capture is marked degraded.
     ///
     /// More than one, because a single query can lose a race with a node switch
@@ -174,6 +198,9 @@ struct CaptureHealth: Equatable {
     /// Monotonically increasing token captured by asynchronous probes.
     private(set) var networkGeneration: UInt64 = 0
     private var armedAt: Date?
+    /// When the current degraded state began, and so what `degradedSeconds` is
+    /// measured from. Cleared everywhere `paused` is.
+    private var pausedAt: Date?
     private var asleep = false
     private var ignoreProbesUntil: Date?
 
@@ -181,9 +208,11 @@ struct CaptureHealth: Equatable {
         probationSeconds: TimeInterval = 45,
         failuresBeforePause: Int = 3,
         wakeGraceSeconds: TimeInterval = 20,
-        networkChangeGraceSeconds: TimeInterval = 15
+        networkChangeGraceSeconds: TimeInterval = 15,
+        degradedSeconds: TimeInterval = 300
     ) {
         self.probationSeconds = probationSeconds
+        self.degradedSeconds = degradedSeconds
         self.failuresBeforePause = failuresBeforePause
         self.wakeGraceSeconds = wakeGraceSeconds
         self.networkChangeGraceSeconds = networkChangeGraceSeconds
@@ -200,6 +229,7 @@ struct CaptureHealth: Equatable {
         consecutiveFailures = 0
         paused = false
         pauseReason = nil
+        pausedAt = nil
         // Do not reset this token. A probe from a previous provider session
         // can finish after a rapid stop/start; keeping the counter monotonic
         // guarantees that result cannot be mistaken for the new session's
@@ -230,6 +260,10 @@ struct CaptureHealth: Equatable {
         consecutiveFailures = 0
         networkGeneration &+= 1
         ignoreProbesUntil = now.addingTimeInterval(wakeGraceSeconds)
+        // A machine that slept while degraded has not spent that time waiting
+        // for the upstream; nothing was using the network. Restart the clock so
+        // a long sleep cannot roll capture back the moment the host wakes.
+        if paused { pausedAt = now }
     }
 
     /// The path carrying the upstream changed.
@@ -248,6 +282,7 @@ struct CaptureHealth: Equatable {
         ignoreProbesUntil = now.addingTimeInterval(networkChangeGraceSeconds)
         paused = false
         pauseReason = nil
+        pausedAt = nil
         // This is not a successful health observation. The old failure no
         // longer applies, but the new path still has to prove itself after the
         // grace interval, so do not emit a misleading "resumed" decision.
@@ -286,37 +321,90 @@ struct CaptureHealth: Equatable {
             // mark another sustained failure on later probes.
             paused = false
             pauseReason = nil
+            pausedAt = nil
             return .resume
         }
-        guard !paused else { return .unchanged }
+        guard !paused else {
+            // Still failing, and the degraded state has outlived its deadline.
+            // Capture is no longer protecting anything it could not protect by
+            // standing aside, so stop holding the host's traffic hostage.
+            guard degradedTooLong(at: now) else { return .unchanged }
+            return rollBack(
+                "capture stayed degraded for \(Int(degradedSeconds))s without resolving a name: \(detail)")
+        }
         consecutiveFailures += 1
         if !confirmed {
             // Still unconfirmed: probation, not the failure budget, bounds
             // this. A failing probe here is expected while the provider
             // settles, and the probation window is what ends it.
             guard expired(at: now) else { return .unchanged }
-            return pause("capture never resolved a name within its probation window")
+            return pause("capture never resolved a name within its probation window", at: now)
         }
         guard consecutiveFailures >= failuresBeforePause else { return .unchanged }
         return pause(
-            "name resolution failed \(consecutiveFailures) times in a row through the upstream: \(detail)")
+            "name resolution failed \(consecutiveFailures) times in a row through the upstream: \(detail)",
+            at: now)
     }
 
-    /// Called on a timer with no probe result, to end probation on its own. A
-    /// launcher that dies before confirming leaves nothing else to notice.
+    /// Called on a timer with no probe result, to end an unbounded state on its
+    /// own.
+    ///
+    /// Two states need that. A launcher that dies before confirming leaves
+    /// nothing else to end probation. And an upstream that stops answering
+    /// probes altogether stops driving `observe`, so the degraded deadline
+    /// needs a clock that does not depend on the thing that is broken.
     mutating func probationDecision(at now: Date) -> Decision {
-        guard !ignoringProbes(at: now), !paused, !confirmed, expired(at: now) else { return .unchanged }
-        return pause("capture was never confirmed to resolve names within its probation window")
+        guard !ignoringProbes(at: now) else { return .unchanged }
+        if degradedTooLong(at: now) {
+            return rollBack(
+                "capture stayed degraded for \(Int(degradedSeconds))s without resolving a name")
+        }
+        guard !paused, !confirmed, expired(at: now) else { return .unchanged }
+        return pause(
+            "capture was never confirmed to resolve names within its probation window", at: now)
     }
 
-    private mutating func pause(_ reason: String) -> Decision {
+    /// Ends the degraded state by giving capture up rather than by recovering.
+    private mutating func rollBack(_ reason: String) -> Decision {
         paused = true
         pauseReason = reason
+        return .rollBack(reason)
+    }
+
+    private mutating func pause(_ reason: String, at now: Date) -> Decision {
+        paused = true
+        pauseReason = reason
+        pausedAt = now
         return .pause(reason)
+    }
+
+    /// True once capture has been degraded for longer than the deadline allows.
+    ///
+    /// A zero or negative deadline disables the rollback entirely, which is the
+    /// pre-deadline behaviour and remains available to operators who prefer an
+    /// offline host to a bypassed one.
+    private func degradedTooLong(at now: Date) -> Bool {
+        guard paused, degradedSeconds > 0, let pausedAt else { return false }
+        return now.timeIntervalSince(pausedAt) >= degradedSeconds
     }
 
     private func expired(at now: Date) -> Bool {
         guard let armedAt else { return false }
         return now.timeIntervalSince(armedAt) >= probationSeconds
+    }
+}
+
+/// Why capture cancelled itself.
+///
+/// Carried out through `cancelProxyWithError` so the reason reaches the system
+/// log and `status`, rather than a bare cancellation that looks like an
+/// ordinary stop.
+enum CaptureRollbackError: LocalizedError, Equatable {
+    case degradedTooLong(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .degradedTooLong(reason): return reason
+        }
     }
 }

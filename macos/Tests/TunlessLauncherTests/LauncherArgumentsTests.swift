@@ -212,6 +212,36 @@ extension LauncherArgumentsTests {
                 environment: [:]))
     }
 
+    func testDegradedTimeoutIsConfigurableAndDefaultsToUnset() throws {
+        XCTAssertNil(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],
+                environment: [:]).configuration?.degradedTimeoutSeconds)
+        XCTAssertEqual(
+            try LauncherArguments(
+                arguments: [
+                    "Tunless", "start", "--upstream", "127.0.0.1:7897",
+                    "--degraded-timeout", "600",
+                ],
+                environment: [:]).configuration?.degradedTimeoutSeconds,
+            600)
+        XCTAssertEqual(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],
+                environment: ["TUNLESS_DEGRADED_TIMEOUT": "900"]).configuration?.degradedTimeoutSeconds,
+            900)
+        // Zero is the documented opt-out, not a rejected value.
+        XCTAssertEqual(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897", "--degraded-timeout=0"],
+                environment: [:]).configuration?.degradedTimeoutSeconds,
+            0)
+        XCTAssertThrowsError(
+            try LauncherArguments(
+                arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897", "--degraded-timeout=-1"],
+                environment: [:]))
+    }
+
 	func testInterfaceBoundFlowsAreHonoredUnlessStrictCaptureIsRequested() throws {
 		let normal = try LauncherArguments(
 			arguments: ["Tunless", "start", "--upstream", "127.0.0.1:7897"],

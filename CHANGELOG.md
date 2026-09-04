@@ -74,6 +74,24 @@ use ISO 8601.
   This was reachable whenever the direct half won a race it usually wins by a
   wide margin, so it showed up first as a flaky test rather than as a report.
 
+- **A degraded capture session now has a deadline.** `probationSeconds` bounded
+  capture that never worked; nothing bounded capture that worked and then
+  stopped. Once the watchdog paused a confirmed session, every later failure was
+  absorbed and the host stayed fail-closed for as long as the upstream stayed
+  down. New `--degraded-timeout` (default 300 seconds, `TUNLESS_DEGRADED_TIMEOUT`)
+  rolls capture back instead, using the same response the launcher already makes
+  to a failed post-start verification. `--degraded-timeout 0` keeps the previous
+  unbounded behaviour for hosts that must never bypass.
+
+  The bound matters most where recovery is impossible rather than slow. An
+  upstream addressed by hostname has to resolve that name to open its datapath,
+  and while `--dns-upstream` is set capture sends that lookup to the upstream
+  that is waiting on it, so the query is dropped and the name never resolves.
+  Every probe then fails exactly like a transient outage, and waiting cannot
+  end it. Sleep does not spend the deadline and a path change restarts it, so
+  the only thing that exhausts it is a host that has genuinely stopped
+  resolving names through capture.
+
 - `socks5.Client.LocalDomains` is replaced by `socks5.Client.DNSPolicy`, which
   carries the split-horizon suffixes along with the rest of the policy.
   `--local-domain` is unchanged and still outranks every other layer.
