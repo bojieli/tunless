@@ -4,28 +4,6 @@ import XCTest
 
 @testable import TunlessExtension
 
-/// Collects what the arbiter hands to the application.
-actor RecordingSink: DatagramSink {
-    private(set) var written: [(Data, SOCKSAddress)] = []
-    private var waiters: [CheckedContinuation<(Data, SOCKSAddress), Never>] = []
-
-    func write(_ payload: Data, from source: SOCKSAddress) async {
-        if let waiter = waiters.first {
-            waiters.removeFirst()
-            waiter.resume(returning: (payload, source))
-            return
-        }
-        written.append((payload, source))
-    }
-
-    func next() async -> (Data, SOCKSAddress) {
-        if !written.isEmpty { return written.removeFirst() }
-        return await withCheckedContinuation { waiters.append($0) }
-    }
-
-    func count() -> Int { written.count }
-}
-
 final class DNSArbiterTests: XCTestCase {
     private let directResolver = SOCKSAddress(host: "127.0.0.1", port: 15353)
     private let applicationResolver = SOCKSAddress(host: "192.168.1.1", port: 53)
@@ -54,7 +32,7 @@ final class DNSArbiterTests: XCTestCase {
             adjudicationDeadline: 3600)
     }
 
-    func testTheApplicationGetsItsOwnTransactionIDAndResolverBack() async {
+    func testTheApplicationGetsItsOwnTransactionIDAndResolverBack() async throws {
         // The application never saw the identifier this process minted, and it
         // wrote to its own resolver rather than to either of ours. A reply
         // carrying the wrong one of either is a reply the client discards.
@@ -72,15 +50,16 @@ final class DNSArbiterTests: XCTestCase {
             dnsReply(to: rewritten, addresses: ["203.0.113.7"]), from: directResolver)
         XCTAssertTrue(answered)
 
-        let (payload, source) = await sink.next()
+        let delivered = try await sink.firstWrite(timeout: 2)
+        let payload = delivered.payload
         XCTAssertEqual(payload[payload.startIndex], 0x12)
         XCTAssertEqual(payload[payload.startIndex + 1], 0x34)
-        XCTAssertEqual(source, applicationResolver)
+        XCTAssertEqual(delivered.source, applicationResolver)
         let identifiers = await released.all()
         XCTAssertEqual(identifiers, [0x9999])
     }
 
-    func testTheTrustedHalfIsHeldUntilTheDirectHalfSettles() async {
+    func testTheTrustedHalfIsHeldUntilTheDirectHalfSettles() async throws {
         let sink = RecordingSink()
         let arbiter = makeArbiter(sink: sink, released: ReleasedIdentifiers())
         let rewritten = dnsQuery(id: 0x4444, name: "www.example.net")
@@ -96,8 +75,8 @@ final class DNSArbiterTests: XCTestCase {
 
         _ = await arbiter.deliverDirect(
             dnsReply(to: rewritten, addresses: ["198.51.100.1"]), from: directResolver)
-        let (payload, _) = await sink.next()
-        let addresses = DNSPolicy.addresses(in: payload)
+        let delivered = try await sink.firstWrite(timeout: 2)
+        let addresses = DNSPolicy.addresses(in: delivered.payload)
         XCTAssertEqual(addresses.count, 1)
         XCTAssertEqual(addresses.first, IPv4Address("192.0.2.9")!.rawValue)
     }
@@ -130,7 +109,7 @@ final class DNSArbiterTests: XCTestCase {
         XCTAssertFalse(claimedTrusted)
     }
 
-    func testADatagramThatDoesNotAnswerTheQuestionDoesNotConsumeTheExchange() async {
+    func testADatagramThatDoesNotAnswerTheQuestionDoesNotConsumeTheExchange() async throws {
         // Forging one is cheap for anyone who can guess the identifier. Letting
         // it settle would discard the real answer arriving behind it.
         let sink = RecordingSink()
@@ -148,8 +127,8 @@ final class DNSArbiterTests: XCTestCase {
 
         _ = await arbiter.deliverDirect(
             dnsReply(to: rewritten, addresses: ["203.0.113.7"]), from: directResolver)
-        let (payload, _) = await sink.next()
-        XCTAssertEqual(payload[payload.startIndex + 1], 0x33)
+        let delivered = try await sink.firstWrite(timeout: 2)
+        XCTAssertEqual(delivered.payload[delivered.payload.startIndex + 1], 0x33)
     }
 
     func testCancellingAbandonsEverythingOutstanding() async {
@@ -169,8 +148,7 @@ final class DNSArbiterTests: XCTestCase {
             original: applicationResolver, query: rewritten)
         XCTAssertFalse(accepted, "a cancelled arbiter accepted a new query")
         // Nothing is delivered: the socket that asked has gone away.
-        let written = await sink.count()
-        XCTAssertEqual(written, 0)
+        XCTAssertTrue(sink.all().isEmpty)
     }
 }
 
