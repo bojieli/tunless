@@ -36,6 +36,15 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
     /// Names learned from the DNS this provider relayed, used to give a flow
     /// back the hostname its application never told the kernel about.
     private let observedNames = ObservedNames()
+    /// Shared across every flow, because whether the direct resolver is
+    /// answering is a property of that resolver and the network, not of the
+    /// socket that happened to ask. A per-flow breaker would relearn the same
+    /// outage once per application.
+    private let directBreaker = DirectResolverBreaker()
+    private let dnsCounters = DNSPolicyCounters()
+    /// Guarded by `lock`, alongside the configuration they were built from.
+    private var cachedPolicy: DNSPolicy?
+    private var cachedPolicyConfiguration: ProviderConfiguration?
     /// Transaction IDs currently relayed to the trusted resolver, which is what
     /// lets an application's own query to that resolver be captured without the
     /// upstream's forwarded copy closing a loop. See `ResolverLoopGuard`.
@@ -825,10 +834,27 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         executablePath: String?
     ) async {
         let writer = FlowWriter(flow: flow)
-        let direct = DirectDatagramRelay(sink: writer, networkEpoch: networkEpoch)
         let dnsResponses = DNSResponseMap(
             maxEntries: 4096, ttlSeconds: 30, observedNames: observedNames,
             loopGuard: resolverLoopGuard)
+        let policy = configuration.dnsPolicy
+        let arbitrated = ArbitratedDatagramSink(downstream: writer, dnsResponses: dnsResponses)
+        let direct = DirectDatagramRelay(sink: arbitrated, networkEpoch: networkEpoch)
+        var arbiter: DNSArbiter?
+        if policy.adjudicates {
+            let built = DNSArbiter(
+                policy: policy,
+                askDirect: { [resolver = policy.directResolver] payload in
+                    guard let resolver else { return false }
+                    return await direct.send(payload, to: resolver)
+                },
+                breaker: directBreaker,
+                counters: dnsCounters,
+                deliver: { payload, source in await writer.write(payload, from: source) },
+                release: { identifier in await dnsResponses.forget(identifier: identifier) })
+            await arbitrated.attach(built)
+            arbiter = built
+        }
         // mDNSResponder keeps its UDP resolver sockets for much longer than an
         // individual lookup, so port-53 flows carry no association idle limit.
         // Ordinary UDP keeps the bounded two-minute one, which now retires the
@@ -838,7 +864,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             sink: writer,
             dnsResponses: dnsResponses,
             idleTimeoutSeconds: DatagramFlowContinuity.idleTimeoutSeconds(for: initialDestination),
-            networkEpoch: networkEpoch)
+            networkEpoch: networkEpoch,
+            arbiter: arbiter)
         var event: String
         do {
             try Task.checkCancellation()
@@ -848,6 +875,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                 association: association,
                 direct: direct,
                 dnsResponses: dnsResponses,
+                arbiter: arbiter,
                 signingIdentifier: signingIdentifier,
                 executablePath: executablePath)
         } catch is CancellationError {
@@ -856,6 +884,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             event = "setup-error:\(error)"
         }
         await association.shutDown()
+        await arbiter?.cancel()
         await direct.cancelAll()
         await writer.cancel()
         // Nothing is closed here, with an error or without one. Every way this
@@ -877,6 +906,69 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             event: event)
     }
 
+    /// Sends a query a name list routed to the direct resolver.
+    ///
+    /// With no direct resolver configured the query goes to the resolver the
+    /// application already chose, unchanged, which is what makes the name lists
+    /// usable without opting into answer-based selection at all. With one
+    /// configured the destination changes, and so the identifier and the reply's
+    /// apparent source have to be tracked: a datagram arriving from an address
+    /// the application never wrote to is discarded by the kernel on the
+    /// connected socket every resolver client uses. `ArbitratedDatagramSink`
+    /// restores both on the way back.
+    private func sendToDirectResolver(
+        _ payload: Data,
+        original: SOCKSAddress,
+        resolver: SOCKSAddress?,
+        flow: NEAppProxyUDPFlow,
+        direct: DirectDatagramRelay,
+        dnsResponses: DNSResponseMap
+    ) async {
+        guard let resolver, resolver != original else {
+            if await direct.send(payload, to: original) {
+                record(
+                    flow: flow, destination: original, routedDestination: original,
+                    route: .direct, event: "direct:direct-list")
+            } else {
+                record(
+                    flow: flow, destination: original, routedDestination: original,
+                    route: .dropped, event: "dropped:direct-send-failed:direct-list")
+            }
+            return
+        }
+        let prepared = await dnsResponses.prepareForSend(
+            query: payload, original: original, routed: resolver)
+        guard prepared.canSend else {
+            recordDroppedDatagram(
+                flow: flow, destination: original, routedDestination: resolver,
+                reason: "resolver-loop-guard-unavailable")
+            return
+        }
+        if await direct.send(prepared.payload, to: resolver) {
+            record(
+                flow: flow, destination: original, routedDestination: resolver,
+                route: .direct, event: "direct:direct-list")
+            return
+        }
+        await dnsResponses.abandon(prepared)
+        record(
+            flow: flow, destination: original, routedDestination: resolver,
+            route: .dropped, event: "dropped:direct-send-failed:direct-list")
+    }
+
+    /// The transaction identifier the application chose, which the concluded
+    /// reply has to carry back.
+    static func applicationIdentifier(in query: Data) -> UInt16 {
+        guard query.count >= 2 else { return 0 }
+        let start = query.startIndex
+        return UInt16(query[start]) << 8 | UInt16(query[start + 1])
+    }
+
+    /// The DNS policy counters, for the status surface.
+    func dnsPolicySnapshot() -> DNSPolicyCounters.Snapshot {
+        dnsCounters.current(breakerOpen: directBreaker.isOpen)
+    }
+
     /// Reads from the flow and places each datagram on the transport that can
     /// carry it. The single reader of the flow, and the only thing that ends
     /// it: everything below can fail and be rebuilt without the application
@@ -886,6 +978,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         association: UDPAssociation,
         direct: DirectDatagramRelay,
         dnsResponses: DNSResponseMap,
+        arbiter: DNSArbiter?,
         signingIdentifier: String,
         executablePath: String?
     ) async -> String {
@@ -913,6 +1006,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                     direct: direct,
                     configuration: selected,
                     dnsResponses: dnsResponses,
+                    arbiter: arbiter,
                     signingIdentifier: signingIdentifier,
                     executablePath: executablePath,
                     retriedAfterNetworkChange: false)
@@ -934,6 +1028,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         direct: DirectDatagramRelay,
         configuration: ProviderConfiguration,
         dnsResponses: DNSResponseMap,
+        arbiter: DNSArbiter?,
         signingIdentifier: String,
         executablePath: String?,
         retriedAfterNetworkChange: Bool
@@ -952,6 +1047,7 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
                 direct: direct,
                 configuration: configurationSnapshot(),
                 dnsResponses: dnsResponses,
+                arbiter: arbiter,
                 signingIdentifier: signingIdentifier,
                 executablePath: executablePath,
                 retriedAfterNetworkChange: true)
@@ -1001,17 +1097,45 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
             await sendDirect("resolver-loop-guard")
             return
         }
-        // A name the local network owns stays with the resolver that can answer
-        // it, and goes there the way it would have gone if capture had never
-        // claimed the flow. Redirecting it to a trusted public resolver does not
-        // produce a safer answer, it produces no answer: the printer, the NAS
-        // and the router's own name exist only on this network. This is not a
-        // degradation, so it is not logged as one.
-        if original.port == 53, configuration.dnsHost != nil,
-            LocalNames.queryIsLocal(payload, extraSuffixes: configuration.localDomains ?? [])
-        {
-            await sendDirect("local-name")
-            return
+        // Which resolver answers this query. Everything that is not a port-53
+        // datagram under a configured override keeps the route it always had.
+        var adjudicating = false
+        if original.port == 53, configuration.dnsHost != nil {
+            // The decision follows the configuration currently in force, the
+            // way the destination rules already do. The arbiter stays bound to
+            // the policy its flow was opened with: it holds exchanges in
+            // progress, and moving the resolver out from under one would strand
+            // the half already asked. A flow opened before adjudication was
+            // configured therefore keeps the plain trusted route until it ends,
+            // which is what the `arbiter != nil` test below preserves.
+            let live = policySnapshot()
+            let decision = live.decide(payload)
+            dnsCounters.record(decision: decision)
+            switch decision.route {
+            case .local:
+                // A name the local network owns stays with the resolver that
+                // can answer it, and goes there the way it would have gone if
+                // capture had never claimed the flow. Redirecting it to a
+                // trusted public resolver does not produce a safer answer, it
+                // produces no answer: the printer, the NAS and the router's own
+                // name exist only on this network. This is not a degradation,
+                // so it is not logged as one.
+                await sendDirect("local-name")
+                return
+            case .direct:
+                await sendToDirectResolver(
+                    payload,
+                    original: original,
+                    resolver: live.directResolver,
+                    flow: flow,
+                    direct: direct,
+                    dnsResponses: dnsResponses)
+                return
+            case .adjudicate:
+                adjudicating = arbiter != nil
+            case .trusted:
+                break
+            }
         }
         guard await association.establish() else {
             if await retryOnNewNetwork() { return }
@@ -1035,7 +1159,8 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         // claiming them reopens the loop the address reservation used to close.
         let policed = original.port == 53 && Self.sameResolver(original, configuration: configuration)
         let prepared = await dnsResponses.prepareForSend(
-            query: payload, original: original, routed: routed, policed: policed)
+            query: payload, original: original, routed: routed, policed: policed,
+            observable: !adjudicating)
         guard prepared.canSend else {
             recordDroppedDatagram(
                 flow: flow,
@@ -1052,6 +1177,19 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         }
         frame.append(encoded)
         frame.append(prepared.payload)
+        if adjudicating, let arbiter, let identifier = prepared.translatedID {
+            // Registered before the trusted half leaves, so a direct answer
+            // that arrives first still has an adjudication to belong to.
+            guard await arbiter.begin(
+                identifier: identifier,
+                originalID: Self.applicationIdentifier(in: payload),
+                original: original,
+                query: prepared.payload)
+            else {
+                await dnsResponses.abandon(prepared)
+                return
+            }
+        }
         if await association.send(frame) {
             noteCarriedResolver(original, overUDP: true)
             record(
@@ -1212,6 +1350,23 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         lock.lock()
         defer { lock.unlock() }
         return configuration
+    }
+
+    /// The DNS policy for the configuration currently in force.
+    ///
+    /// Cached rather than rebuilt per datagram: the policy owns a label trie and
+    /// a merged range table built from lists that run to five figures, and it is
+    /// consulted once per captured query. Cached against the configuration
+    /// rather than for the life of a flow, because a configuration update has to
+    /// reach flows that are already open — the destination rules already do.
+    private func policySnapshot() -> DNSPolicy {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cachedPolicy, cachedPolicyConfiguration == configuration { return cachedPolicy }
+        let built = configuration.dnsPolicy
+        cachedPolicy = built
+        cachedPolicyConfiguration = configuration
+        return built
     }
 
     private static func address(_ endpoint: Network.NWEndpoint) -> SOCKSAddress? {
@@ -1512,6 +1667,10 @@ actor UDPAssociation {
     private var configuration: ProviderConfiguration
     private let sink: any DatagramSink
     private let dnsResponses: DNSResponseMap
+    /// Present only while the policy adjudicates. A reply it claims is one half
+    /// of an exchange the application must receive exactly one answer to, and
+    /// which answer that is belongs to the arbiter.
+    private let arbiter: DNSArbiter?
     private let idleTimeoutSeconds: TimeInterval
     private let networkEpoch: NetworkEpoch
     private var state = State.idle
@@ -1540,12 +1699,14 @@ actor UDPAssociation {
         dnsResponses: DNSResponseMap,
         idleTimeoutSeconds: TimeInterval,
         networkEpoch: NetworkEpoch = NetworkEpoch(),
+        arbiter: DNSArbiter? = nil,
         retryBackoffSeconds: TimeInterval = 5,
         handshakeTimeoutSeconds: TimeInterval = 10
     ) {
         self.configuration = configuration
         self.sink = sink
         self.dnsResponses = dnsResponses
+        self.arbiter = arbiter
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.networkEpoch = networkEpoch
         self.retryBackoffSeconds = retryBackoffSeconds
@@ -1737,6 +1898,13 @@ actor UDPAssociation {
             return
         }
         lastActivity = Date()
+        if let arbiter, payload.count >= 2 {
+            let start = payload.startIndex
+            let identifier = UInt16(payload[start]) << 8 | UInt16(payload[start + 1])
+            // Held rather than delivered: the application gets one reply, and
+            // which one it gets is the arbiter's to decide.
+            if await arbiter.deliverTrusted(payload, identifier: identifier) { return }
+        }
         let restored = await dnsResponses.restore(response: payload, receivedFrom: source)
         if !restored.matched, isOverrideResolver(source),
            !addressed.contains("\(source.host):\(source.port)") {
@@ -2075,8 +2243,15 @@ actor DNSResponseMap {
     /// frame never leaves; otherwise a failed send can leave a loop-guard ID
     /// behind and a colliding application query may be misclassified as the
     /// upstream's forwarded copy and sent direct.
+    /// `observable` is false for an exchange whose answer must never enter the
+    /// address-to-name map: an adjudicated query, where which half won is the
+    /// arbiter's decision and this map is not the arbiter. Marking it here
+    /// rather than relying on the arbiter claiming the reply first means a late
+    /// answer arriving after the adjudication expired still cannot be learned
+    /// from.
     func prepareForSend(
-        query: Data, original: SOCKSAddress, routed: SOCKSAddress, policed: Bool = false
+        query: Data, original: SOCKSAddress, routed: SOCKSAddress, policed: Bool = false,
+        observable: Bool = true
     ) -> PreparedQuery {
         let needsTranslation = routed != original || policed
         guard needsTranslation, query.count >= 12 else {
@@ -2110,7 +2285,7 @@ actor DNSResponseMap {
             // The rewritten copy, not the application's original: the answer
             // comes back carrying the translated ID, and pairing a query with an
             // answer means matching it.
-            query: rememberQuery(rewritten))
+            query: observable ? rememberQuery(rewritten) : nil)
         // Registered before the datagram leaves, so the upstream's forwarded
         // copy can never arrive ahead of the record that identifies it.
         if let loopGuard, !loopGuard.register(translatedID) {
@@ -2123,6 +2298,17 @@ actor DNSResponseMap {
     /// Forgets a query whose UDP frame was not accepted by the association.
     /// Only the token returned by `prepareForSend` can remove an entry, so an
     /// unchanged application transaction ID can never erase another exchange.
+    /// Forgets an exchange by identifier, releasing its loop-guard
+    /// registration without observing anything.
+    ///
+    /// Unlike `abandon`, which requires the token returned by `prepareForSend`,
+    /// this is for the arbiter: it holds the identifier rather than the token,
+    /// and it concludes exchanges whose reply this map deliberately never saw.
+    func forget(identifier: UInt16) {
+        guard entries.removeValue(forKey: identifier) != nil else { return }
+        loopGuard?.release(identifier)
+    }
+
     func abandon(_ prepared: PreparedQuery) {
         guard let translatedID = prepared.translatedID,
               entries.removeValue(forKey: translatedID) != nil else { return }

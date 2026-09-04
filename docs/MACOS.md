@@ -363,6 +363,48 @@ space. Split-horizon zones cannot be predicted, so name those:
 reads the query, so it applies to DNS over UDP; a query over TCP is routed before
 any bytes arrive and goes to the trusted resolver like anything else.
 
+### Names a nearer resolver answers better
+
+Everything above sends every other captured query to `--dns-upstream` through
+the proxy, and that stays the default. Two flags change it, and both are off
+unless set.
+
+`--dns-direct` names a resolver reached without the proxy, and
+`--dns-direct-prefix` the addresses that make its answers credible:
+
+```console
+/Applications/Tunless.app/Contents/MacOS/Tunless start \
+  --preset clash-verge --upstream 127.0.0.1:7897 \
+  --dns-direct 223.5.5.5:53 \
+  --dns-direct-prefix-file ~/.config/tunless/near-networks.txt
+```
+
+Both resolvers are asked. The direct one is believed only when it returns an
+address inside the set, and that decision is made the moment its answer arrives
+— so a name the set covers resolves at the speed of the near resolver and does
+not depend on the upstream being up. An answer naming addresses outside the set
+is never served; the trusted resolver decides, and when it cannot the query
+fails with SERVFAIL rather than being answered with something unverified.
+
+`--direct-domain` and `--trusted-domain` decide the same thing from the name
+instead, before any query leaves the host, and take the longest match where they
+overlap. `--trusted-domain` matters as soon as `--dns-direct` is on: from then
+on every unlisted name is asked of the direct resolver, so a name you want kept
+off that path has to be listed.
+
+Each flag has a `-file` form and a `TUNLESS_`-prefixed environment variable, and
+the launcher reads the list files itself rather than handing a path to the
+system extension — a sandboxed extension running outside your session may not be
+able to open it, and a parse error belongs where you can see it. An incoherent
+combination is refused before capture starts.
+
+Only answers from the trusted resolver are ever learned from for
+[hostname recovery](#names-an-application-never-told-the-kernel), adjudicated
+exchanges included. Adjudication reads addresses, so it covers A and AAAA;
+HTTPS and SVCB go to the trusted resolver because they carry the
+encrypted-client-hello configuration. The full rule is in
+[resolver selection](OPERATIONS.md#answer-based-and-name-based-resolver-selection).
+
 ### Deploying without losing the network
 
 Enabling capture moves every matching flow onto the SOCKS5 upstream at once,

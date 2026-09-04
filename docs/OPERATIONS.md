@@ -144,6 +144,125 @@ carries lookups. A record that changes later is picked up by restarting. `--flow
 `--udp-idle-timeout` bound abandoned flows; zero disables the corresponding
 timeout.
 
+## Answer-based and name-based resolver selection
+
+Everything above sends every captured query to `--dns-upstream` through the
+proxy, and that stays the default: with none of the flags in this section set,
+nothing is asked of any other resolver.
+
+Two costs come with routing every lookup through one tunnel. A geographically
+aware name resolves from where the tunnel exits, so a service that would have
+handed this host a nearby address hands it a distant one. And an upstream outage
+does not degrade name resolution, it ends it — including for the destinations
+`--exclude-destination` already keeps direct, which stay reachable but
+unresolvable. The routes are fine. Nothing can learn an address to use them
+with.
+
+Two mechanisms buy those back, and they decide at different moments.
+
+**A name list decides from the question**, before anything leaves the host:
+
+```console
+tunless --upstream 127.0.0.1:7890   --direct-domain-file /etc/tunless/direct-domains.txt   --trusted-domain internal.example.com
+```
+
+`--direct-domain` and `--direct-domain-file` name what the direct resolver
+answers. `--trusted-domain` and `--trusted-domain-file` name what it must never
+be asked. Both are repeatable, both take one suffix per line in a file, and both
+work without `--dns-direct`: with no direct resolver configured, a
+`--direct-domain` name goes to the resolver the application already chose, which
+is the deterministic half of this feature without the heuristic half.
+
+**An address set decides from the answer**, for every name nobody listed:
+
+```console
+tunless --upstream 127.0.0.1:7890   --dns-direct 223.5.5.5:53   --dns-direct-prefix-file /etc/tunless/near-networks.txt
+```
+
+Both resolvers are asked. The direct one is believed only when it returns an
+address inside the prefix set.
+
+The two compose, and the lists decide first. Where they overlap, the **longest
+matching suffix wins** — `--trusted-domain secret.example.com` carves that name
+out of a `--direct-domain example.com` — because that is what dnsmasq, mosdns
+and systemd-resolved all do, and because the alternative silently does the
+opposite of what an operator wrote. An exact duplicate across the two lists
+resolves toward the tunnel.
+
+### The rule, in order
+
+1. The reserved and private name spaces, and `--local-domain`, go to the
+   resolver the application chose. This is not a preference: those names have no
+   answer anywhere else.
+2. The longest matching `--direct-domain` or `--trusted-domain` suffix decides.
+3. Otherwise, if `--dns-direct` is configured, both resolvers are asked:
+   - The direct answer is served the moment it arrives, if it names at least one
+     address inside the prefix set. Nothing waits for the tunnel, so a name the
+     set covers resolves at the speed of the near resolver whether or not the
+     upstream is up at all.
+   - An answer naming addresses outside the set is not served. A good answer for
+     a distant service and an injected one are the same message, so the trusted
+     resolver decides — which is what would have happened without any of this.
+   - An answer naming no address is served once the trusted resolver has had its
+     chance and could not take it. There is nothing in it to misroute a
+     connection to, and refusing it denies the name just as thoroughly. While
+     the tunnel is up a forged NXDOMAIN still loses to the real answer.
+   - If nothing believable arrives, the query fails with SERVFAIL rather than
+     being answered with something unverified. Stub resolvers do not cache
+     SERVFAIL, so a lookup retried after the tunnel returns gets the real answer.
+4. Otherwise the trusted resolver, as before.
+
+### What this does not do
+
+**Adjudication reads addresses, so it applies to A and AAAA only.** HTTPS,
+SVCB, MX, TXT, SRV and PTR go to the trusted resolver. SVCB matters most: a
+browser asks for it on every navigation and the record carries the
+encrypted-client-hello configuration, so serving one from the direct path would
+inflict the downgrade this project exists to prevent. A name on a list is
+routed whatever it asks for — the operator has already decided.
+
+**Adjudication applies to DNS over UDP.** A query over TCP has to be routed
+before any bytes arrive, the same limit `--local-domain` already documents.
+
+**Only answers from the trusted resolver are learned from** for hostname
+recovery, adjudicated exchanges included. See [DNS observation](#dns-observation).
+
+**Every unlisted name is asked of the direct resolver.** That is inherent to
+judging answers — you have to ask before you can judge — so a name you do not
+want on that path belongs on `--trusted-domain`.
+
+### The lists
+
+Both kinds are one entry per line, with `#` or `;` starting a comment. They are
+read once at startup; a changed list is picked up by restarting, the same
+contract `--upstream` has for hostnames. Where the lists come from is yours:
+`tunless` does not fetch, cache, or ship them, because a tool that refreshes a
+subscription is the rule engine this project is not. A `sed` line to convert
+whatever format your source publishes belongs in the timer that downloads it.
+
+An incoherent combination is refused at startup rather than started:
+`--dns-direct` without prefixes, prefixes without `--dns-direct`, either with
+`--disable-dns-override`, or a list file that does not exist. Each of those has
+a runtime appearance identical to the feature working perfectly and finding
+nothing to do, which is the one failure an operator cannot tell apart by
+looking.
+
+### Seeing what it decided
+
+```console
+tunless --upstream 127.0.0.1:7890 --dns-direct 223.5.5.5:53   --dns-direct-prefix-file /etc/tunless/near-networks.txt   --explain www.example.com
+```
+
+`--explain` reports the route and the reason, and when both resolvers would be
+asked it runs the real exchanges and prints what each returned, which addresses
+fell inside the set, and the verdict. Nothing is captured while it runs.
+
+`--status-listen` reports the same policy under `dns_policy`, with a count per
+layer: how many queries each list decided, how many were adjudicated, and how
+each adjudication came out. `served_direct` staying at zero on a network you
+expect interference on means the set is misconfigured, not that the network is
+clean — that is the failure this section exists to make visible.
+
 ## DNS observation
 
 Capture feeds the same address-to-name map from the queries it relays, so a flow

@@ -24,6 +24,7 @@ import (
 	"github.com/bojieli/tunless/backend/loopback"
 	windowsbackend "github.com/bojieli/tunless/backend/windows"
 	"github.com/bojieli/tunless/dnsobserver"
+	"github.com/bojieli/tunless/internal/dnspolicy"
 	"github.com/bojieli/tunless/metadata"
 	"github.com/bojieli/tunless/socks5"
 	statusapi "github.com/bojieli/tunless/status"
@@ -47,12 +48,15 @@ func main() {
 func run() error {
 	var upstream, listen, logLevel, backendName, cgroupPath, networkNamespace, containerID, dnsListen, dnsUpstream, metadataSocket, statusListen string
 	var showVersion, check, disableDNSOverride bool
+	var explain string
 	var metadataUsername bool
 	var containerPID, maxFlows int
 	var flowIdleTimeout, udpIdleTimeout time.Duration
 	var checkTarget string
 	var containerDNS []string
 	var includeProc, excludeProc, includeDst, excludeDst, localDomain stringsFlag
+	var directDomain, trustedDomain, directPrefix stringsFlag
+	var dnsDirect, directDomainFile, trustedDomainFile, directPrefixFile string
 	dnsDefault := os.Getenv("TUNLESS_DNS_UPSTREAM")
 	if dnsDefault == "" {
 		dnsDefault = "1.1.1.1:53"
@@ -70,6 +74,7 @@ func run() error {
 	flag.StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error")
 	flag.BoolVar(&showVersion, "version", false, "print version")
 	flag.BoolVar(&check, "check", false, "run machine-readable preflight checks without starting capture")
+	flag.StringVar(&explain, "explain", "", "report which resolver would answer a name, and what each one says, without starting capture")
 	flag.StringVar(&checkTarget, "check-target", "1.1.1.1:443", "numeric TCP destination used by --check SOCKS5 CONNECT")
 	flag.BoolVar(&metadataUsername, "metadata-username", false, "encode process identity in the SOCKS5 username")
 	flag.StringVar(&metadataSocket, "metadata-socket", "", "optional Unix socket exposing process metadata by SOCKS source port")
@@ -82,6 +87,13 @@ func run() error {
 	flag.Var(&includeDst, "include-destination", "capture CIDR prefix (repeatable)")
 	flag.Var(&excludeDst, "exclude-destination", "exclude CIDR prefix (repeatable)")
 	flag.Var(&localDomain, "local-domain", "name suffix the DNS override leaves with the application's own resolver (repeatable)")
+	flag.StringVar(&dnsDirect, "dns-direct", os.Getenv("TUNLESS_DNS_DIRECT"), "numeric resolver reached without the proxy; enables answer-based selection with --dns-direct-prefix")
+	flag.Var(&directDomain, "direct-domain", "name suffix answered by the direct resolver without adjudication (repeatable)")
+	flag.Var(&trustedDomain, "trusted-domain", "name suffix answered only by the trusted resolver, never asked on the direct path (repeatable)")
+	flag.Var(&directPrefix, "dns-direct-prefix", "CIDR prefix that makes a direct answer credible (repeatable)")
+	flag.StringVar(&directDomainFile, "direct-domain-file", os.Getenv("TUNLESS_DIRECT_DOMAIN_FILE"), "file of --direct-domain suffixes, one per line")
+	flag.StringVar(&trustedDomainFile, "trusted-domain-file", os.Getenv("TUNLESS_TRUSTED_DOMAIN_FILE"), "file of --trusted-domain suffixes, one per line")
+	flag.StringVar(&directPrefixFile, "dns-direct-prefix-file", os.Getenv("TUNLESS_DNS_DIRECT_PREFIX_FILE"), "file of --dns-direct-prefix CIDRs, one per line")
 	flag.Parse()
 	disableFlagSet := false
 	flag.Visit(func(item *flag.Flag) {
@@ -193,7 +205,23 @@ func run() error {
 	if !disableDNSOverride {
 		client.DNSOverride = dnsTarget
 	}
-	client.LocalDomains = localDomain
+	policy, err := buildDNSPolicy(dnsPolicyOptions{
+		localDomains:      localDomain,
+		directDomains:     directDomain,
+		trustedDomains:    trustedDomain,
+		directPrefixes:    directPrefix,
+		directDomainFile:  directDomainFile,
+		trustedDomainFile: trustedDomainFile,
+		directPrefixFile:  directPrefixFile,
+		directResolver:    dnsDirect,
+		overrideEnabled:   !disableDNSOverride,
+	})
+	if err != nil {
+		return err
+	}
+	client.DNSPolicy = policy
+	client.DNSStats = &socks5.DNSStats{}
+	logDNSPolicy(logger, policy)
 	filter := tunless.Filter{
 		IncludeProcesses: includeProc,
 		ExcludeProcesses: excludeProc,
@@ -253,6 +281,11 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown backend %q", backendName)
 	}
+	if explain != "" {
+		explainCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return explainName(explainCtx, os.Stdout, explain, policy, client, dnsTarget)
+	}
 	if check {
 		target, targetErr := netip.ParseAddrPort(checkTarget)
 		if targetErr != nil || target.Port() == 0 {
@@ -303,10 +336,25 @@ func run() error {
 			Listen:   dnsListen,
 			Upstream: dnsUpstream,
 			UDPExchange: func(exchangeCtx context.Context, query []byte) ([]byte, error) {
-				return client.ExchangeDNSUDP(exchangeCtx, dnsTarget, query)
+				return client.ResolveWithPolicy(exchangeCtx, query, func(inner context.Context, message []byte) ([]byte, error) {
+					return client.ExchangeDNSUDP(inner, dnsTarget, message)
+				})
 			},
 			TCPExchange: func(exchangeCtx context.Context, query []byte) ([]byte, error) {
-				return client.ExchangeDNSTCP(exchangeCtx, dnsTarget, query)
+				return client.ResolveWithPolicy(exchangeCtx, query, func(inner context.Context, message []byte) ([]byte, error) {
+					return client.ExchangeDNSTCP(inner, dnsTarget, message)
+				})
+			},
+			// Only answers the trusted resolver produced may be learned from,
+			// and a query the policy may send elsewhere is not one this
+			// listener can vouch for. See Observer.RecordAnswer.
+			RecordAnswer: func(query []byte) bool {
+				switch policy.Decide(query).Route {
+				case dnspolicy.RouteTrusted, dnspolicy.RouteLocal:
+					return true
+				default:
+					return false
+				}
 			},
 		}
 		resolver = observer
@@ -333,15 +381,19 @@ func run() error {
 			dnsStatus = dnsTarget.String()
 		}
 		server := &statusapi.Server{
-			Address:       statusListen,
-			Version:       version,
-			BackendName:   backendName,
-			Upstream:      client.Address,
-			DNSUpstream:   dnsStatus,
-			DNSOverride:   !disableDNSOverride,
-			MaxConcurrent: maxFlows,
-			Stats:         stats,
-			Backend:       backend,
+			Address:           statusListen,
+			Version:           version,
+			BackendName:       backendName,
+			Upstream:          client.Address,
+			DNSUpstream:       dnsStatus,
+			DNSDirect:         dnsDirectStatus(policy),
+			DNSNameSuffixes:   policy.Suffixes.Len(),
+			DNSCredibleRanges: policy.Prefixes.Len(),
+			DNSCounters:       client.DNSSnapshot,
+			DNSOverride:       !disableDNSOverride,
+			MaxConcurrent:     maxFlows,
+			Stats:             stats,
+			Backend:           backend,
 		}
 		go func() {
 			if err := server.Serve(ctx); err != nil && ctx.Err() == nil {

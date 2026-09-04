@@ -12,18 +12,30 @@ import (
 	"time"
 
 	"github.com/bojieli/tunless"
+	"github.com/bojieli/tunless/socks5"
 	"golang.org/x/net/netutil"
 )
 
 const maxStatusConnections = 128
 
 type Server struct {
-	Address       string
-	Version       string
-	BackendName   string
-	Upstream      string
-	DNSUpstream   string
-	DNSOverride   bool
+	Address     string
+	Version     string
+	BackendName string
+	Upstream    string
+	DNSUpstream string
+	DNSOverride bool
+	// DNSDirect, DNSNameSuffixes and DNSCredibleRanges describe the DNS policy
+	// as configured, so that a list which loaded empty or a prefix file that
+	// collapsed to nothing is visible without reading the startup log.
+	DNSDirect         string
+	DNSNameSuffixes   int
+	DNSCredibleRanges int
+	// DNSCounters reports what the policy actually decided. Nil omits the
+	// section, which is what a caller that has no DNS datapath to report should
+	// do; a caller that has one reports it even when every counter is zero,
+	// because an inert policy is a thing an operator has to be able to see.
+	DNSCounters   func() socks5.DNSStatsSnapshot
 	MaxConcurrent int
 	Stats         *tunless.Stats
 	Backend       tunless.Backend
@@ -46,6 +58,7 @@ type response struct {
 	Upstream      string                     `json:"upstream"`
 	DNSUpstream   string                     `json:"dns_upstream"`
 	DNSOverride   bool                       `json:"dns_override"`
+	DNSPolicy     *dnsPolicyResponse         `json:"dns_policy,omitempty"`
 	MaxConcurrent int                        `json:"max_concurrent_flows"`
 	Flows         tunless.StatsSnapshot      `json:"flows"`
 	Capture       tunless.BackendDiagnostics `json:"capture"`
@@ -153,6 +166,26 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+// dnsPolicyResponse is the configured policy and what it has decided.
+type dnsPolicyResponse struct {
+	Direct         string                  `json:"direct_resolver,omitempty"`
+	NameSuffixes   int                     `json:"name_suffixes"`
+	CredibleRanges int                     `json:"credible_ranges"`
+	Decisions      socks5.DNSStatsSnapshot `json:"decisions"`
+}
+
+func (s *Server) dnsPolicy() *dnsPolicyResponse {
+	if s.DNSCounters == nil {
+		return nil
+	}
+	return &dnsPolicyResponse{
+		Direct:         s.DNSDirect,
+		NameSuffixes:   s.DNSNameSuffixes,
+		CredibleRanges: s.DNSCredibleRanges,
+		Decisions:      s.DNSCounters(),
+	}
+}
+
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -171,6 +204,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		Upstream:      s.Upstream,
 		DNSUpstream:   s.DNSUpstream,
 		DNSOverride:   s.DNSOverride,
+		DNSPolicy:     s.dnsPolicy(),
 		MaxConcurrent: s.MaxConcurrent,
 		Flows:         flows,
 		Capture:       capture,

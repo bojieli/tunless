@@ -78,6 +78,24 @@ struct LauncherConfiguration: Codable, Equatable {
     /// resolver, on top of the reserved and private name spaces the provider
     /// recognises without being told.
     let localDomains: [String]?
+    /// A resolver reached without the proxy, enabling answer-based selection
+    /// together with `directPrefixes`.
+    let directDNSHost: String?
+    let directDNSPort: UInt16?
+    /// Name suffixes answered by the direct resolver without adjudication.
+    let directDomains: [String]?
+    /// Name suffixes answered only by the trusted resolver, never asked on the
+    /// direct path.
+    let trustedDomains: [String]?
+    /// Addresses that make an answer from the direct resolver credible.
+    ///
+    /// The launcher reads the list files and passes their contents, rather than
+    /// passing a path for the extension to open. A system extension runs
+    /// sandboxed and outside the operator's session; handing it a path is
+    /// handing it something it may not be able to read and cannot report well
+    /// when it cannot. The parse errors belong where the operator can see them,
+    /// which is here.
+    let directPrefixes: [String]?
 
     /// A copy that records what the DNS preflight observed about UDP.
     func expectingUDPRelay(_ expected: Bool) -> LauncherConfiguration {
@@ -126,6 +144,13 @@ struct LauncherArguments: Equatable {
         var includeDestinations: [String] = []
         var excludeDestinations: [String] = []
         var localDomains: [String] = []
+        var directDomains: [String] = []
+        var trustedDomains: [String] = []
+        var directPrefixes: [String] = []
+        var directDNSOption: String?
+        var directDomainFile: String?
+        var trustedDomainFile: String?
+        var directPrefixFile: String?
         var skipVerifyOption: Bool?
         var defaultExclusionsOption: Bool?
 		var captureBoundFlowsOption: Bool?
@@ -195,6 +220,27 @@ struct LauncherArguments: Equatable {
             case "--local-domain":
                 localDomains.append(try value(after: index, for: argument))
                 index += 1
+            case "--direct-domain":
+                directDomains.append(try value(after: index, for: argument))
+                index += 1
+            case "--trusted-domain":
+                trustedDomains.append(try value(after: index, for: argument))
+                index += 1
+            case "--dns-direct-prefix":
+                directPrefixes.append(try value(after: index, for: argument))
+                index += 1
+            case "--dns-direct":
+                directDNSOption = try value(after: index, for: argument)
+                index += 1
+            case "--direct-domain-file":
+                directDomainFile = try value(after: index, for: argument)
+                index += 1
+            case "--trusted-domain-file":
+                trustedDomainFile = try value(after: index, for: argument)
+                index += 1
+            case "--dns-direct-prefix-file":
+                directPrefixFile = try value(after: index, for: argument)
+                index += 1
             default:
                 if let pair = Self.optionPair(argument) {
                     switch pair.name {
@@ -215,6 +261,13 @@ struct LauncherArguments: Equatable {
                     case "--include-destination": includeDestinations.append(pair.value)
                     case "--exclude-destination": excludeDestinations.append(pair.value)
                     case "--local-domain": localDomains.append(pair.value)
+                    case "--direct-domain": directDomains.append(pair.value)
+                    case "--trusted-domain": trustedDomains.append(pair.value)
+                    case "--dns-direct-prefix": directPrefixes.append(pair.value)
+                    case "--dns-direct": directDNSOption = pair.value
+                    case "--direct-domain-file": directDomainFile = pair.value
+                    case "--trusted-domain-file": trustedDomainFile = pair.value
+                    case "--dns-direct-prefix-file": directPrefixFile = pair.value
                     default: throw LauncherArgumentError.unknownOption(pair.name)
                     }
                 } else if argument.hasPrefix("-") {
@@ -306,6 +359,22 @@ struct LauncherArguments: Equatable {
         includeDestinations.append(contentsOf: Self.environmentList("TUNLESS_INCLUDE_DESTINATION", environment: environment))
         excludeDestinations.append(contentsOf: Self.environmentList("TUNLESS_EXCLUDE_DESTINATION", environment: environment))
         localDomains.append(contentsOf: Self.environmentList("TUNLESS_LOCAL_DOMAIN", environment: environment))
+        directDomains.append(contentsOf: Self.environmentList("TUNLESS_DIRECT_DOMAIN", environment: environment))
+        trustedDomains.append(contentsOf: Self.environmentList("TUNLESS_TRUSTED_DOMAIN", environment: environment))
+        directPrefixes.append(contentsOf: Self.environmentList("TUNLESS_DNS_DIRECT_PREFIX", environment: environment))
+        if directDNSOption == nil { directDNSOption = environment["TUNLESS_DNS_DIRECT"] }
+        if directDomainFile == nil { directDomainFile = environment["TUNLESS_DIRECT_DOMAIN_FILE"] }
+        if trustedDomainFile == nil { trustedDomainFile = environment["TUNLESS_TRUSTED_DOMAIN_FILE"] }
+        if directPrefixFile == nil { directPrefixFile = environment["TUNLESS_DNS_DIRECT_PREFIX_FILE"] }
+        if let path = directDomainFile {
+            directDomains.append(contentsOf: try Self.readListFile(path, option: "--direct-domain-file"))
+        }
+        if let path = trustedDomainFile {
+            trustedDomains.append(contentsOf: try Self.readListFile(path, option: "--trusted-domain-file"))
+        }
+        if let path = directPrefixFile {
+            directPrefixes.append(contentsOf: try Self.readListFile(path, option: "--dns-direct-prefix-file"))
+        }
         if let preset {
             excludeProcesses.insert(contentsOf: preset.excludedProcesses, at: 0)
         }
@@ -332,6 +401,45 @@ struct LauncherArguments: Equatable {
                 contentsOf: DefaultExclusions.destinations.filter { !requested.contains($0) })
         }
 
+        // The direct resolver and its credible-address set are validated here
+        // rather than in the extension, because every incoherent combination
+        // has a runtime appearance identical to the feature working perfectly
+        // and finding nothing to do — which is the one failure an operator
+        // cannot distinguish by looking.
+        var directDNSHost: String?
+        var directDNSPort: UInt16?
+        if let directDNS = directDNSOption, !directDNS.isEmpty {
+            guard disableDNSOverride != true else {
+                throw LauncherArgumentError.directResolverWithoutOverride
+            }
+            let parts = directDNS.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count >= 2, let port = UInt16(parts[parts.count - 1]), port > 0 else {
+                throw LauncherArgumentError.invalidDirectResolver(directDNS)
+            }
+            var host = parts.dropLast().joined(separator: ":")
+            if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
+            guard !host.isEmpty, IPv4Address(host) != nil || IPv6Address(host) != nil else {
+                throw LauncherArgumentError.invalidDirectResolver(directDNS)
+            }
+            guard !directPrefixes.isEmpty else {
+                throw LauncherArgumentError.directResolverWithoutPrefixes
+            }
+            directDNSHost = host
+            directDNSPort = port
+        } else if !directPrefixes.isEmpty {
+            throw LauncherArgumentError.prefixesWithoutDirectResolver
+        }
+        for prefix in directPrefixes where !Self.validDirectPrefix(prefix) {
+            throw LauncherArgumentError.invalidDirectPrefix(prefix)
+        }
+        // A list is thousands of lines nobody reads. A line that cannot mean
+        // anything has to be reported, not skipped: skipping it produces a
+        // policy that is quietly missing an entry the operator believes is
+        // there.
+        for suffix in directDomains + trustedDomains where !Self.validDomainSuffix(suffix) {
+            throw LauncherArgumentError.invalidDomainSuffix(suffix)
+        }
+
         configuration = LauncherConfiguration(
             upstreamHost: upstreamHost,
             upstreamPort: UInt16(parsedPort),
@@ -347,7 +455,78 @@ struct LauncherArguments: Equatable {
             disableHealthWatchdog: disableWatchdogOption,
             maxConcurrentFlows: maxFlowsOption,
             expectUDPRelay: nil,
-            localDomains: Self.optionalUnique(localDomains))
+            localDomains: Self.optionalUnique(localDomains),
+            directDNSHost: directDNSHost,
+            directDNSPort: directDNSPort,
+            directDomains: Self.optionalUnique(directDomains),
+            trustedDomains: Self.optionalUnique(trustedDomains),
+            directPrefixes: Self.optionalUnique(directPrefixes))
+    }
+
+    /// Reads a list file: one entry per line, blanks and comments skipped, an
+    /// inline comment ending a line.
+    ///
+    /// Nothing else about the format is negotiable. This reads a list, not a
+    /// configuration language, and the moment it parses somebody else's file
+    /// format it owns that format's next revision.
+    static func readListFile(_ path: String, option: String) throws -> [String] {
+        guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
+            throw LauncherArgumentError.unreadableList(option, path)
+        }
+        var entries: [String] = []
+        for line in contents.split(separator: "\n", omittingEmptySubsequences: false) {
+            var entry = String(line)
+            if let cut = entry.firstIndex(where: { $0 == "#" || $0 == ";" }) {
+                entry = String(entry[..<cut])
+            }
+            let trimmed = entry.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            entries.append(trimmed)
+            // Bounded so that a path pointed at the wrong file fails with a
+            // clear message instead of being read into memory.
+            if entries.count > 1_048_576 {
+                throw LauncherArgumentError.unreadableList(option, path)
+            }
+        }
+        return entries
+    }
+
+    /// Whether an entry is a usable name suffix.
+    ///
+    /// Matched on label boundaries later, so an empty label, an over-long one,
+    /// or embedded whitespace cannot mean anything and is refused here rather
+    /// than dropped where nobody sees it. A trailing root label is fine: it is
+    /// valid FQDN syntax and plenty of generated lists carry it.
+    static func validDomainSuffix(_ entry: String) -> Bool {
+        var candidate = entry.trimmingCharacters(in: .whitespaces).lowercased()
+        while candidate.hasSuffix(".") { candidate.removeLast() }
+        guard !candidate.isEmpty else { return false }
+        guard !candidate.contains(where: { $0 == " " || $0 == "\t" }) else { return false }
+        let labels = candidate.split(separator: ".", omittingEmptySubsequences: false)
+        return !labels.contains { $0.isEmpty || $0.utf8.count > 63 }
+    }
+
+    /// Whether an entry is a CIDR prefix or a bare address.
+    ///
+    /// A bare address is accepted as a host route, because a hand-written
+    /// exception list is easier to read without a /32 on every line and every
+    /// line that omits one plainly means the single address.
+    static func validDirectPrefix(_ entry: String) -> Bool {
+        let trimmed = entry.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        let parts = trimmed.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        let host = String(parts[0])
+        let width: Int
+        if IPv4Address(host) != nil {
+            width = 32
+        } else if IPv6Address(host) != nil {
+            width = 128
+        } else {
+            return false
+        }
+        guard parts.count == 2 else { return true }
+        guard let bits = Int(parts[1]), bits >= 0, bits <= width else { return false }
+        return true
     }
 
     private static func optionPair(_ argument: String) -> (name: String, value: String)? {
@@ -391,6 +570,13 @@ enum LauncherArgumentError: LocalizedError, Equatable {
     case invalidDNSUpstream(String)
     case credentialsTooLong
     case invalidFlowCeiling(String)
+    case invalidDirectResolver(String)
+    case unreadableList(String, String)
+    case directResolverWithoutPrefixes
+    case prefixesWithoutDirectResolver
+    case directResolverWithoutOverride
+    case invalidDirectPrefix(String)
+    case invalidDomainSuffix(String)
 
     var errorDescription: String? {
         switch self {
@@ -404,6 +590,16 @@ enum LauncherArgumentError: LocalizedError, Equatable {
         case let .invalidDNSUpstream(value): return "invalid DNS upstream \(value); expected a numeric IP:port"
         case .credentialsTooLong: return "SOCKS5 username and password must each be at most 255 bytes"
         case let .invalidFlowCeiling(value): return "--max-flows must be a positive integer, got \(value)"
+        case let .invalidDirectResolver(value): return "invalid --dns-direct \(value); expected a numeric IP:port"
+        case let .unreadableList(option, path): return "\(option) could not read \(path)"
+        case .directResolverWithoutPrefixes:
+            return "--dns-direct needs --dns-direct-prefix or --dns-direct-prefix-file: without addresses to judge by, no direct answer can ever be believed"
+        case .prefixesWithoutDirectResolver:
+            return "--dns-direct-prefix needs --dns-direct: prefixes judge answers from a direct resolver, and no direct resolver is configured"
+        case .directResolverWithoutOverride:
+            return "--disable-dns-override leaves every query with the application's own resolver, so --dns-direct has nothing to route"
+        case let .invalidDirectPrefix(value): return "invalid --dns-direct-prefix \(value); expected a CIDR prefix or a bare address"
+        case let .invalidDomainSuffix(value): return "invalid name suffix \(value); expected a domain name such as example.com"
         }
     }
 }
