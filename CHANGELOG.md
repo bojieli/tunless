@@ -3,7 +3,7 @@
 This project follows semantic versioning after its first public release. Dates
 use ISO 8601.
 
-## Unreleased
+## 0.4.1 — 2026-09-04
 
 ### Added
 
