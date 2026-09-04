@@ -111,6 +111,9 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         lock.lock()
         configuration = validated
         stopping = false
+        // The deadline is configuration, so the machine is rebuilt here rather
+        // than carrying whatever the previous session was started with.
+        health = CaptureHealth(degradedSeconds: validated.degradedTimeout)
         lock.unlock()
 
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
@@ -342,7 +345,36 @@ public final class TransparentProxyProvider: NETransparentProxyProvider, NEAppPr
         case .unchanged: break
         case let .pause(reason): standDown(reason, watchdogSession: session)
         case .resume: standUp(watchdogSession: session)
+        case let .rollBack(reason): rollBackCapture(reason, watchdogSession: session)
         }
+    }
+
+    /// Gives capture up after it has been degraded past its deadline.
+    ///
+    /// Standing down is the right answer while the upstream is coming back.
+    /// It is the wrong answer once it is not, and it cannot tell the
+    /// difference: a circular dependency, where the upstream needs a name
+    /// resolved that only the upstream can resolve, makes recovery impossible
+    /// by construction and every probe fails identically to a transient
+    /// outage. So the deadline decides, and the response is the one the
+    /// launcher already makes to a failed post-start verification — take
+    /// capture off the host and say why, rather than hold its traffic
+    /// indefinitely.
+    ///
+    /// Datagram flows are not closed here. Cancelling the provider is the
+    /// system's own teardown path and returns those sockets with it; closing
+    /// them by hand is what the datagram-flow invariant forbids.
+    private func rollBackCapture(_ reason: String, watchdogSession session: UInt64) {
+        lock.lock()
+        guard !stopping, session == watchdogSession else {
+            lock.unlock()
+            return
+        }
+        stopping = true
+        lock.unlock()
+        note("capture rolled back: \(reason). Capture is off and traffic follows the"
+            + " host's own routes; restart it once the upstream can resolve names again")
+        cancelProxyWithError(CaptureRollbackError.degradedTooLong(reason))
     }
 
     /// Marks the upstream unhealthy and tears down streams that cannot be

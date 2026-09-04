@@ -70,6 +70,9 @@ struct LauncherConfiguration: Codable, Equatable {
 	let captureBoundFlows: Bool?
     let disableHealthWatchdog: Bool?
     let maxConcurrentFlows: Int?
+    /// Seconds capture may stay degraded before rolling itself back. Zero keeps
+    /// it degraded indefinitely, which is what it did before the deadline.
+    let degradedTimeoutSeconds: Int?
     /// Whether preflight proved the upstream relays DNS over UDP. Filled in
     /// after the probe runs, so the provider's watchdog knows what working
     /// looked like at start rather than assuming TCP is the whole story.
@@ -156,6 +159,7 @@ struct LauncherArguments: Equatable {
 		var captureBoundFlowsOption: Bool?
         var disableWatchdogOption: Bool?
         var maxFlowsOption: Int?
+        var degradedTimeoutOption: Int?
 
         func select(_ action: LauncherAction) throws {
             if actionWasSelected && selectedAction != action {
@@ -196,6 +200,9 @@ struct LauncherArguments: Equatable {
             case "--no-health-watchdog": disableWatchdogOption = true
             case "--max-flows":
                 maxFlowsOption = try Self.flowCeiling(try value(after: index, for: argument))
+                index += 1
+            case "--degraded-timeout":
+                degradedTimeoutOption = try Self.degradedTimeout(try value(after: index, for: argument))
                 index += 1
             case "--preset":
                 presetName = try value(after: index, for: argument)
@@ -256,6 +263,8 @@ struct LauncherArguments: Equatable {
                     case "--no-health-watchdog":
                         disableWatchdogOption = try Self.boolean(pair.value, name: pair.name)
                     case "--max-flows": maxFlowsOption = try Self.flowCeiling(pair.value)
+                    case "--degraded-timeout":
+                        degradedTimeoutOption = try Self.degradedTimeout(pair.value)
                     case "--include-process": includeProcesses.append(pair.value)
                     case "--exclude-process": excludeProcesses.append(pair.value)
                     case "--include-destination": includeDestinations.append(pair.value)
@@ -382,6 +391,9 @@ struct LauncherArguments: Equatable {
         if maxFlowsOption == nil, let raw = environment["TUNLESS_MAX_FLOWS"] {
             maxFlowsOption = try Self.flowCeiling(raw)
         }
+        if degradedTimeoutOption == nil, let raw = environment["TUNLESS_DEGRADED_TIMEOUT"] {
+            degradedTimeoutOption = try Self.degradedTimeout(raw)
+        }
 		if captureBoundFlowsOption == nil, let raw = environment["TUNLESS_CAPTURE_BOUND_FLOWS"] {
 			captureBoundFlowsOption = try Self.boolean(raw, name: "TUNLESS_CAPTURE_BOUND_FLOWS")
 		}
@@ -454,6 +466,7 @@ struct LauncherArguments: Equatable {
 			captureBoundFlows: captureBoundFlowsOption,
             disableHealthWatchdog: disableWatchdogOption,
             maxConcurrentFlows: maxFlowsOption,
+            degradedTimeoutSeconds: degradedTimeoutOption,
             expectUDPRelay: nil,
             localDomains: Self.optionalUnique(localDomains),
             directDNSHost: directDNSHost,
@@ -539,6 +552,15 @@ struct LauncherArguments: Equatable {
         return value
     }
 
+    /// Zero is allowed and means "never roll back", so this is non-negative
+    /// rather than positive.
+    private static func degradedTimeout(_ raw: String) throws -> Int {
+        guard let value = Int(raw), value >= 0 else {
+            throw LauncherArgumentError.invalidDegradedTimeout(raw)
+        }
+        return value
+    }
+
     private static func boolean(_ raw: String, name: String) throws -> Bool {
         switch raw.lowercased() {
         case "1", "true", "yes", "on": return true
@@ -570,6 +592,7 @@ enum LauncherArgumentError: LocalizedError, Equatable {
     case invalidDNSUpstream(String)
     case credentialsTooLong
     case invalidFlowCeiling(String)
+    case invalidDegradedTimeout(String)
     case invalidDirectResolver(String)
     case unreadableList(String, String)
     case directResolverWithoutPrefixes
@@ -590,6 +613,8 @@ enum LauncherArgumentError: LocalizedError, Equatable {
         case let .invalidDNSUpstream(value): return "invalid DNS upstream \(value); expected a numeric IP:port"
         case .credentialsTooLong: return "SOCKS5 username and password must each be at most 255 bytes"
         case let .invalidFlowCeiling(value): return "--max-flows must be a positive integer, got \(value)"
+        case let .invalidDegradedTimeout(value):
+            return "--degraded-timeout must be a non-negative number of seconds, got \(value)"
         case let .invalidDirectResolver(value): return "invalid --dns-direct \(value); expected a numeric IP:port"
         case let .unreadableList(option, path): return "\(option) could not read \(path)"
         case .directResolverWithoutPrefixes:

@@ -7,9 +7,13 @@ final class CaptureHealthTests: XCTestCase {
     private func armed(
         probation: TimeInterval = 45,
         failures: Int = 3,
-        confirmed: Bool = true
+        confirmed: Bool = true,
+        degraded: TimeInterval = 300
     ) -> CaptureHealth {
-        var health = CaptureHealth(probationSeconds: probation, failuresBeforePause: failures)
+        var health = CaptureHealth(
+            probationSeconds: probation,
+            failuresBeforePause: failures,
+            degradedSeconds: degraded)
         health.arm(at: start)
         if confirmed { health.confirm() }
         return health
@@ -324,6 +328,81 @@ final class CaptureHealthTests: XCTestCase {
         XCTAssertTrue(DNSProbeOutcome(tcp: true, udp: true).healthy)
     }
 
+
+    // MARK: - Bounding the degraded state
+
+    func testDegradationIsRolledBackOnceItsDeadlinePasses() {
+        var health = armed()
+        XCTAssertNotNil(failUntilPaused(&health, at: start))
+        XCTAssertTrue(health.shouldDeclineFlows)
+        // Inside the deadline the upstream is still allowed to come back, and
+        // every failing probe is absorbed exactly as it was before.
+        XCTAssertEqual(
+            health.observe(succeeded: false, pathSatisfied: true, at: start.addingTimeInterval(299)),
+            .unchanged)
+        guard case let .rollBack(reason) = health.observe(
+            succeeded: false, pathSatisfied: true, at: start.addingTimeInterval(300))
+        else {
+            return XCTFail("a degraded session must not fail closed forever")
+        }
+        XCTAssertTrue(reason.contains("300s"))
+    }
+
+    func testDeadlineFiresEvenWhenProbesStopArriving() {
+        // The cycle this bounds can stop `observe` being called at all, so the
+        // timer has to carry the deadline on its own.
+        var health = armed()
+        XCTAssertNotNil(failUntilPaused(&health, at: start))
+        XCTAssertEqual(health.probationDecision(at: start.addingTimeInterval(299)), .unchanged)
+        guard case .rollBack = health.probationDecision(at: start.addingTimeInterval(301)) else {
+            return XCTFail("a silent upstream must still exhaust the deadline")
+        }
+    }
+
+    func testRecoveryInsideTheDeadlineDisarmsIt() {
+        var health = armed()
+        XCTAssertNotNil(failUntilPaused(&health, at: start))
+        XCTAssertEqual(
+            health.observe(succeeded: true, pathSatisfied: true, at: start.addingTimeInterval(30)),
+            .resume)
+        XCTAssertFalse(health.shouldDeclineFlows)
+        XCTAssertEqual(health.probationDecision(at: start.addingTimeInterval(6000)), .unchanged)
+    }
+
+    func testZeroDeadlineKeepsTheOldUnboundedBehaviour() {
+        // Fail-closed forever stays available for operators who would rather
+        // have the host offline than have capture stand aside.
+        var health = armed(degraded: 0)
+        XCTAssertNotNil(failUntilPaused(&health, at: start))
+        XCTAssertEqual(health.probationDecision(at: start.addingTimeInterval(100_000)), .unchanged)
+        XCTAssertTrue(health.shouldDeclineFlows)
+    }
+
+    func testSleepDoesNotSpendTheDeadline() {
+        var health = armed()
+        XCTAssertNotNil(failUntilPaused(&health, at: start))
+        health.systemWillSleep()
+        let wake = start.addingTimeInterval(8 * 3600)
+        health.systemDidWake(at: wake)
+        // Nothing is believed during the wake grace, and the deadline is
+        // measured from the wake rather than from before a sleep that used no
+        // network at all.
+        XCTAssertEqual(health.probationDecision(at: wake), .unchanged)
+        XCTAssertEqual(health.probationDecision(at: wake.addingTimeInterval(21)), .unchanged)
+        guard case .rollBack = health.probationDecision(at: wake.addingTimeInterval(301)) else {
+            return XCTFail("the deadline must still run once the host is awake")
+        }
+    }
+
+    func testANewPathStartsANewDeadline() {
+        var health = armed()
+        XCTAssertNotNil(failUntilPaused(&health, at: start))
+        XCTAssertEqual(health.networkDidChange(at: start.addingTimeInterval(100)), .unchanged)
+        XCTAssertFalse(health.shouldDeclineFlows)
+        if case .rollBack = health.probationDecision(at: start.addingTimeInterval(9_000)) {
+            XCTFail("a new path must start its own deadline, not inherit the old one's")
+        }
+    }
 }
 
 /// What the watchdog probes when the operator turned the DNS override off.
