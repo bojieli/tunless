@@ -58,6 +58,22 @@ use ISO 8601.
 
 ### Changed
 
+- **A settled adjudication no longer delivers the answer it rejected.** Both
+  resolvers are asked, so the losing half is still in flight when the verdict is
+  reached. The arbiter deleted the exchange as soon as it settled, which made
+  the `settled` branches in `deliverTrusted` and `completeDirect` unreachable:
+  the late half was disowned, treated as an ordinary forwarded reply, restored
+  against a translation that no longer existed, and written to the application
+  as a second datagram carrying an unrewritten identifier — carrying,
+  specifically, the answer adjudication had just decided not to serve. The
+  exchange is now kept as a tombstone until the adjudication deadline, which is
+  what those branches were written for, and the datapath asks the arbiter rather
+  than the translation map whether an identifier is its own. The identifier
+  still goes back at the verdict, and cannot go back twice.
+
+  This was reachable whenever the direct half won a race it usually wins by a
+  wide margin, so it showed up first as a flaky test rather than as a report.
+
 - `socks5.Client.LocalDomains` is replaced by `socks5.Client.DNSPolicy`, which
   carries the split-horizon suffixes along with the rest of the policy.
   `--local-domain` is unchanged and still outranks every other layer.

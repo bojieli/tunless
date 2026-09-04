@@ -145,6 +145,71 @@ func TestTheApplicationGetsItsOwnTransactionIDAndResolverBack(t *testing.T) {
 	}
 }
 
+func TestALateTrustedHalfIsDroppedAfterTheVerdict(t *testing.T) {
+	// Both halves are asked, so the losing one is still in flight when the
+	// verdict is reached. It carries the answer adjudication just rejected. If
+	// the arbiter disowns it, the datapath treats it as an ordinary forwarded
+	// reply and the application receives a second datagram — the rejected one.
+	policy := adjudicatingPolicy(t)
+	h := newArbiterHarness(t, policy)
+	appResolver := netip.MustParseAddrPort("192.168.1.1:53")
+
+	rewritten := dnsQuery(0x9999, "www", "example", "com")
+	if !h.arbiter.begin(0x9999, 0x1234, appResolver, rewritten) {
+		t.Fatal("begin declined a query")
+	}
+	h.arbiter.deliverDirect(dnsAnswer(t, rewritten, "www.example.com.", "203.0.113.7"), policy.DirectResolver)
+	served := h.await(t)
+	if addresses := dnspolicy.ReplyAddresses(served.payload); len(addresses) != 1 || addresses[0].String() != "203.0.113.7" {
+		t.Fatalf("served %v, want the direct answer", addresses)
+	}
+
+	late := dnsAnswer(t, rewritten, "www.example.com.", "192.0.2.9")
+	if !h.arbiter.deliverTrusted(late, 0x9999) {
+		t.Fatal("the late trusted half was disowned and would reach the application raw")
+	}
+	select {
+	case extra := <-h.delivered:
+		t.Fatalf("a second reply reached the application: %v", dnspolicy.ReplyAddresses(extra.payload))
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestTheDeadlineRetiresASettledExchange(t *testing.T) {
+	// The tombstone is what recognises a late half, but it must not outlive the
+	// deadline: a long-lived flow would otherwise accumulate one per query. The
+	// identifier went back at the verdict and must not go back a second time,
+	// or a later exchange that has since been given it would lose it.
+	policy := adjudicatingPolicy(t)
+	h := newArbiterHarness(t, policy)
+	appResolver := netip.MustParseAddrPort("192.168.1.1:53")
+
+	rewritten := dnsQuery(0x9999, "www", "example", "com")
+	if !h.arbiter.begin(0x9999, 0x1234, appResolver, rewritten) {
+		t.Fatal("begin declined a query")
+	}
+	h.arbiter.deliverDirect(dnsAnswer(t, rewritten, "www.example.com.", "203.0.113.7"), policy.DirectResolver)
+	h.await(t)
+	select {
+	case id := <-h.released:
+		if id != 0x9999 {
+			t.Fatalf("released %#x, want %#x", id, 0x9999)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the identifier was never released")
+	}
+
+	h.arbiter.expire(0x9999, true)
+	if h.arbiter.deliverTrusted(dnsAnswer(t, rewritten, "www.example.com.", "192.0.2.9"), 0x9999) {
+		t.Error("a retired exchange still claimed a datagram")
+	}
+	select {
+	case id := <-h.released:
+		t.Errorf("identifier %#x was released twice", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestTheTrustedHalfIsHeldUntilTheDirectHalfSettles(t *testing.T) {
 	policy := adjudicatingPolicy(t)
 	h := newArbiterHarness(t, policy)
