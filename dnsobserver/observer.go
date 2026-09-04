@@ -26,17 +26,30 @@ type Observer struct {
 	MaxRecords  int
 	UDPExchange func(context.Context, []byte) ([]byte, error)
 	TCPExchange func(context.Context, []byte) ([]byte, error)
-	mu          sync.Mutex
-	records     map[netip.Addr]map[string]time.Time
-	recordCount int
-	stateMu     sync.Mutex
-	udp         *net.UDPConn
-	tcp         net.Listener
-	closed      bool
-	serving     bool
-	sem         chan struct{}
-	wg          sync.WaitGroup
-	close       sync.Once
+	// RecordAnswer reports whether the answer to a query may enter the
+	// address-to-name map. Nil records every answer, which is correct while
+	// every answer comes from the trusted resolver.
+	//
+	// It is asked about the question rather than about the answer, because the
+	// question is what decides which resolver was asked and the answer is not
+	// required to admit where it came from. A query whose route the caller
+	// cannot vouch for is simply not recorded: the association would decide
+	// which hostname a later flow is proxied under, and one learned from an
+	// answer that arrived on the network's own path lets whoever supplied that
+	// answer choose that name. Losing a recording costs precision on one flow.
+	// Making a wrong one costs the guarantee.
+	RecordAnswer func(query []byte) bool
+	mu           sync.Mutex
+	records      map[netip.Addr]map[string]time.Time
+	recordCount  int
+	stateMu      sync.Mutex
+	udp          *net.UDPConn
+	tcp          net.Listener
+	closed       bool
+	serving      bool
+	sem          chan struct{}
+	wg           sync.WaitGroup
+	close        sync.Once
 }
 
 const (
@@ -57,6 +70,12 @@ const (
 // A query and reply that do not form a matching exchange are ignored; see
 // observe.
 func (o *Observer) Record(query, reply []byte) { o.observe(query, reply) }
+
+// mayRecord reports whether an answer this listener produced is one the map
+// may learn from.
+func (o *Observer) mayRecord(query []byte) bool {
+	return o.RecordAnswer == nil || o.RecordAnswer(query)
+}
 
 func (o *Observer) Lookup(addr netip.Addr) string {
 	o.mu.Lock()
@@ -272,7 +291,9 @@ func (o *Observer) serveUDP(ctx context.Context) {
 			defer o.release()
 			reply, err := o.exchangeUDP(ctx, query)
 			if err == nil {
-				o.observe(query, reply)
+				if o.mayRecord(query) {
+					o.observe(query, reply)
+				}
 				_, _ = o.udp.WriteToUDPAddrPort(reply, peer)
 			}
 		}()
@@ -334,7 +355,9 @@ func (o *Observer) serveTCP(ctx context.Context, client net.Conn) {
 		if len(reply) > 65535 {
 			return
 		}
-		o.observe(query, reply)
+		if o.mayRecord(query) {
+			o.observe(query, reply)
+		}
 		binary.BigEndian.PutUint16(size[:], uint16(len(reply))) // #nosec G115 -- length is checked immediately above
 		if err = writeAll(client, append(size[:], reply...)); err != nil {
 			return

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bojieli/tunless"
+	"github.com/bojieli/tunless/internal/dnspolicy"
 	"github.com/bojieli/tunless/internal/dnswire"
 )
 
@@ -33,10 +34,14 @@ type Client struct {
 	DNSOverride      netip.AddrPort
 	FlowIdleTimeout  time.Duration
 	UDPIdleTimeout   time.Duration
-	// LocalDomains are name suffixes the DNS override leaves with the
-	// application's own resolver, in addition to the reserved and private name
-	// spaces internal/dnsname recognises on its own.
-	LocalDomains []string
+	// DNSPolicy decides which resolver answers each captured query: the
+	// trusted one through the proxy, the direct one beside it, the
+	// application's own for names only the local network can answer, or both
+	// when the answers themselves are what decides. A nil policy sends every
+	// captured query to the trusted resolver.
+	DNSPolicy *dnspolicy.Policy
+	// DNSStats counts what the policy decided, for the status endpoint.
+	DNSStats *DNSStats
 	// ObserveDNS, when set, receives each query relayed to the trusted resolver
 	// together with its answer, so that the addresses in that answer can be
 	// associated with the name that was asked for.
@@ -47,11 +52,36 @@ type Client struct {
 	// the one that started it.
 	loopGuardOnce sync.Once
 	loopGuard     *resolverLoopGuard
+
+	// breaker is shared for the same reason: whether the direct resolver is
+	// answering is a property of that resolver, not of the flow that asked.
+	breakerOnce sync.Once
+	breaker     *directBreaker
 }
 
 func (c *Client) resolverLoopGuard() *resolverLoopGuard {
 	c.loopGuardOnce.Do(func() { c.loopGuard = newResolverLoopGuard() })
 	return c.loopGuard
+}
+
+func (c *Client) directBreaker() *directBreaker {
+	c.breakerOnce.Do(func() { c.breaker = newDirectBreaker() })
+	return c.breaker
+}
+
+// dnsPolicy returns the configured policy, or one that routes everything to the
+// trusted resolver.
+func (c *Client) dnsPolicy() *dnspolicy.Policy {
+	if c.DNSPolicy != nil {
+		return c.DNSPolicy
+	}
+	return &dnspolicy.Policy{}
+}
+
+// DNSSnapshot reports the DNS policy counters together with the direct
+// resolver's current standing.
+func (c *Client) DNSSnapshot() DNSStatsSnapshot {
+	return c.DNSStats.Snapshot(c.directBreaker().open(time.Now()))
 }
 
 var ErrUDPIdleTimeout = errors.New("SOCKS5 UDP association idle timeout")
@@ -373,21 +403,42 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 		}
 	}
 	guard := c.resolverLoopGuard()
+	policy := c.dnsPolicy()
 	translations := newDNSTransactionMap(4096, 30*time.Second)
-	translations.localDomains = c.LocalDomains
+	translations.policy = policy
 	translations.observe = c.ObserveDNS
-	translations.loopGuard = c.resolverLoopGuard()
+	translations.loopGuard = guard
+	translations.stats = c.DNSStats
 	// Datagrams neither side could carry. Counted rather than ignored, so a
 	// session that quietly loses traffic still says so when it ends.
 	var dropped atomic.Uint64
 	// Replies to datagrams that bypassed the proxy re-enter the flow the same
 	// way relayed ones do, addressed from the destination the sender used.
-	directRelay := newDirectDatagramRelay(func(payload []byte, from netip.AddrPort) {
+	toApplication := func(payload []byte, from netip.AddrPort) {
 		if err := flow.Packets.WritePacket(workerCtx, tunless.Packet{Payload: payload, Dst: from}); err != nil {
 			dropped.Add(1)
 		}
+	}
+	// The arbiter is built after the relay it sends on, and the relay delivers
+	// into the arbiter, so one of the two references has to be resolved when
+	// the datagram arrives rather than when the closure is made.
+	var arbiter *dnsArbiter
+	directRelay := newDirectDatagramRelay(func(payload []byte, from netip.AddrPort) {
+		// A datagram from the direct resolver is either half of an adjudication
+		// the arbiter is holding or the answer to a query the name lists sent
+		// down this path on their own. The arbiter recognises its own; anything
+		// it declines is restored and delivered like any other reply.
+		if arbiter.deliverDirect(payload, from) {
+			return
+		}
+		payload, from = translations.restore(payload, from)
+		toApplication(payload, from)
 	})
 	defer directRelay.close()
+	if policy.Adjudicates() {
+		arbiter = newDNSArbiter(policy, directRelay, toApplication, translations.finish, c.directBreaker(), c.DNSStats)
+		defer arbiter.close()
+	}
 	var workers sync.WaitGroup
 	workers.Add(3)
 	go func() {
@@ -411,19 +462,39 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 				dropped.Add(1)
 				continue
 			}
-			payload, destination, direct := translations.prepare(packet.Payload, packet.Dst, c.DNSOverride)
-			// The upstream's own forwarded copy of a query capture is relaying
-			// goes straight out, which is what keeps claiming an application's
-			// query to the trusted resolver from becoming a loop.
-			if !direct && sameAddrPort(packet.Dst, c.DNSOverride) && guard.relaying(packet.Payload) {
-				payload, destination, direct = packet.Payload, packet.Dst, true
+			payload, destination, route := packet.Payload, packet.Dst, dnsRouteProxy
+			var transaction uint16
+			// A forwarded copy of a query this process is already relaying goes
+			// straight out, which is what keeps claiming an application's own
+			// query to the same resolver from becoming a loop. It is checked
+			// before the policy runs so that recognising one costs neither a
+			// transaction identifier nor an adjudication.
+			//
+			// Both resolvers need the check. The upstream forwards to the
+			// trusted one, and the arbiter asks the direct one from inside a
+			// datapath that may itself be captured, so either address can
+			// carry a datagram that is this process's own question coming back
+			// around.
+			if isSelfSentQuery(packet, c.DNSOverride, policy.DirectResolver, guard) {
+				route = dnsRouteDirect
+			} else {
+				payload, destination, route, transaction = translations.prepare(packet.Payload, packet.Dst, c.DNSOverride)
 			}
-			if direct {
+			if route == dnsRouteDirect {
 				if !directRelay.send(payload, destination) {
 					dropped.Add(1)
 				}
 				touch()
 				continue
+			}
+			if route == dnsRouteAdjudicate {
+				// The trusted half travels on this association like any other
+				// relayed query; the arbiter owns the direct half and the
+				// decision between them.
+				if !arbiter.begin(transaction, binary.BigEndian.Uint16(packet.Payload[:2]), packet.Dst, payload) {
+					dropped.Add(1)
+					continue
+				}
 			}
 			address := encodeAddr(destination)
 			if 3+len(address)+len(payload) > maxUDPDatagramSize(udpNetwork) {
@@ -460,6 +531,16 @@ func (c *Client) emitUDP(ctx context.Context, flow tunless.Flow) error {
 				continue
 			}
 			payload := append([]byte(nil), buf[3+used:n]...)
+			if len(payload) >= 2 {
+				transaction := binary.BigEndian.Uint16(payload[:2])
+				if translations.adjudicating(transaction) {
+					// Held rather than delivered: the application gets one
+					// reply, and which one it gets is the arbiter's to decide.
+					arbiter.deliverTrusted(payload, transaction)
+					touch()
+					continue
+				}
+			}
 			payload, dst = translations.restore(payload, dst)
 			if err = flow.Packets.WritePacket(workerCtx, tunless.Packet{Payload: payload, Dst: dst}); err != nil {
 				if errors.Is(err, tunless.ErrDatagramRejected) {
@@ -748,4 +829,17 @@ func parseAddr(_ context.Context, b []byte) (netip.AddrPort, int, error) {
 		return netip.AddrPort{}, 0, errors.New("invalid SOCKS5 UDP source address")
 	}
 	return netip.AddrPortFrom(a, port), 1 + n + 2, nil
+}
+
+// isSelfSentQuery reports whether a captured datagram is a copy of a query this
+// process is currently relaying, arriving back at one of the two resolvers it
+// asks. See resolverLoopGuard.
+func isSelfSentQuery(packet tunless.Packet, trusted, direct netip.AddrPort, guard *resolverLoopGuard) bool {
+	if packet.Dst.Port() != 53 {
+		return false
+	}
+	if !sameAddrPort(packet.Dst, trusted) && !sameAddrPort(packet.Dst, direct) {
+		return false
+	}
+	return guard.relaying(packet.Payload)
 }

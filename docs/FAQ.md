@@ -333,6 +333,37 @@ answers it. DNS over TCP to a public resolver is still captured and redirected,
 since a public resolver has no local names to lose. Stub resolvers use UDP first
 and fall back to TCP only for answers too large to fit.
 
+## The tunnel went down and nothing resolves at all. Why?
+
+Because by default every captured lookup goes to `--dns-upstream` through the
+proxy, so an upstream that stops carrying traffic stops carrying DNS with it.
+The routes to everything you excluded from capture are still fine. Nothing can
+learn an address to use them with.
+
+That is the default rather than an accident: a lookup that falls back to the
+network's own resolver is a lookup whoever runs that network gets to answer, and
+the answer decides where a connection goes. But it is not the only option.
+
+`--dns-direct` names a second resolver reached without the proxy, and
+`--dns-direct-prefix` the addresses that make its answers credible. Both
+resolvers are asked, and a direct answer naming an address inside the set is
+served the moment it arrives — without waiting for the tunnel, and without
+needing it to be up. Names near enough for the set to cover keep resolving
+through an outage. Names outside it still fail, because there is nothing
+trustworthy to answer them with and a proxied connection to them was not going
+to work anyway.
+
+If you would rather decide by name than by answer, `--direct-domain` does that
+before any query leaves the host, and works without a second resolver
+configured. `--trusted-domain` is the other direction, and it matters as soon as
+`--dns-direct` is on: from then on every unlisted name is asked of the direct
+resolver, so a name you do not want on that path has to be listed.
+
+The full rule, including what is deliberately not adjudicated, is in
+[resolver selection](OPERATIONS.md#answer-based-and-name-based-resolver-selection).
+`tunless --explain NAME` will tell you where one name goes and show what each
+resolver actually says about it.
+
 ## What happens if tunless crashes?
 
 Your traffic goes out the way it did before you installed it.

@@ -185,6 +185,25 @@ Captured queries whose original destination port is 53 are sent to the numeric
 translated per outstanding request. Use `--disable-dns-override` to retain each application's
 original resolver.
 
+That default has two costs, and both are opt-in to buy back. A geographically
+aware name resolves from where the tunnel exits, so a nearby service hands the
+host a distant address. And an upstream outage does not degrade name resolution,
+it ends it — including for destinations you already excluded from capture, which
+stay reachable but unresolvable.
+
+`--dns-direct` names a resolver reached without the proxy, and
+`--dns-direct-prefix` the addresses that make its answer credible. Both
+resolvers are asked; the direct one is believed only when it returns an address
+inside that set, and an answer outside it is never served — a good answer for a
+distant service and an injected one are the same message, so the trusted
+resolver decides, and if it cannot the query fails rather than being answered
+with something unverified. `--direct-domain` and `--trusted-domain` decide the
+same thing from the question instead, before anything leaves the host, and the
+two compose. Only answers from the trusted resolver are ever learned from for
+hostname recovery. With none of these set nothing changes: every captured query
+goes through the proxy exactly as before. See
+[resolver selection](docs/OPERATIONS.md#answer-based-and-name-based-resolver-selection).
+
 ### Containers and virtual machines
 
 Containers need **no** TUN device, policy route, NAT rule, proxy environment

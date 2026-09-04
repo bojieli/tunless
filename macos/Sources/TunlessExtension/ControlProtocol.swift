@@ -52,8 +52,30 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 	/// `LocalNames` recognises on its own. A split-horizon `corp.example.com`
 	/// is the shape no built-in list can predict.
 	public var localDomains: [String]?
+	/// A resolver reached without the proxy, enabling answer-based selection
+	/// together with `directPrefixes`. Nil leaves every captured query with the
+	/// trusted resolver, which is the default and the behaviour of every build
+	/// before this existed.
+	public var directDNSHost: String?
+	public var directDNSPort: UInt16?
+	/// Name suffixes answered by the direct resolver without adjudication. With
+	/// no direct resolver configured they go to the resolver the application
+	/// chose, which is what makes the lists usable on their own.
+	public var directDomains: [String]?
+	/// Name suffixes answered only by the trusted resolver and never asked on
+	/// the direct path.
+	///
+	/// This is the deny-list answer-based selection needs. The moment it is on,
+	/// every unlisted name is asked of the direct resolver — that is inherent to
+	/// judging answers, since you have to ask before you can judge — so without
+	/// a way to say "not this one" the feature quietly becomes a name leak for
+	/// everything nobody thought about.
+	public var trustedDomains: [String]?
+	/// Addresses that make an answer from the direct resolver credible. An empty
+	/// set disables adjudication rather than rejecting every answer.
+	public var directPrefixes: [String]?
 
-    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, captureBoundFlows: Bool? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil, expectUDPRelay: Bool? = nil, localDomains: [String]? = nil) {
+    public init(upstreamHost: String, upstreamPort: UInt16, username: String? = nil, password: String? = nil, dnsHost: String? = nil, dnsPort: UInt16? = nil, includeProcesses: [String]? = nil, excludeProcesses: [String]? = nil, includeDestinations: [String]? = nil, excludeDestinations: [String]? = nil, captureBoundFlows: Bool? = nil, disableHealthWatchdog: Bool? = nil, maxConcurrentFlows: Int? = nil, expectUDPRelay: Bool? = nil, localDomains: [String]? = nil, directDNSHost: String? = nil, directDNSPort: UInt16? = nil, directDomains: [String]? = nil, trustedDomains: [String]? = nil, directPrefixes: [String]? = nil) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
         self.username = username
@@ -69,6 +91,11 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 		self.maxConcurrentFlows = maxConcurrentFlows
 		self.expectUDPRelay = expectUDPRelay
 		self.localDomains = localDomains
+		self.directDNSHost = directDNSHost
+		self.directDNSPort = directDNSPort
+		self.directDomains = directDomains
+		self.trustedDomains = trustedDomains
+		self.directPrefixes = directPrefixes
     }
 
 	func validated() throws -> ProviderConfiguration {
@@ -82,7 +109,46 @@ public struct ProviderConfiguration: Codable, Equatable, Sendable {
 		for prefix in (includeDestinations ?? []) + (excludeDestinations ?? []) {
 			guard Self.validPrefix(prefix) else { throw ConfigurationError.invalidDestinationPrefix(prefix) }
 		}
+		// Every incoherent DNS-policy combination is refused here rather than
+		// started and left to behave unexpectedly later. Each of them has a
+		// runtime appearance identical to the feature working perfectly and
+		// finding nothing to do, which is the one failure an operator cannot
+		// distinguish by looking.
+		guard (directDNSHost == nil) == (directDNSPort == nil) else { throw ConfigurationError.invalidDirectResolver }
+		if let host = directDNSHost, let port = directDNSPort {
+			guard port > 0, IPv4Address(host) != nil || IPv6Address(host) != nil else {
+				throw ConfigurationError.invalidDirectResolver
+			}
+			// An empty set makes every direct answer look uncredible, so the
+			// direct resolver would be asked on every unlisted name and never
+			// believed: the latency of answer-based selection with none of its
+			// effect, and nothing anywhere reporting a problem.
+			guard !(directPrefixes ?? []).isEmpty else { throw ConfigurationError.directResolverWithoutPrefixes }
+			guard dnsHost != nil else { throw ConfigurationError.directResolverWithoutOverride }
+		} else if !(directPrefixes ?? []).isEmpty {
+			throw ConfigurationError.prefixesWithoutDirectResolver
+		}
+		for prefix in directPrefixes ?? [] {
+			guard DNSPrefixSet.isValidPrefix(prefix) else { throw ConfigurationError.invalidDestinationPrefix(prefix) }
+		}
 		return self
+	}
+
+	/// The DNS policy this configuration describes.
+	///
+	/// Built on demand rather than stored, because a configuration crosses the
+	/// control protocol as JSON and the policy's trie and merged ranges are not
+	/// something to serialise. The provider builds it once when it applies a
+	/// configuration.
+	var dnsPolicy: DNSPolicy {
+		var policy = DNSPolicy()
+		policy.localDomains = localDomains ?? []
+		policy.suffixes = DNSSuffixSet(direct: directDomains ?? [], trusted: trustedDomains ?? [])
+		policy.prefixes = DNSPrefixSet(prefixes: directPrefixes ?? [])
+		if let host = directDNSHost, let port = directDNSPort {
+			policy.directResolver = SOCKSAddress(host: host, port: port)
+		}
+		return policy
 	}
 
 	func captures(host: String, port: UInt16, signingIdentifier: String, executablePath: String? = nil, isDatagram: Bool = false) -> Bool {
@@ -318,6 +384,10 @@ enum ConfigurationError: Error, Equatable {
 	case credentialsTooLong
 	case invalidDestinationPrefix(String)
 	case invalidFlowCeiling
+	case invalidDirectResolver
+	case directResolverWithoutPrefixes
+	case prefixesWithoutDirectResolver
+	case directResolverWithoutOverride
 }
 
 /// How the provider handled a flow or datagram.

@@ -40,6 +40,20 @@ Options:
   --exclude-destination CIDR Exclude a destination prefix (repeatable).
   --local-domain SUFFIX      Name suffix only your own resolver can answer,
                              for split-horizon zones (repeatable).
+  --dns-direct IP:PORT       Resolver reached without the proxy. Its answer is
+                             served when it names an address inside
+                             --dns-direct-prefix; otherwise the trusted
+                             resolver decides. Off unless set.
+  --dns-direct-prefix CIDR   Address range that makes a direct answer
+                             credible (repeatable).
+  --direct-domain SUFFIX     Name answered by the direct resolver without
+                             adjudication (repeatable).
+  --trusted-domain SUFFIX    Name answered only by the trusted resolver, never
+                             asked on the direct path (repeatable).
+  --direct-domain-file PATH  Read --direct-domain entries, one per line.
+  --trusted-domain-file PATH Read --trusted-domain entries, one per line.
+  --dns-direct-prefix-file PATH
+                             Read --dns-direct-prefix entries, one per line.
   --cleanup                  Legacy spelling of the cleanup command.
   -h, --help                 Show this help.
   --version                  Show app and build version.
@@ -56,6 +70,19 @@ stay reachable and what tunless itself relays through, so they are reserved by
 the provider rather than left to an exclusion flag. Private, CGNAT, and fake-IP
 ranges are excluded by default too; --include-destination overrides that per
 prefix.
+
+By default every captured query goes to --dns-upstream through the proxy, and
+nothing is asked of any other resolver. --dns-direct turns that into a choice
+between two answers: both resolvers are asked, and the direct one is believed
+only when it names an address inside --dns-direct-prefix. An answer naming
+addresses outside the set is not served, because a good answer for a distant
+service and an injected one are the same message; the trusted resolver decides
+instead, and if it cannot, the query fails with SERVFAIL rather than being
+answered with something unverified. Names on --direct-domain skip that
+adjudication and never depend on the tunnel at all; names on --trusted-domain
+are never asked on the direct path, which is how a name is kept off it once
+answer-based selection is on. Only answers from the trusted resolver are ever
+learned from for hostname recovery.
 
 Port 53 is judged by none of the destination rules while --dns-upstream is set,
 because a resolver's address is not a destination an application chose to reach.

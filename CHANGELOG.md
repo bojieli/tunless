@@ -3,6 +3,65 @@
 This project follows semantic versioning after its first public release. Dates
 use ISO 8601.
 
+## Unreleased
+
+### Added
+
+- **Split DNS, off by default.** Captured queries can now be answered by a
+  resolver reached without the proxy, chosen two ways that compose. A name list
+  decides from the question, before anything leaves the host: `--direct-domain`
+  and `--direct-domain-file` name what the direct resolver answers,
+  `--trusted-domain` and `--trusted-domain-file` name what it must never be
+  asked. An address set decides from the answer: `--dns-direct` names the
+  resolver, `--dns-direct-prefix` and `--dns-direct-prefix-file` name the
+  addresses that make its answer credible, and both resolvers are asked with the
+  direct one believed only when it returns an address inside that set. With none
+  of these configured every captured query goes to `--dns-upstream` through the
+  proxy exactly as before.
+
+  This exists for two costs of routing every lookup through one tunnel. A
+  geographically aware name resolves from where the tunnel exits, so a nearby
+  service hands the host a distant address. And an upstream outage does not
+  degrade name resolution, it ends it — including for destinations already
+  excluded from capture, which stay reachable but unresolvable. A name the
+  address set covers now resolves at the speed of the near resolver and does not
+  consult the tunnel at all.
+
+  An answer naming addresses outside the set is never served: a good answer for
+  a distant service and an injected one are the same message, so the trusted
+  resolver decides, and when it cannot the query fails with SERVFAIL rather than
+  being answered with something unverified. An answer naming no address is
+  served once the trusted resolver has had its chance and could not take it,
+  because there is nothing in it to misroute a connection to and refusing it
+  denies the name just as thoroughly — but while the tunnel is up a forged
+  NXDOMAIN still loses to the real answer. Adjudication reads addresses, so it
+  applies to A and AAAA only; HTTPS and SVCB go to the trusted resolver, since
+  they carry the encrypted-client-hello configuration and serving one from the
+  direct path would inflict the downgrade this project exists to prevent.
+
+  Only answers from the trusted resolver are ever learned from for hostname
+  recovery, adjudicated exchanges included. An association learned from the
+  network's own path would let whoever supplied that answer choose the name a
+  later flow is proxied under.
+
+- `tunless --explain NAME` reports which resolver would answer a name and why,
+  and when both would be asked, runs the real exchanges and prints what each
+  returned, which addresses fell inside the credible set, and the verdict.
+
+- The status endpoint reports the configured policy and a per-layer decision
+  count under `dns_policy`. A prefix set that matches nothing is otherwise
+  indistinguishable from a network with no interference on it.
+
+- macOS carries the same policy, spelled the same way, through the launcher and
+  the control protocol. List files are read by the launcher rather than opened
+  by the system extension, so parse errors land where the operator is.
+
+### Changed
+
+- `socks5.Client.LocalDomains` is replaced by `socks5.Client.DNSPolicy`, which
+  carries the split-horizon suffixes along with the rest of the policy.
+  `--local-domain` is unchanged and still outranks every other layer.
+
 ## 0.4.0 — 2026-09-02
 
 ### Changed
