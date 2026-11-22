@@ -3,6 +3,21 @@
 This project follows semantic versioning after its first public release. Dates
 use ISO 8601.
 
+## 0.5.0 — 2026-11-22
+
+A maintainer can now attach an existing notarized macOS archive and checksum to
+the GitHub Release for its exact source revision. The promotion workflow
+checks the signing run, archive digest, signature, notarization ticket, and
+Gatekeeper assessment. Existing assets must match byte for byte. The app uses
+its own bundle version and build number. This change also updates the Go
+build images, Go modules, and CI dependencies since v0.4.1.
+
+| Platform | Release scope |
+| --- | --- |
+| Linux | Generally available for amd64 and arm64. |
+| macOS | Beta. The signed app requires exact-candidate clean-machine qualification. |
+| Windows | Source only. No qualified driver or Windows binary is distributed. |
+
 ## 0.4.1 — 2026-09-04
 
 ### Added
