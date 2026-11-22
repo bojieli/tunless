@@ -99,6 +99,22 @@ the GitHub Release, upload the reviewed assets, and publish the OCI image by
 digest. Never build a release from a dirty tree or move an existing tag. This
 section documents the later procedure; it is not permission to execute it.
 
+### Attaching the notarized macOS archive
+
+Once a maintainer has reviewed the signed build and created its GitHub Release,
+run **Attach reviewed macOS assets** from the default branch. Supply the release
+tag and the run ID of the successful **macOS signed release** build of that
+commit. Do this within the signing workflow’s 14-day artifact retention period.
+The upload verifies the checksum, Developer ID signature, stapled ticket and
+Gatekeeper assessment. The ZIP and portable SHA-256 file then remain on the
+Release independently of Actions retention. Rerunning can complete a partial
+upload if the existing file matches.
+
+If the only artifact has expired, a maintainer must run the signing workflow
+again on the original tag with notarization enabled and review that build.
+A new signature or notarization may produce a different checksum. Record the
+new run ID when attaching it.
+
 ## Rollback
 
 Do not replace published assets or retag. Mark a defective release as withdrawn,

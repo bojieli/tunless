@@ -281,7 +281,7 @@ jobs:
           build="$(plutil -extract CFBundleVersion raw -o - "$APP/Contents/Info.plist")"
           out="$RUNNER_TEMP/Tunless-${version}-${build}.zip"
           ditto -c -k --keepParent "$APP" "$out"
-          shasum -a 256 "$out" | tee "$out.sha256"
+          (cd "$RUNNER_TEMP" && shasum -a 256 "$(basename "$out")") | tee "$out.sha256"
           echo "path=$out" >> "$GITHUB_OUTPUT"
           echo "name=Tunless-${version}-${build}" >> "$GITHUB_OUTPUT"
 
