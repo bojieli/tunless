@@ -32,7 +32,7 @@ jobs:
           set -euo pipefail
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$SIGNING_RUN" =~ ^[0-9]+$ ]]
           gh release view "$TAG" --json tagName --jq .tagName | grep -Fx "$TAG"
-          sha="$(gh api "repos/$GH_REPO/commits/tags/$TAG" --jq .sha)"
+          sha="$(gh api "repos/$GH_REPO/commits/refs/tags/$TAG" --jq .sha)"
           gh api "repos/$GH_REPO/actions/runs/$SIGNING_RUN" | jq -e \
             --arg sha "$sha" --arg repo "$GH_REPO" '
               .conclusion == "success" and .path == ".github/workflows/macos-release.yml"
