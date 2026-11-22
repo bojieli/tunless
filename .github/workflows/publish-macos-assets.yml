@@ -1,0 +1,73 @@
+name: Attach reviewed macOS assets
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing reviewed release tag
+        required: true
+        type: string
+      signing_run:
+        description: Successful macOS signed release run ID for the tagged commit
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      SIGNING_RUN: ${{ inputs.signing_run }}
+    steps:
+      - name: Verify the signing run and download its archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$SIGNING_RUN" =~ ^[0-9]+$ ]]
+          gh release view "$TAG" --json tagName --jq .tagName | grep -Fx "$TAG"
+          sha="$(gh api "repos/$GH_REPO/commits/tags/$TAG" --jq .sha)"
+          gh api "repos/$GH_REPO/actions/runs/$SIGNING_RUN" | jq -e \
+            --arg sha "$sha" --arg repo "$GH_REPO" '
+              .conclusion == "success" and .path == ".github/workflows/macos-release.yml"
+              and .head_sha == $sha and .head_repository.full_name == $repo
+              and (.event == "push" or .event == "workflow_dispatch")' >/dev/null
+          name="$(gh api "repos/$GH_REPO/actions/runs/$SIGNING_RUN/artifacts" | jq -er '
+            [.artifacts[] | select(.expired == false and (.name | test("^Tunless-[0-9.]+-[0-9]+$"))) | .name]
+            | select(length == 1) | .[0]')"
+          gh run download "$SIGNING_RUN" --name "$name" --dir "$RUNNER_TEMP/bundle"
+          echo "ARCHIVE=$name.zip" >> "$GITHUB_ENV"
+
+      - name: Verify the signed app and attach the reviewed files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/bundle"
+          # Older signing runs include the runner's absolute path in the checksum.
+          expected="$(awk 'NR == 1 {print $1}' "$ARCHIVE.sha256")"
+          [[ "$expected" =~ ^[a-f0-9]{64}$ ]]
+          shasum -a 256 "$ARCHIVE" > verified.sha256
+          [[ "$(cut -d ' ' -f1 verified.sha256)" == "$expected" ]]
+          mv verified.sha256 "$ARCHIVE.sha256"
+          ditto -x -k "$ARCHIVE" "$RUNNER_TEMP/verify"
+          app="$RUNNER_TEMP/verify/Tunless.app"
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute "$app"
+          # Resume partial uploads only when existing assets are byte-identical.
+          gh api "repos/$GH_REPO/releases/tags/$TAG" > "$RUNNER_TEMP/assets.json"
+          for file in "$ARCHIVE" "$ARCHIVE.sha256"; do
+            digest="$(shasum -a 256 "$file" | cut -d ' ' -f1)"
+            if jq -e --arg name "$file" '.assets[] | select(.name == $name)' "$RUNNER_TEMP/assets.json" >/dev/null; then
+              jq -e --arg name "$file" --arg digest "sha256:$digest" \
+                '.assets[] | select(.name == $name and .digest == $digest)' "$RUNNER_TEMP/assets.json" >/dev/null
+            else
+              gh release upload "$TAG" "$file"
+            fi
+          done
