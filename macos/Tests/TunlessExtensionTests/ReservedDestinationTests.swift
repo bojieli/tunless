@@ -171,32 +171,106 @@ final class DirectDatagramRelayTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
-    func testAPathChangePurgesTheWholeDestinationPoolBeforeApplyingItsCap() async {
+    func testAPathChangePurgesTheWholeDestinationPoolBeforeApplyingItsCap() async throws {
         let epoch = NetworkEpoch()
         let relay = DirectDatagramRelay(
             sink: RecordingSink(), networkEpoch: epoch, sendTimeoutSeconds: 1)
 
-        // Fill the pool on the first path. UDP sends to unused loopback ports
-        // are still successfully handed to the local network stack, which is
-        // all this relay promises before a peer decides whether to answer.
-        for offset in 0..<16 {
+        // Every destination is a loopback socket this test binds on an
+        // ephemeral port. Fixed, unused ports used to stand in for peers, but
+        // each send to one draws an ICMP port-unreachable onto a connected UDP
+        // socket that Network.framework never reports: the connection stays
+        // ready and keeps the error pending. Every NWConnection and NWListener
+        // in the process is serviced by one shared framework queue, and
+        // depending on the macOS release those refused sockets either make it
+        // spin or measurably slow it. Neither has anything to do with the pool
+        // rules checked here, and a real peer also lets the test confirm that
+        // each datagram arrived.
+        let firstPath = try (0..<16).map { _ in try LoopbackUDPSink() }
+        let secondPath = try LoopbackUDPSink()
+        defer {
+            firstPath.forEach { $0.close() }
+            secondPath.close()
+        }
+
+        // Fill the pool on the first path.
+        for (offset, sink) in firstPath.enumerated() {
             let sent = await relay.send(
                 Data([UInt8(offset)]),
-                to: SOCKSAddress(host: "127.0.0.1", port: UInt16(30_000 + offset)))
+                to: SOCKSAddress(host: "127.0.0.1", port: sink.port))
             XCTAssertTrue(sent, "failed to prepare destination \(offset)")
         }
         let fullCount = await relay.activeDestinationCount
         XCTAssertEqual(fullCount, 16)
+        for (offset, sink) in firstPath.enumerated() {
+            XCTAssertEqual(sink.receive(timeout: 5), Data([UInt8(offset)]),
+                           "destination \(offset) did not get its datagram")
+        }
 
         _ = epoch.advance()
         let sentOnNewPath = await relay.send(
-            Data([0xff]), to: SOCKSAddress(host: "127.0.0.1", port: 31_000))
+            Data([0xff]), to: SOCKSAddress(host: "127.0.0.1", port: secondPath.port))
         XCTAssertTrue(sentOnNewPath)
         let rebuiltCount = await relay.activeDestinationCount
         XCTAssertEqual(
             rebuiltCount, 1,
             "stale Wi-Fi sockets must not consume the hotspot destination cap")
+        XCTAssertEqual(secondPath.receive(timeout: 5), Data([0xff]))
         await relay.cancelAll()
+    }
+}
+
+/// A UDP socket bound to an ephemeral loopback port that accepts whatever is
+/// sent to it, so a test can address a real peer without picking a fixed port
+/// and without provoking ICMP port-unreachable replies.
+private final class LoopbackUDPSink {
+    struct SocketError: Error {
+        let call: String
+        let code: Int32
+    }
+
+    private var descriptor: Int32
+    let port: UInt16
+
+    init() throws {
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { throw SocketError(call: "socket", code: errno) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = in_addr_t(INADDR_LOOPBACK).bigEndian
+        address.sin_port = 0
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, length) == 0 && getsockname(fd, $0, &length) == 0
+            }
+        }
+        guard bound else {
+            let code = errno
+            Darwin.close(fd)
+            throw SocketError(call: "bind", code: code)
+        }
+        descriptor = fd
+        port = UInt16(bigEndian: address.sin_port)
+    }
+
+    deinit { close() }
+
+    /// The next datagram, or nil if none arrives within `timeout` seconds.
+    func receive(timeout: TimeInterval) -> Data? {
+        guard descriptor >= 0 else { return nil }
+        var poller = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+        guard poll(&poller, 1, Int32(timeout * 1000)) == 1 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: 2048)
+        let count = recv(descriptor, &buffer, buffer.count, 0)
+        return count >= 0 ? Data(buffer.prefix(count)) : nil
+    }
+
+    func close() {
+        guard descriptor >= 0 else { return }
+        Darwin.close(descriptor)
+        descriptor = -1
     }
 }
 

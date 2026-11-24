@@ -142,6 +142,13 @@ struct SOCKSAddress: Equatable, Sendable {
 actor SOCKSConnection {
     private let connection: NWConnection
     private var buffered = Data()
+    /// Completed by the connection's state handler, which is installed before
+    /// `start`. Network.framework reports state changes only to the handler
+    /// that is present when they happen; it does not replay the current state
+    /// to a handler installed later. Installing it from the handshake task,
+    /// after `start`, let a fast loopback connection reach `.ready` first, and
+    /// the handshake then waited out its whole timeout on an open socket.
+    private let readiness = AsyncResultGate<Void>()
 
     init(configuration: ProviderConfiguration) {
         connection = NWConnection(
@@ -156,6 +163,19 @@ actor SOCKSConnection {
         destination: SOCKSAddress,
         timeoutSeconds: TimeInterval = 10
     ) async throws -> SOCKSAddress {
+        let readiness = readiness
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                readiness.resume(with: .success(()))
+            case .failed(let error):
+                readiness.resume(with: .failure(error))
+            case .cancelled:
+                readiness.resume(with: .failure(SOCKSError.closed))
+            default:
+                break
+            }
+        }
         connection.start(queue: .global(qos: .userInitiated))
         return try await withTaskCancellationHandler(operation: {
             try await withThrowingTaskGroup(of: SOCKSAddress.self) { group in
@@ -303,22 +323,10 @@ actor SOCKSConnection {
 
     private func ready() async throws {
         try Task.checkCancellation()
-        let gate = AsyncResultGate<Void>()
+        let gate = readiness
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                guard gate.install(continuation) else { return }
-                connection.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready:
-                        gate.resume(with: .success(()))
-                    case .failed(let error):
-                        gate.resume(with: .failure(error))
-                    case .cancelled:
-                        gate.resume(with: .failure(SOCKSError.closed))
-                    default:
-                        break
-                    }
-                }
+                gate.install(continuation)
             }
         }, onCancel: {
             self.connection.cancel()
