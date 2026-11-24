@@ -3,8 +3,8 @@
 Tunless release binaries contain code from the following components:
 
 - github.com/cilium/ebpf v0.22.0 — MIT
-- golang.org/x/net v0.61.0 — BSD-3-Clause
-- golang.org/x/sys v0.49.0 — BSD-3-Clause
+- golang.org/x/net v0.63.0 — BSD-3-Clause
+- golang.org/x/sys v0.50.0 — BSD-3-Clause
 - Go standard library go1.27.4 — BSD-3-Clause
 
 The release build verifies this list against the module metadata embedded in
